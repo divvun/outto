@@ -1,0 +1,20 @@
+[package]
+name = "outto-gui"
+version = "0.1.0"
+edition = "2021"
+description = "Iced-based installer GUI for outto"
+license = "MIT"
+
+[dependencies]
+outto = { path = ".." }
+iced = { version = "0.14", features = ["tokio"] }
+serde_json = "1"
+rfd = "0.15"
+box-format = { path = "../../box", default-features = false, features = ["std", "zstd", "reader"] }
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+winres = "0.1"

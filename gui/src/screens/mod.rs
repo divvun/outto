@@ -1,0 +1,10 @@
+pub mod welcome;
+pub mod license;
+pub mod directory;
+pub mod components;
+pub mod summary;
+pub mod progress;
+pub mod complete;
+pub mod uninstall_confirm;
+pub mod uninstall_progress;
+pub mod uninstall_complete;

@@ -1,0 +1,12 @@
+[package]
+name = "outto-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Build tool for creating outto installers"
+license = "MIT"
+
+[dependencies]
+outto = { path = ".." }
+box-format = { path = "../../box", default-features = false, features = ["std", "zstd", "xz", "reader", "writer"] }
+tempfile = "3"
+walkdir = "2"

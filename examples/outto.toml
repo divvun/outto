@@ -1,0 +1,116 @@
+[package]
+id = "com.example.myapp"
+name = "My Application"
+version = "2.4.1"
+publisher = "Example Corp"
+url = "https://example.com"
+support_url = "https://example.com/support"
+license_file = "LICENSE.txt"
+architecture = "x64"
+privileges = "admin"
+default_dir = "$pf/$package.name"
+
+[logging]
+enabled = true
+path = "$app/install.log"
+
+[reboot]
+policy = "if_needed"
+restart_manager = true
+
+[uninstall]
+display_icon = "$app/myapp.exe"
+remove_app_dir = true
+extra_dirs = ["$userappdata/MyApp"]
+
+[upgrade]
+policy = "overwrite"
+preserve = ["config/*.toml", "data/**"]
+
+[[components]]
+name = "core"
+display_name = "Core Application"
+required = true
+default = true
+
+[[components]]
+name = "extras"
+display_name = "Extra Features"
+required = false
+default = false
+
+[[files]]
+source = "build/release/**/*"
+dest = "$app"
+overwrite = "if_newer"
+component = "core"
+
+[[files]]
+source = "extras/*"
+dest = "$app/extras"
+overwrite = "always"
+component = "extras"
+
+[[dirs]]
+path = "$app/logs"
+permissions = [{ identity = "Users", access = "modify" }]
+
+[[registry]]
+root = "hklm"
+key = "Software\\ExampleCorp\\MyApp"
+values = [
+    { name = "InstallPath", type = "string", data = "$app" },
+    { name = "Version", type = "string", data = "$package.version" },
+]
+uninstall = "remove_key"
+
+[[shortcuts]]
+name = "My Application"
+target = "$app/myapp.exe"
+location = "start_menu"
+icon = "$app/myapp.exe,0"
+working_dir = "$app"
+
+[[environment]]
+name = "PATH"
+value = "$app/bin"
+scope = "system"
+action = "append"
+
+[[services]]
+name = "myapp-daemon"
+display_name = "MyApp Background Service"
+executable = "$app/myapp-svc.exe"
+start_type = "delayed_auto"
+account = "LocalService"
+on_install = "start"
+on_uninstall = "stop_and_delete"
+
+[[associations]]
+extension = ".myf"
+prog_id = "MyApp.Document"
+description = "MyApp Document"
+icon = "$app/myapp.exe,1"
+command = "\"$app/myapp.exe\" \"%1\""
+
+[[prerequisites]]
+name = "VC++ 2022 Redistributable"
+check = { registry = "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\X64", value = "Installed", equals = 1 }
+download_url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+installer = "vc_redist.x64.exe"
+arguments = "/install /quiet /norestart"
+required = true
+
+[[run]]
+phase = "after_install"
+command = "$app/myapp.exe"
+arguments = "--init"
+wait = true
+show = "hidden"
+
+[[fonts]]
+source = "assets/CustomFont.ttf"
+
+[[com]]
+file = "$app/mylib.dll"
+action = "regserver"

@@ -1,0 +1,421 @@
+use crate::config::{PathResolver, RegistryEntry, RegistryRoot, RegistryValueType};
+use crate::error::{InstallerError, InstallerResult};
+use crate::manifest::{ActionRecord, InstallManifest};
+use crate::{InstallerCallbacks, LogLevel};
+
+#[cfg(windows)]
+use std::ffi::OsStr;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+
+#[cfg(windows)]
+use windows_sys::Win32::System::Registry::*;
+
+#[cfg(windows)]
+fn to_wide(s: &str) -> Vec<u16> {
+    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+fn root_to_hkey(root: &RegistryRoot) -> HKEY {
+    match root {
+        RegistryRoot::Hklm => HKEY_LOCAL_MACHINE,
+        RegistryRoot::Hkcu => HKEY_CURRENT_USER,
+        RegistryRoot::Hkcr => HKEY_CLASSES_ROOT,
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn root_from_str(s: &str) -> InstallerResult<HKEY> {
+    match s.to_uppercase().as_str() {
+        "HKLM" => Ok(HKEY_LOCAL_MACHINE),
+        "HKCU" => Ok(HKEY_CURRENT_USER),
+        "HKCR" => Ok(HKEY_CLASSES_ROOT),
+        _ => Err(InstallerError::Registry {
+            key: s.to_string(),
+            message: "unknown registry root".into(),
+        }),
+    }
+}
+
+pub fn apply_registry_entry(
+    entry: &RegistryEntry,
+    resolver: &PathResolver,
+    manifest: &mut InstallManifest,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()> {
+    let root_name = match entry.root {
+        RegistryRoot::Hklm => "HKLM",
+        RegistryRoot::Hkcu => "HKCU",
+        RegistryRoot::Hkcr => "HKCR",
+    };
+
+    let key = resolver.resolve(&entry.key)?;
+
+    callbacks.on_log(
+        LogLevel::Info,
+        &format!("Registry: {root_name}\\{key}"),
+    );
+
+    #[cfg(windows)]
+    {
+        let hroot = root_to_hkey(&entry.root);
+        let key_wide = to_wide(&key);
+        let mut hkey: HKEY = std::ptr::null_mut();
+        let mut disposition: u32 = 0;
+
+        let result = unsafe {
+            RegCreateKeyExW(
+                hroot,
+                key_wide.as_ptr(),
+                0,
+                std::ptr::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_ALL_ACCESS,
+                std::ptr::null(),
+                &mut hkey,
+                &mut disposition,
+            )
+        };
+
+        if result != 0 {
+            return Err(InstallerError::Registry {
+                key: format!("{root_name}\\{key}"),
+                message: format!("RegCreateKeyExW failed with error code {result}"),
+            });
+        }
+
+        let created = disposition == REG_CREATED_NEW_KEY;
+        if created {
+            manifest.record(ActionRecord::RegistryKeyCreated {
+                root: root_name.to_string(),
+                key: key.clone(),
+                on_uninstall: entry.uninstall.clone(),
+            });
+        }
+
+        for val in &entry.values {
+            let resolved_data = match &val.data {
+                toml::Value::String(s) => resolver.resolve(s)?,
+                other => other.to_string(),
+            };
+
+            set_registry_value(hkey, &val.name, &val.value_type, &resolved_data)?;
+
+            manifest.record(ActionRecord::RegistryValueSet {
+                root: root_name.to_string(),
+                key: key.clone(),
+                value_name: val.name.clone(),
+                previous_data: None,
+                on_uninstall: entry.uninstall.clone(),
+            });
+
+            callbacks.on_log(
+                LogLevel::Info,
+                &format!("  Set value: {} = {}", val.name, resolved_data),
+            );
+        }
+
+        unsafe {
+            RegCloseKey(hkey);
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        for val in &entry.values {
+            let resolved = match &val.data {
+                toml::Value::String(s) => resolver.resolve(s)?,
+                other => other.to_string(),
+            };
+            manifest.record(ActionRecord::RegistryValueSet {
+                root: root_name.to_string(),
+                key: key.clone(),
+                value_name: val.name.clone(),
+                previous_data: None,
+                on_uninstall: entry.uninstall.clone(),
+            });
+            callbacks.on_log(
+                LogLevel::Info,
+                &format!("  [simulated] Set value: {} = {}", val.name, resolved),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn set_registry_value(
+    hkey: HKEY,
+    name: &str,
+    value_type: &RegistryValueType,
+    data: &str,
+) -> InstallerResult<()> {
+    let name_wide = to_wide(name);
+
+    let (reg_type, data_bytes) = match value_type {
+        RegistryValueType::String => {
+            let wide = to_wide(data);
+            let bytes: Vec<u8> = wide.iter().flat_map(|w| w.to_le_bytes()).collect();
+            (REG_SZ, bytes)
+        }
+        RegistryValueType::ExpandString => {
+            let wide = to_wide(data);
+            let bytes: Vec<u8> = wide.iter().flat_map(|w| w.to_le_bytes()).collect();
+            (REG_EXPAND_SZ, bytes)
+        }
+        RegistryValueType::Dword => {
+            let val = parse_dword(data).map_err(|msg| InstallerError::Registry {
+                key: name.to_string(),
+                message: msg,
+            })?;
+            (REG_DWORD, val.to_le_bytes().to_vec())
+        }
+        RegistryValueType::Qword => {
+            let val = parse_qword(data).map_err(|msg| InstallerError::Registry {
+                key: name.to_string(),
+                message: msg,
+            })?;
+            (REG_QWORD, val.to_le_bytes().to_vec())
+        }
+        RegistryValueType::MultiString => {
+            let mut bytes = Vec::new();
+            for part in data.split('\0') {
+                let wide = to_wide(part);
+                bytes.extend(wide.iter().flat_map(|w| w.to_le_bytes()));
+            }
+            bytes.extend_from_slice(&[0u8, 0]);
+            (REG_MULTI_SZ, bytes)
+        }
+        RegistryValueType::Binary => {
+            let bytes = hex_to_bytes(data).map_err(|e| InstallerError::Registry {
+                key: name.to_string(),
+                message: format!("invalid binary data: {e}"),
+            })?;
+            (REG_BINARY, bytes)
+        }
+    };
+
+    let result = unsafe {
+        RegSetValueExW(
+            hkey,
+            name_wide.as_ptr(),
+            0,
+            reg_type,
+            data_bytes.as_ptr(),
+            data_bytes.len() as u32,
+        )
+    };
+
+    if result != 0 {
+        return Err(InstallerError::Registry {
+            key: name.to_string(),
+            message: format!("RegSetValueExW failed with error code {result}"),
+        });
+    }
+
+    Ok(())
+}
+
+pub(crate) fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
+    let hex = hex.replace(' ', "");
+    if !hex.len().is_multiple_of(2) {
+        return Err("odd length hex string".into());
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&hex[i..i + 2], 16)
+                .map_err(|e| format!("invalid hex at position {i}: {e}"))
+        })
+        .collect()
+}
+
+pub(crate) fn parse_dword(data: &str) -> Result<u32, String> {
+    data.parse()
+        .map_err(|_| format!("cannot parse '{data}' as DWORD"))
+}
+
+pub(crate) fn parse_qword(data: &str) -> Result<u64, String> {
+    data.parse()
+        .map_err(|_| format!("cannot parse '{data}' as QWORD"))
+}
+
+// Rollback helpers
+#[cfg(windows)]
+pub fn delete_key(root: &str, key: &str) -> InstallerResult<()> {
+    let hroot = root_from_str(root)?;
+    let key_wide = to_wide(key);
+    let result = unsafe { RegDeleteKeyW(hroot, key_wide.as_ptr()) };
+    if result != 0 {
+        return Err(InstallerError::Registry {
+            key: format!("{root}\\{key}"),
+            message: format!("RegDeleteKeyW failed with error code {result}"),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn delete_value(root: &str, key: &str, value_name: &str) -> InstallerResult<()> {
+    let hroot = root_from_str(root)?;
+    let key_wide = to_wide(key);
+    let name_wide = to_wide(value_name);
+    let mut hkey: HKEY = std::ptr::null_mut();
+
+    let result = unsafe { RegOpenKeyExW(hroot, key_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) };
+    if result != 0 {
+        return Err(InstallerError::Registry {
+            key: format!("{root}\\{key}"),
+            message: format!("RegOpenKeyExW failed: {result}"),
+        });
+    }
+
+    let result = unsafe { RegDeleteValueW(hkey, name_wide.as_ptr()) };
+    unsafe { RegCloseKey(hkey) };
+
+    if result != 0 {
+        return Err(InstallerError::Registry {
+            key: format!("{root}\\{key}\\{value_name}"),
+            message: format!("RegDeleteValueW failed: {result}"),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn set_string_value(
+    root: &str,
+    key: &str,
+    value_name: &str,
+    data: &str,
+) -> InstallerResult<()> {
+    let hroot = root_from_str(root)?;
+    let key_wide = to_wide(key);
+    let name_wide = to_wide(value_name);
+    let data_wide = to_wide(data);
+    let data_bytes: Vec<u8> = data_wide.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let mut hkey: HKEY = std::ptr::null_mut();
+
+    let result =
+        unsafe { RegOpenKeyExW(hroot, key_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) };
+    if result != 0 {
+        return Err(InstallerError::Registry {
+            key: format!("{root}\\{key}"),
+            message: format!("RegOpenKeyExW failed: {result}"),
+        });
+    }
+
+    let result = unsafe {
+        RegSetValueExW(
+            hkey,
+            name_wide.as_ptr(),
+            0,
+            REG_SZ,
+            data_bytes.as_ptr(),
+            data_bytes.len() as u32,
+        )
+    };
+    unsafe { RegCloseKey(hkey) };
+
+    if result != 0 {
+        return Err(InstallerError::Registry {
+            key: format!("{root}\\{key}\\{value_name}"),
+            message: format!("RegSetValueExW failed: {result}"),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // hex_to_bytes tests
+
+    #[test]
+    fn test_hex_to_bytes_simple() {
+        assert_eq!(hex_to_bytes("FF00AB").unwrap(), vec![255, 0, 171]);
+    }
+
+    #[test]
+    fn test_hex_to_bytes_with_spaces() {
+        assert_eq!(hex_to_bytes("FF 00 AB").unwrap(), vec![255, 0, 171]);
+    }
+
+    #[test]
+    fn test_hex_to_bytes_empty() {
+        let empty: Vec<u8> = vec![];
+        assert_eq!(hex_to_bytes("").unwrap(), empty);
+    }
+
+    #[test]
+    fn test_hex_to_bytes_odd_length() {
+        assert!(hex_to_bytes("FFF").is_err());
+    }
+
+    #[test]
+    fn test_hex_to_bytes_invalid_chars() {
+        assert!(hex_to_bytes("GG").is_err());
+    }
+
+    #[test]
+    fn test_hex_to_bytes_lowercase() {
+        assert_eq!(hex_to_bytes("ff00ab").unwrap(), vec![255, 0, 171]);
+    }
+
+    // parse_dword tests
+
+    #[test]
+    fn test_parse_dword_valid() {
+        assert_eq!(parse_dword("42").unwrap(), 42u32);
+    }
+
+    #[test]
+    fn test_parse_dword_zero() {
+        assert_eq!(parse_dword("0").unwrap(), 0u32);
+    }
+
+    #[test]
+    fn test_parse_dword_max() {
+        assert_eq!(parse_dword("4294967295").unwrap(), u32::MAX);
+    }
+
+    #[test]
+    fn test_parse_dword_overflow() {
+        assert!(parse_dword("4294967296").is_err());
+    }
+
+    #[test]
+    fn test_parse_dword_negative() {
+        assert!(parse_dword("-1").is_err());
+    }
+
+    #[test]
+    fn test_parse_dword_not_a_number() {
+        assert!(parse_dword("hello").is_err());
+    }
+
+    // parse_qword tests
+
+    #[test]
+    fn test_parse_qword_valid() {
+        assert_eq!(parse_qword("18446744073709551615").unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn test_parse_qword_zero() {
+        assert_eq!(parse_qword("0").unwrap(), 0u64);
+    }
+
+    #[test]
+    fn test_parse_qword_invalid() {
+        assert!(parse_qword("not_a_number").is_err());
+    }
+
+    #[test]
+    fn test_parse_qword_overflow() {
+        assert!(parse_qword("18446744073709551616").is_err());
+    }
+}

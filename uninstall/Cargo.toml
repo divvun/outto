@@ -1,0 +1,17 @@
+[package]
+name = "outto-uninstall"
+version = "0.1.0"
+edition = "2021"
+description = "Uninstaller GUI for outto"
+license = "MIT"
+
+[dependencies]
+outto = { path = ".." }
+iced = { version = "0.14", features = ["tokio"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
+
+[build-dependencies]
+winres = "0.1"
