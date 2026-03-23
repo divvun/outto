@@ -13,7 +13,10 @@ use windows_sys::Win32::System::Registry::*;
 
 #[cfg(windows)]
 fn to_wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 #[cfg(windows)]
@@ -52,10 +55,7 @@ pub fn apply_registry_entry(
 
     let key = resolver.resolve(&entry.key)?;
 
-    callbacks.on_log(
-        LogLevel::Info,
-        &format!("Registry: {root_name}\\{key}"),
-    );
+    callbacks.on_log(LogLevel::Info, &format!("Registry: {root_name}\\{key}"));
 
     #[cfg(windows)]
     {
@@ -298,8 +298,7 @@ pub fn set_string_value(
     let data_bytes: Vec<u8> = data_wide.iter().flat_map(|w| w.to_le_bytes()).collect();
     let mut hkey: HKEY = std::ptr::null_mut();
 
-    let result =
-        unsafe { RegOpenKeyExW(hroot, key_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) };
+    let result = unsafe { RegOpenKeyExW(hroot, key_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) };
     if result != 0 {
         return Err(InstallerError::Registry {
             key: format!("{root}\\{key}"),

@@ -14,9 +14,7 @@ pub use error::{ErrorAction, InstallerError, InstallerResult};
 pub use manifest::InstallManifest;
 
 // Re-export key types
-pub use config::types::{
-    Architecture, ComponentEntry, OverwritePolicy, Privileges, UpgradePolicy,
-};
+pub use config::types::{Architecture, ComponentEntry, OverwritePolicy, Privileges, UpgradePolicy};
 pub use detect::ExistingInstall;
 
 /// Log severity levels.
@@ -111,14 +109,14 @@ pub fn install(
 
     // Determine install directory (normalize separators)
     let install_dir = if let Some(ref dir) = options.install_dir {
-        PathBuf::from(dir.to_string_lossy().replace('/', std::path::MAIN_SEPARATOR_STR))
+        PathBuf::from(
+            dir.to_string_lossy()
+                .replace('/', std::path::MAIN_SEPARATOR_STR),
+        )
     } else if let Some(ref default_dir) = config.package.default_dir {
         // Create a temporary resolver just for the default_dir
-        let temp_resolver = config::PathResolver::new(
-            Path::new(""),
-            &config.package.name,
-            &config.package.version,
-        );
+        let temp_resolver =
+            config::PathResolver::new(Path::new(""), &config.package.name, &config.package.version);
         temp_resolver.resolve_path(default_dir)?
     } else {
         return Err(InstallerError::Config(
@@ -128,11 +126,8 @@ pub fn install(
     };
 
     // Create path resolver with actual install dir
-    let resolver = config::PathResolver::new(
-        &install_dir,
-        &config.package.name,
-        &config.package.version,
-    );
+    let resolver =
+        config::PathResolver::new(&install_dir, &config.package.name, &config.package.version);
 
     // Check for existing installation
     if let Some(existing) = detect::detect_existing_install(&config.package.id)? {
@@ -162,10 +157,7 @@ pub fn install(
     }
 
     // Check prerequisites
-    actions::prerequisites::check_prerequisites(
-        &config.prerequisites,
-        callbacks,
-    )?;
+    actions::prerequisites::check_prerequisites(&config.prerequisites, callbacks)?;
 
     // Create install directory
     std::fs::create_dir_all(&install_dir).map_err(|e| InstallerError::DirOp {
@@ -295,10 +287,7 @@ mod tests {
             PromptResponse::Yes
         }
         fn on_log(&self, level: LogLevel, message: &str) {
-            self.logs
-                .lock()
-                .unwrap()
-                .push((level, message.to_string()));
+            self.logs.lock().unwrap().push((level, message.to_string()));
         }
         fn on_error(&self, _error: &InstallerError) -> ErrorAction {
             ErrorAction::Abort

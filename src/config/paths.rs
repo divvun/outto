@@ -78,11 +78,9 @@ impl PathResolver {
             );
             variables.insert(
                 "startup".into(),
-                up.join(
-                    "AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
-                )
-                .to_string_lossy()
-                .into_owned(),
+                up.join("AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup")
+                    .to_string_lossy()
+                    .into_owned(),
             );
         }
     }
@@ -100,7 +98,10 @@ impl PathResolver {
         variables.insert("commonappdata".into(), "/etc".into());
         variables.insert("tmp".into(), "/tmp".into());
         variables.insert("desktop".into(), format!("{home}/Desktop"));
-        variables.insert("startmenu".into(), format!("{home}/.local/share/applications"));
+        variables.insert(
+            "startmenu".into(),
+            format!("{home}/.local/share/applications"),
+        );
         variables.insert("startup".into(), format!("{home}/.config/autostart"));
     }
 
@@ -164,11 +165,7 @@ mod tests {
 
     #[test]
     fn test_resolve_simple_variable() {
-        let resolver = PathResolver::new(
-            Path::new("C:\\Program Files\\MyApp"),
-            "MyApp",
-            "1.0.0",
-        );
+        let resolver = PathResolver::new(Path::new("C:\\Program Files\\MyApp"), "MyApp", "1.0.0");
         assert_eq!(
             resolver.resolve("$app/bin").unwrap(),
             "C:\\Program Files\\MyApp/bin"
@@ -206,14 +203,19 @@ mod tests {
     fn test_custom_variable() {
         let mut resolver = PathResolver::new(Path::new("/opt"), "x", "1.0.0");
         resolver.set_variable("custom", "/custom/path");
-        assert_eq!(resolver.resolve("$custom/file").unwrap(), "/custom/path/file");
+        assert_eq!(
+            resolver.resolve("$custom/file").unwrap(),
+            "/custom/path/file"
+        );
     }
 
     #[test]
     fn test_resolve_multiple_variables() {
         let resolver = PathResolver::new(Path::new("/opt/myapp"), "MyApp", "2.0.0");
         assert_eq!(
-            resolver.resolve("$app/$package.name/$package.version").unwrap(),
+            resolver
+                .resolve("$app/$package.name/$package.version")
+                .unwrap(),
             "/opt/myapp/MyApp/2.0.0"
         );
     }
@@ -221,10 +223,7 @@ mod tests {
     #[test]
     fn test_resolve_adjacent_variables() {
         let resolver = PathResolver::new(Path::new("/opt"), "App", "1.0.0");
-        assert_eq!(
-            resolver.resolve("$app$package.name").unwrap(),
-            "/optApp"
-        );
+        assert_eq!(resolver.resolve("$app$package.name").unwrap(), "/optApp");
     }
 
     #[test]
@@ -235,11 +234,7 @@ mod tests {
 
     #[test]
     fn test_resolve_with_backslashes() {
-        let resolver = PathResolver::new(
-            Path::new("C:\\Program Files\\MyApp"),
-            "MyApp",
-            "1.0.0",
-        );
+        let resolver = PathResolver::new(Path::new("C:\\Program Files\\MyApp"), "MyApp", "1.0.0");
         assert_eq!(
             resolver.resolve("$app\\bin\\sub").unwrap(),
             "C:\\Program Files\\MyApp\\bin\\sub"

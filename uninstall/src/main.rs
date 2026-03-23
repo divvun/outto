@@ -40,9 +40,7 @@ fn main() {
             i += 1;
             install_dir = args.get(i).map(PathBuf::from);
         } else if upper.starts_with("/DIR=") {
-            install_dir = Some(PathBuf::from(
-                arg["/DIR=".len()..].trim_matches('"'),
-            ));
+            install_dir = Some(PathBuf::from(arg["/DIR=".len()..].trim_matches('"')));
         } else {
             fatal_error(&format!(
                 "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT]"
@@ -118,8 +116,8 @@ pub fn relocate_self() {
         return;
     }
 
-    let temp_path = std::env::temp_dir()
-        .join(format!("outto-uninstall-{}.exe", std::process::id()));
+    let temp_path =
+        std::env::temp_dir().join(format!("outto-uninstall-{}.exe", std::process::id()));
 
     // Move (rename) — works on running exes on Windows
     let _ = std::fs::rename(&exe, &temp_path);
@@ -203,7 +201,10 @@ fn fatal_error(msg: &str) -> ! {
         use std::os::windows::ffi::OsStrExt;
 
         fn to_wide(s: &str) -> Vec<u16> {
-            OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+            OsStr::new(s)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
         }
 
         let text = to_wide(msg);

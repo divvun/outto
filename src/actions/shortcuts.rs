@@ -42,7 +42,11 @@ pub fn create_shortcut(
 
     callbacks.on_log(
         LogLevel::Info,
-        &format!("Creating shortcut: {} -> {}", shortcut_path.display(), target),
+        &format!(
+            "Creating shortcut: {} -> {}",
+            shortcut_path.display(),
+            target
+        ),
     );
 
     // Ensure directory exists
@@ -119,10 +123,7 @@ fn create_shortcut_powershell(
     );
 
     if let Some(args) = arguments {
-        script.push_str(&format!(
-            " $s.Arguments = '{}';",
-            args.replace('\'', "''")
-        ));
+        script.push_str(&format!(" $s.Arguments = '{}';", args.replace('\'', "''")));
     }
     if let Some(wd) = working_dir {
         script.push_str(&format!(

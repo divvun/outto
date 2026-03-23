@@ -69,7 +69,11 @@ impl AppState {
         no_cancel: bool,
     ) -> Self {
         Self {
-            step: if silent { Step::Uninstalling } else { Step::Confirm },
+            step: if silent {
+                Step::Uninstalling
+            } else {
+                Step::Confirm
+            },
             app_name,
             app_version,
             install_dir,
@@ -127,7 +131,11 @@ pub fn run(state: AppState) -> iced::Result {
 
     iced::application(
         move || {
-            let state = state_cell.lock().unwrap().take().expect("boot called twice");
+            let state = state_cell
+                .lock()
+                .unwrap()
+                .take()
+                .expect("boot called twice");
             let task = if auto_start {
                 Task::done(Message::StartUninstall)
             } else {
@@ -139,6 +147,7 @@ pub fn run(state: AppState) -> iced::Result {
         view,
     )
     .subscription(subscription)
+    .theme(|_| theme::windows11_theme())
     .window_size(iced::Size::new(theme::WINDOW_WIDTH, theme::WINDOW_HEIGHT))
     .resizable(false)
     .run()
@@ -180,10 +189,7 @@ fn view(state: &AppState) -> Element<'_, Message> {
     .height(theme::HEADER_HEIGHT)
     .padding([0.0, theme::PADDING])
     .center_y(theme::HEADER_HEIGHT)
-    .style(|_theme| container::Style {
-        background: Some(theme::HEADER_BG.into()),
-        ..Default::default()
-    });
+    .style(theme::header_style);
 
     let content: Element<'_, Message> = match state.step {
         Step::Confirm => view_confirm(state),
@@ -202,7 +208,8 @@ fn view_confirm(state: &AppState) -> Element<'_, Message> {
         text(format!(
             "Are you sure you want to completely remove {} v{} and all of its components?",
             state.app_name, state.app_version,
-        )).size(theme::FONT_BODY),
+        ))
+        .size(theme::FONT_BODY),
         space::vertical(),
         text("Click Uninstall to proceed, or Cancel to exit.").size(theme::FONT_SECONDARY),
     ]
@@ -220,7 +227,8 @@ fn view_progress(state: &AppState) -> Element<'_, Message> {
 
     let mut log_col = column![].spacing(2);
     for line in &state.progress.log_lines {
-        log_col = log_col.push(text(format!("[{:?}] {}", line.level, line.message)).size(theme::FONT_LOG));
+        log_col = log_col
+            .push(text(format!("[{:?}] {}", line.level, line.message)).size(theme::FONT_LOG));
     }
     col = col.push(
         container(scrollable(log_col))
@@ -239,10 +247,13 @@ fn view_complete(state: &AppState) -> Element<'_, Message> {
     match &state.result {
         Some(Ok(())) => {
             col = col.push(text("Uninstall Complete").size(theme::FONT_TITLE));
-            col = col.push(text(format!(
-                "{} has been successfully removed from your computer.",
-                state.app_name,
-            )).size(theme::FONT_BODY));
+            col = col.push(
+                text(format!(
+                    "{} has been successfully removed from your computer.",
+                    state.app_name,
+                ))
+                .size(theme::FONT_BODY),
+            );
         }
         Some(Err(e)) => {
             col = col.push(text("Uninstall Failed").size(theme::FONT_TITLE));
@@ -263,6 +274,7 @@ fn nav_button(label: &str) -> iced::widget::Button<'_, Message> {
     button(text(label).size(theme::FONT_SECONDARY).center())
         .width(100)
         .padding([8, 16])
+        .style(theme::win11_button)
 }
 
 fn view_button_bar(state: &AppState) -> Element<'_, Message> {
@@ -290,8 +302,7 @@ fn view_button_bar(state: &AppState) -> Element<'_, Message> {
 }
 
 fn subscription(state: &AppState) -> Subscription<Message> {
-    if state.step != Step::Uninstalling
-        || !BRIDGE_ACTIVE.load(std::sync::atomic::Ordering::SeqCst)
+    if state.step != Step::Uninstalling || !BRIDGE_ACTIVE.load(std::sync::atomic::Ordering::SeqCst)
     {
         return Subscription::none();
     }

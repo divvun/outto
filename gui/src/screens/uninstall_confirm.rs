@@ -14,7 +14,8 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     )));
 
     col = col.push(space::vertical());
-    col = col.push(text("Click Uninstall to proceed, or Cancel to exit.").size(theme::FONT_SECONDARY));
+    col = col
+        .push(text("Click Uninstall to proceed, or Cancel to exit.").size(theme::FONT_SECONDARY));
 
     container(col).width(Fill).height(Fill).into()
 }

@@ -80,8 +80,7 @@ pub fn embed_section(exe_path: &Path, section_name: &str, data: &[u8]) -> io::Re
     }
 
     // Compute where the new section header goes
-    let new_header_offset =
-        info.section_table_offset + (info.number_of_sections as u64) * 40;
+    let new_header_offset = info.section_table_offset + (info.number_of_sections as u64) * 40;
 
     // Check there's room for the new header before the first section's raw data
     let first_section_raw_start = {
@@ -163,7 +162,10 @@ fn parse_pe_info(f: &mut File) -> io::Result<PeInfo> {
     f.seek(SeekFrom::Start(0))?;
     let dos_magic = read_u16(f)?;
     if dos_magic != DOS_MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Not a valid PE file (bad DOS magic)"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Not a valid PE file (bad DOS magic)",
+        ));
     }
 
     // e_lfanew at offset 0x3C
@@ -174,7 +176,10 @@ fn parse_pe_info(f: &mut File) -> io::Result<PeInfo> {
     f.seek(SeekFrom::Start(e_lfanew))?;
     let pe_sig = read_u32(f)?;
     if pe_sig != PE_SIGNATURE {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Not a valid PE file (bad PE signature)"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Not a valid PE file (bad PE signature)",
+        ));
     }
 
     let coff_header_offset = e_lfanew + 4;
@@ -196,7 +201,10 @@ fn parse_pe_info(f: &mut File) -> io::Result<PeInfo> {
     f.seek(SeekFrom::Start(optional_header_offset))?;
     let opt_magic = read_u16(f)?;
     if opt_magic != PE32_MAGIC && opt_magic != PE32PLUS_MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Unknown optional header magic"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Unknown optional header magic",
+        ));
     }
 
     // SectionAlignment at offset 32, FileAlignment at offset 36 (from optional header start)

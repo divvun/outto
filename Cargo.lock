@@ -2509,6 +2509,7 @@ dependencies = [
  "outto",
  "tempfile",
  "walkdir",
+ "zstd",
 ]
 
 [[package]]
@@ -2523,6 +2524,15 @@ dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
  "winres",
+]
+
+[[package]]
+name = "outto-sfx"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
+ "winres",
+ "zstd",
 ]
 
 [[package]]

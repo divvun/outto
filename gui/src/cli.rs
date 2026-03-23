@@ -58,7 +58,14 @@ pub fn parse_args() -> Result<Args, String> {
     // If the first arg starts with / it's a flag, not a subcommand — embedded mode with flags
     if subcommand.starts_with('/') {
         let mut flags = CliFlags::default();
-        parse_flags(&args[1..], &mut flags, &mut None, &mut None, &mut None, &mut None)?;
+        parse_flags(
+            &args[1..],
+            &mut flags,
+            &mut None,
+            &mut None,
+            &mut None,
+            &mut None,
+        )?;
         return Ok(Args {
             mode: Mode::InstallEmbedded,
             flags,
@@ -73,19 +80,28 @@ pub fn parse_args() -> Result<Args, String> {
     let mut uninstall_dir: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
 
-    parse_flags(rest, &mut flags, &mut config_path, &mut source_dir, &mut uninstall_dir, &mut output)?;
+    parse_flags(
+        rest,
+        &mut flags,
+        &mut config_path,
+        &mut source_dir,
+        &mut uninstall_dir,
+        &mut output,
+    )?;
 
     let mode = match subcommand.as_str() {
-        "install" => {
-            match (config_path, source_dir) {
-                (Some(config_path), Some(source_dir)) => Mode::Install {
-                    config_path,
-                    source_dir,
-                },
-                (None, None) => Mode::InstallEmbedded,
-                _ => return Err("Either provide both --config and --source, or neither (embedded mode)".into()),
+        "install" => match (config_path, source_dir) {
+            (Some(config_path), Some(source_dir)) => Mode::Install {
+                config_path,
+                source_dir,
+            },
+            (None, None) => Mode::InstallEmbedded,
+            _ => {
+                return Err(
+                    "Either provide both --config and --source, or neither (embedded mode)".into(),
+                )
             }
-        }
+        },
         "uninstall" => {
             let dir = uninstall_dir
                 .or_else(|| flags.dir.as_ref().map(PathBuf::from))

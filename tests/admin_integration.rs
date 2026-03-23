@@ -37,7 +37,10 @@ use windows_sys::Win32::System::Registry::*;
 // ---------------------------------------------------------------------------
 
 fn to_wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 fn hkcr_key_exists(subkey: &str) -> bool {
@@ -114,8 +117,15 @@ fn read_hklm_string(subkey: &str, value_name: &str) -> Option<String> {
     let name_wide = to_wide(value_name);
     let mut hkey: HKEY = std::ptr::null_mut();
 
-    let result =
-        unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, key_wide.as_ptr(), 0, KEY_READ, &mut hkey) };
+    let result = unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            key_wide.as_ptr(),
+            0,
+            KEY_READ,
+            &mut hkey,
+        )
+    };
     if result != 0 {
         return None;
     }
@@ -221,7 +231,9 @@ fn test_admin_association_create_and_remove() {
 
     // Clean up from prior runs
     cleanup.hkcr_keys.push(ext.to_string());
-    cleanup.hkcr_keys.push(format!("{prog_id}\\shell\\open\\command"));
+    cleanup
+        .hkcr_keys
+        .push(format!("{prog_id}\\shell\\open\\command"));
     cleanup.hkcr_keys.push(format!("{prog_id}\\shell\\open"));
     cleanup.hkcr_keys.push(format!("{prog_id}\\shell"));
     cleanup.hkcr_keys.push(format!("{prog_id}\\DefaultIcon"));
@@ -349,17 +361,19 @@ fn test_admin_font_install_and_uninstall() {
     let result = fonts::install_font(&entry, &dir, &mut manifest, &callbacks);
 
     // Track for cleanup regardless
-    let fonts_dir = PathBuf::from(
-        std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()),
-    )
-    .join("Fonts")
-    .join("OuttoTestFont.ttf");
+    let fonts_dir =
+        PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()))
+            .join("Fonts")
+            .join("OuttoTestFont.ttf");
     cleanup.font_files.push(fonts_dir.clone());
     cleanup.font_names.push("OuttoTestFont".to_string());
 
     if result.is_ok() {
         // If font install succeeded, verify
-        assert!(fonts_dir.exists(), "Font file should be copied to Fonts dir");
+        assert!(
+            fonts_dir.exists(),
+            "Font file should be copied to Fonts dir"
+        );
 
         let reg_val = read_hklm_string(
             "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts",
@@ -369,7 +383,10 @@ fn test_admin_font_install_and_uninstall() {
 
         // Uninstall
         fonts::uninstall_font(&fonts_dir, "OuttoTestFont").unwrap();
-        assert!(!fonts_dir.exists(), "Font file should be removed after uninstall");
+        assert!(
+            !fonts_dir.exists(),
+            "Font file should be removed after uninstall"
+        );
     }
     // If it failed (invalid TTF), that's expected — we still exercised the code path
 }
@@ -408,10 +425,10 @@ fn test_admin_create_directory_with_permissions() {
     assert!(target.exists());
 
     // Should have both DirectoryCreated and PermissionsSet records
-    assert!(manifest.actions.iter().any(|a| matches!(
-        a,
-        ActionRecord::DirectoryCreated { .. }
-    )));
+    assert!(manifest
+        .actions
+        .iter()
+        .any(|a| matches!(a, ActionRecord::DirectoryCreated { .. })));
     assert!(manifest.actions.iter().any(|a| matches!(
         a,
         ActionRecord::PermissionsSet { identity, access, .. }

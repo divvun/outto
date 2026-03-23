@@ -28,7 +28,10 @@ pub fn detect_existing_install(package_id: &str) -> InstallerResult<Option<Exist
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 #[cfg(windows)]
@@ -101,9 +104,7 @@ fn detect_windows(package_id: &str) -> InstallerResult<Option<ExistingInstall>> 
         let key_wide = to_wide(key);
         let mut hkey: HKEY = std::ptr::null_mut();
 
-        let result = unsafe {
-            RegOpenKeyExW(*root, key_wide.as_ptr(), 0, KEY_READ, &mut hkey)
-        };
+        let result = unsafe { RegOpenKeyExW(*root, key_wide.as_ptr(), 0, KEY_READ, &mut hkey) };
 
         if result == 0 {
             let install_dir = read_string_value(hkey, "InstallLocation")
@@ -283,9 +284,7 @@ pub fn remove_uninstall_registry(package_id: &str) -> InstallerResult<()> {
     {
         use windows_sys::Win32::System::Registry::*;
 
-        let key = format!(
-            "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{package_id}"
-        );
+        let key = format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{package_id}");
         let key_wide = to_wide(&key);
 
         unsafe {

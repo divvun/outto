@@ -5,12 +5,17 @@ use crate::app::{AppState, Message};
 use crate::theme;
 
 pub fn view(state: &AppState) -> Element<'_, Message> {
-    let license_text = state.license_text.as_deref().unwrap_or("No license text available.");
+    let license_text = state
+        .license_text
+        .as_deref()
+        .unwrap_or("No license text available.");
 
     let mut col = column![].spacing(theme::SPACING).padding(theme::PADDING);
 
     col = col.push(text("License Agreement").size(theme::FONT_TITLE));
-    col = col.push(text("Please read the following license agreement carefully.").size(theme::FONT_SECONDARY));
+    col = col.push(
+        text("Please read the following license agreement carefully.").size(theme::FONT_SECONDARY),
+    );
 
     col = col.push(
         container(scrollable(text(license_text).size(theme::FONT_SECONDARY)))
@@ -22,9 +27,9 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     col = col.push(
         checkbox(state.license_accepted)
             .label("I accept the terms in the License Agreement")
-            .size(theme::FONT_BODY)
+            .size(14)
             .text_size(theme::FONT_BODY)
-            .text_line_height(1.0)
+            .spacing(8)
             .on_toggle(Message::LicenseAccepted),
     );
 

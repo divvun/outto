@@ -243,13 +243,14 @@ impl AppState {
         let mut selected_components = HashMap::new();
         if let Some(ref comp_list) = flags.components {
             for comp in &config.components {
-                selected_components
-                    .insert(comp.name.clone(), comp.required || comp_list.contains(&comp.name));
+                selected_components.insert(
+                    comp.name.clone(),
+                    comp.required || comp_list.contains(&comp.name),
+                );
             }
         } else {
             for comp in &config.components {
-                selected_components
-                    .insert(comp.name.clone(), comp.required || comp.default);
+                selected_components.insert(comp.name.clone(), comp.required || comp.default);
             }
         }
 
@@ -400,33 +401,37 @@ impl AppState {
 // --- Iced Application ---
 
 pub fn run(state: AppState) -> iced::Result {
-    let auto_start =
-        state.step == WizardStep::Installing || state.step == WizardStep::Uninstalling;
+    let auto_start = state.step == WizardStep::Installing || state.step == WizardStep::Uninstalling;
     let auto_mode = state.mode;
 
     // iced 0.14 boot must be Fn (not FnOnce). Use a Mutex to allow moving state out.
     let state_cell = Mutex::new(Some((state, auto_start, auto_mode)));
 
-    iced::application(move || {
-        let (state, auto_start, auto_mode) = state_cell
-            .lock()
-            .unwrap()
-            .take()
-            .expect("boot called more than once");
-        let task = if auto_start {
-            match auto_mode {
-                AppMode::Install => Task::done(Message::StartInstall),
-                AppMode::Uninstall => Task::done(Message::StartUninstall),
-            }
-        } else {
-            Task::none()
-        };
-        (state, task)
-    }, update, view)
-        .subscription(subscription)
-        .window_size(iced::Size::new(theme::WINDOW_WIDTH, theme::WINDOW_HEIGHT))
-        .resizable(false)
-        .run()
+    iced::application(
+        move || {
+            let (state, auto_start, auto_mode) = state_cell
+                .lock()
+                .unwrap()
+                .take()
+                .expect("boot called more than once");
+            let task = if auto_start {
+                match auto_mode {
+                    AppMode::Install => Task::done(Message::StartInstall),
+                    AppMode::Uninstall => Task::done(Message::StartUninstall),
+                }
+            } else {
+                Task::none()
+            };
+            (state, task)
+        },
+        update,
+        view,
+    )
+    .subscription(subscription)
+    .theme(|_| theme::windows11_theme())
+    .window_size(iced::Size::new(theme::WINDOW_WIDTH, theme::WINDOW_HEIGHT))
+    .resizable(false)
+    .run()
 }
 
 fn update(state: &mut AppState, message: Message) -> Task<Message> {
@@ -520,10 +525,7 @@ fn view(state: &AppState) -> Element<'_, Message> {
     .height(theme::HEADER_HEIGHT)
     .padding([0.0, theme::PADDING])
     .center_y(theme::HEADER_HEIGHT)
-    .style(|_theme| container::Style {
-        background: Some(theme::HEADER_BG.into()),
-        ..Default::default()
-    });
+    .style(theme::header_style);
 
     let content: Element<Message> = match state.step {
         WizardStep::Welcome => screens::welcome::view(state),
@@ -547,6 +549,7 @@ fn nav_button(label: &str) -> iced::widget::Button<'_, Message> {
     button(text(label).size(theme::FONT_SECONDARY).center())
         .width(100)
         .padding([8, 16])
+        .style(theme::win11_button)
 }
 
 fn view_button_bar(state: &AppState) -> Element<'_, Message> {
@@ -612,11 +615,7 @@ fn view_button_bar(state: &AppState) -> Element<'_, Message> {
         }
     }
 
-    container(bar)
-        .width(Fill)
-        .height(50)
-        .center_y(50)
-        .into()
+    container(bar).width(Fill).height(50).center_y(50).into()
 }
 
 fn subscription(state: &AppState) -> Subscription<Message> {

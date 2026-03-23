@@ -9,11 +9,17 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     let mut col = column![].spacing(theme::SPACING).padding(theme::PADDING);
 
     col = col.push(text("Ready to Install").size(theme::FONT_TITLE));
-    col = col.push(text("Setup is now ready to begin installing on your computer.").size(theme::FONT_SECONDARY));
+    col = col.push(
+        text("Setup is now ready to begin installing on your computer.")
+            .size(theme::FONT_SECONDARY),
+    );
     col = col.push(space::Space::new().height(8));
 
     col = col.push(text(format!("Application: {} v{}", pkg.name, pkg.version)));
-    col = col.push(text(format!("Install directory: {}", theme::normalize_path(&state.install_dir))));
+    col = col.push(text(format!(
+        "Install directory: {}",
+        theme::normalize_path(&state.install_dir)
+    )));
 
     if !state.config.components.is_empty() {
         let selected: Vec<&str> = state

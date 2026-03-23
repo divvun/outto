@@ -25,10 +25,7 @@ pub fn install_font(
             message: "no filename".into(),
         })?;
 
-    callbacks.on_log(
-        LogLevel::Info,
-        &format!("Installing font: {}", font_name),
-    );
+    callbacks.on_log(LogLevel::Info, &format!("Installing font: {}", font_name));
 
     #[cfg(windows)]
     {
@@ -68,7 +65,10 @@ pub fn install_font(
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 #[cfg(windows)]

@@ -20,9 +20,9 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
 
         let cb = checkbox(checked)
             .label(label.to_string())
-            .size(theme::FONT_BODY)
+            .size(14)
             .text_size(theme::FONT_BODY)
-            .text_line_height(1.0);
+            .spacing(8);
         if comp.required {
             // Required components are always checked and not toggleable
             col = col.push(cb);

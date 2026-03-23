@@ -6,10 +6,7 @@ use crate::manifest::rollback::rollback_actions;
 use crate::manifest::InstallManifest;
 use crate::{InstallerCallbacks, LogLevel};
 
-pub fn uninstall(
-    install_dir: &Path,
-    callbacks: &dyn InstallerCallbacks,
-) -> InstallerResult<()> {
+pub fn uninstall(install_dir: &Path, callbacks: &dyn InstallerCallbacks) -> InstallerResult<()> {
     callbacks.on_log(LogLevel::Info, "Starting uninstallation");
     callbacks.on_progress("uninstall", 0, 1);
 

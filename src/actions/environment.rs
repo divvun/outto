@@ -28,14 +28,12 @@ pub fn compute_env_value(
                 format!("{new_value};{current}")
             })
         }
-        EnvAction::Remove => {
-            current.map(|c| {
-                c.split(';')
-                    .filter(|part| *part != new_value)
-                    .collect::<Vec<_>>()
-                    .join(";")
-            })
-        }
+        EnvAction::Remove => current.map(|c| {
+            c.split(';')
+                .filter(|part| *part != new_value)
+                .collect::<Vec<_>>()
+                .join(";")
+        }),
     }
 }
 
@@ -104,21 +102,23 @@ pub fn apply_env_entry(
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 #[cfg(windows)]
-fn env_registry_location(scope: &EnvScope) -> (windows_sys::Win32::System::Registry::HKEY, &'static str) {
+fn env_registry_location(
+    scope: &EnvScope,
+) -> (windows_sys::Win32::System::Registry::HKEY, &'static str) {
     use windows_sys::Win32::System::Registry::*;
     match scope {
         EnvScope::System => (
             HKEY_LOCAL_MACHINE,
             "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
         ),
-        EnvScope::User => (
-            HKEY_CURRENT_USER,
-            "Environment",
-        ),
+        EnvScope::User => (HKEY_CURRENT_USER, "Environment"),
     }
 }
 
@@ -131,9 +131,7 @@ fn read_env_var(name: &str, scope: &EnvScope) -> InstallerResult<Option<String>>
     let name_wide = to_wide(name);
 
     let mut hkey: HKEY = std::ptr::null_mut();
-    let result = unsafe {
-        RegOpenKeyExW(hkey_root, key_wide.as_ptr(), 0, KEY_READ, &mut hkey)
-    };
+    let result = unsafe { RegOpenKeyExW(hkey_root, key_wide.as_ptr(), 0, KEY_READ, &mut hkey) };
     if result != 0 {
         return Ok(None);
     }
@@ -196,9 +194,8 @@ fn write_env_var(name: &str, value: &str, scope: &EnvScope) -> InstallerResult<(
     let data_bytes: Vec<u8> = value_wide.iter().flat_map(|w| w.to_le_bytes()).collect();
 
     let mut hkey: HKEY = std::ptr::null_mut();
-    let result = unsafe {
-        RegOpenKeyExW(hkey_root, key_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey)
-    };
+    let result =
+        unsafe { RegOpenKeyExW(hkey_root, key_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) };
     if result != 0 {
         return Err(InstallerError::Environment {
             name: name.to_string(),
@@ -274,9 +271,8 @@ pub fn rollback_env_var(
             let name_wide = to_wide(name);
 
             let mut hkey: HKEY = std::ptr::null_mut();
-            let result = unsafe {
-                RegOpenKeyExW(hkey_root, key_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey)
-            };
+            let result =
+                unsafe { RegOpenKeyExW(hkey_root, key_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) };
             if result == 0 {
                 unsafe {
                     RegDeleteValueW(hkey, name_wide.as_ptr());

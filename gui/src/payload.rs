@@ -46,14 +46,22 @@ pub fn extract_embedded_payload() -> Result<Option<ExtractedPayload>, Box<dyn st
     }
 
     // Open and extract
-    let reader = BoxReader::open(&temp_box_path)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Failed to open embedded payload: {e}")))?;
+    let reader = BoxReader::open(&temp_box_path).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Failed to open embedded payload: {e}"),
+        )
+    })?;
 
     let extract_dir = temp_dir.path().join("contents");
     fs::create_dir_all(&extract_dir)?;
 
-    reader.extract_all(&extract_dir)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Failed to extract payload: {e}")))?;
+    reader.extract_all(&extract_dir).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Failed to extract payload: {e}"),
+        )
+    })?;
 
     // Load config
     let config_path = extract_dir.join("outto.toml");

@@ -9,10 +9,8 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
 
     let mut col = column![].spacing(theme::SPACING).padding(theme::PADDING);
 
-    col = col.push(text(format!(
-        "Welcome to the {} Setup Wizard",
-        pkg.name
-    )).size(theme::FONT_TITLE));
+    col =
+        col.push(text(format!("Welcome to the {} Setup Wizard", pkg.name)).size(theme::FONT_TITLE));
 
     col = col.push(space::Space::new().height(10));
 
@@ -27,7 +25,8 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
 
     col = col.push(space::vertical());
 
-    col = col.push(text("Click Next to continue, or Cancel to exit Setup.").size(theme::FONT_SECONDARY));
+    col = col
+        .push(text("Click Next to continue, or Cancel to exit Setup.").size(theme::FONT_SECONDARY));
 
     container(col).width(Fill).height(Fill).into()
 }

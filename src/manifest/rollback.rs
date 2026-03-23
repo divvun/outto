@@ -14,10 +14,7 @@ pub fn rollback_actions(
 
     for (i, action) in actions.iter().rev().enumerate() {
         callbacks.on_progress("rollback", i as u64, total);
-        callbacks.on_log(
-            LogLevel::Info,
-            &format!("Rolling back action: {action:?}"),
-        );
+        callbacks.on_log(LogLevel::Info, &format!("Rolling back action: {action:?}"));
 
         if let Err(e) = rollback_single(action, restore_backups) {
             let msg = format!("Failed to rollback {action:?}: {e}");
@@ -127,8 +124,13 @@ fn rollback_single(action: &ActionRecord, restore_backups: bool) -> InstallerRes
         }
         // Registry, env vars, services, etc. require platform-specific rollback
         // which is implemented in their respective action modules
-        ActionRecord::RegistryKeyCreated { root, key, on_uninstall } => {
-            if !restore_backups && *on_uninstall == crate::config::types::UninstallBehavior::Nothing {
+        ActionRecord::RegistryKeyCreated {
+            root,
+            key,
+            on_uninstall,
+        } => {
+            if !restore_backups && *on_uninstall == crate::config::types::UninstallBehavior::Nothing
+            {
                 return Ok(()); // Uninstall: leave key alone
             }
             #[cfg(windows)]
@@ -144,7 +146,8 @@ fn rollback_single(action: &ActionRecord, restore_backups: bool) -> InstallerRes
             previous_data,
             on_uninstall,
         } => {
-            if !restore_backups && *on_uninstall == crate::config::types::UninstallBehavior::Nothing {
+            if !restore_backups && *on_uninstall == crate::config::types::UninstallBehavior::Nothing
+            {
                 return Ok(()); // Uninstall: leave value alone
             }
             #[cfg(windows)]
@@ -171,7 +174,11 @@ fn rollback_single(action: &ActionRecord, restore_backups: bool) -> InstallerRes
         } => {
             #[cfg(windows)]
             {
-                crate::actions::environment::rollback_env_var(name, scope, previous_value.as_deref())?;
+                crate::actions::environment::rollback_env_var(
+                    name,
+                    scope,
+                    previous_value.as_deref(),
+                )?;
             }
             Ok(())
         }
@@ -265,10 +272,7 @@ mod tests {
 
     impl InstallerCallbacks for TestCallbacks {
         fn on_progress(&self, phase: &str, _current: u64, _total: u64) {
-            self.progress_phases
-                .lock()
-                .unwrap()
-                .push(phase.to_string());
+            self.progress_phases.lock().unwrap().push(phase.to_string());
         }
         fn on_prompt(&self, _prompt: Prompt) -> PromptResponse {
             PromptResponse::Yes

@@ -16,7 +16,8 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     // Log area
     let mut log_col = column![].spacing(2);
     for line in &state.progress.log_lines {
-        log_col = log_col.push(text(format!("[{:?}] {}", line.level, line.message)).size(theme::FONT_LOG));
+        log_col = log_col
+            .push(text(format!("[{:?}] {}", line.level, line.message)).size(theme::FONT_LOG));
     }
     col = col.push(
         container(scrollable(log_col))
@@ -40,7 +41,10 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
 fn prompt_view(pending: &PendingPrompt) -> Element<'_, Message> {
     let prompt_text = match &pending.prompt {
         outto::Prompt::OverwriteFile { path } => {
-            format!("File already exists: {}\nOverwrite?", theme::normalize_path(&path.display().to_string()))
+            format!(
+                "File already exists: {}\nOverwrite?",
+                theme::normalize_path(&path.display().to_string())
+            )
         }
         outto::Prompt::ExistingInstallDetected { existing } => {
             format!(

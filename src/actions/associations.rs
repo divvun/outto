@@ -56,7 +56,10 @@ pub fn create_association(
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 #[cfg(windows)]
@@ -77,11 +80,7 @@ fn register_association_windows(
         set_hkcr_value(&format!("{prog_id}\\DefaultIcon"), "", ico)?;
     }
 
-    set_hkcr_value(
-        &format!("{prog_id}\\shell\\open\\command"),
-        "",
-        command,
-    )?;
+    set_hkcr_value(&format!("{prog_id}\\shell\\open\\command"), "", command)?;
 
     Ok(())
 }

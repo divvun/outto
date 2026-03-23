@@ -10,3 +10,4 @@ outto = { path = ".." }
 box-format = { path = "../../box", default-features = false, features = ["std", "zstd", "xz", "reader", "writer"] }
 tempfile = "3"
 walkdir = "2"
+zstd = { version = "0.13", default-features = false }

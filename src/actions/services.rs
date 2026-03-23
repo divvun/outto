@@ -63,7 +63,10 @@ pub fn install_service(
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 #[cfg(windows)]
@@ -81,7 +84,11 @@ fn create_windows_service(
     let exe_wide = to_wide(executable);
 
     let sc_manager = unsafe {
-        OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CREATE_SERVICE)
+        OpenSCManagerW(
+            std::ptr::null(),
+            std::ptr::null(),
+            SC_MANAGER_CREATE_SERVICE,
+        )
     };
     if sc_manager.is_null() {
         return Err(InstallerError::Service {
@@ -155,9 +162,8 @@ fn start_service_by_name(name: &str) -> InstallerResult<()> {
 
     let name_wide = to_wide(name);
 
-    let sc_manager = unsafe {
-        OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT)
-    };
+    let sc_manager =
+        unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT) };
     if sc_manager.is_null() {
         return Err(InstallerError::Service {
             name: name.to_string(),
@@ -196,9 +202,8 @@ pub fn stop_service(name: &str) -> InstallerResult<()> {
 
     let name_wide = to_wide(name);
 
-    let sc_manager = unsafe {
-        OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT)
-    };
+    let sc_manager =
+        unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT) };
     if sc_manager.is_null() {
         return Ok(());
     }
@@ -226,9 +231,8 @@ pub fn delete_service(name: &str) -> InstallerResult<()> {
     const DELETE_ACCESS: u32 = 0x00010000;
     let name_wide = to_wide(name);
 
-    let sc_manager = unsafe {
-        OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT)
-    };
+    let sc_manager =
+        unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT) };
     if sc_manager.is_null() {
         return Err(InstallerError::Service {
             name: name.to_string(),
@@ -236,9 +240,7 @@ pub fn delete_service(name: &str) -> InstallerResult<()> {
         });
     }
 
-    let service = unsafe {
-        OpenServiceW(sc_manager, name_wide.as_ptr(), DELETE_ACCESS)
-    };
+    let service = unsafe { OpenServiceW(sc_manager, name_wide.as_ptr(), DELETE_ACCESS) };
     if service.is_null() {
         unsafe { CloseServiceHandle(sc_manager) };
         return Err(InstallerError::Service {

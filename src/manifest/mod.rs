@@ -86,7 +86,12 @@ pub enum ActionRecord {
 }
 
 impl InstallManifest {
-    pub fn new(package_id: &str, package_name: &str, package_version: &str, install_dir: &Path) -> Self {
+    pub fn new(
+        package_id: &str,
+        package_name: &str,
+        package_version: &str,
+        install_dir: &Path,
+    ) -> Self {
         Self {
             package_id: package_id.to_string(),
             package_name: package_name.to_string(),
@@ -117,10 +122,7 @@ impl InstallManifest {
 
         let path = Self::manifest_path(&self.install_dir);
         let json = serde_json::to_string_pretty(self)?;
-        fs::write(&path, json).map_err(|e| InstallerError::FileOp {
-            path,
-            source: e,
-        })?;
+        fs::write(&path, json).map_err(|e| InstallerError::FileOp { path, source: e })?;
 
         Ok(())
     }

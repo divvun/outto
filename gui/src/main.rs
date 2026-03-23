@@ -56,7 +56,13 @@ fn run_embedded_install(flags: cli::CliFlags) {
         }
     };
 
-    run_install_inner(flags, payload.config, payload.source_dir, payload.license_text, payload.uninstall_exe);
+    run_install_inner(
+        flags,
+        payload.config,
+        payload.source_dir,
+        payload.license_text,
+        payload.uninstall_exe,
+    );
 }
 
 fn run_install(flags: cli::CliFlags, config_path: PathBuf, source_dir: PathBuf) {
@@ -104,17 +110,13 @@ fn run_install_inner(
 
     // /VERYSILENT: no GUI at all
     if flags.very_silent {
-        let install_dir = flags
-            .dir
-            .as_ref()
-            .map(PathBuf::from)
-            .or_else(|| {
-                if default_install_dir.is_empty() {
-                    None
-                } else {
-                    Some(PathBuf::from(&default_install_dir))
-                }
-            });
+        let install_dir = flags.dir.as_ref().map(PathBuf::from).or_else(|| {
+            if default_install_dir.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(&default_install_dir))
+            }
+        });
 
         let selected = flags
             .components
@@ -209,19 +211,16 @@ fn load_config_for_uninstall(install_dir: &std::path::Path) -> Config {
                 .unwrap_or("unknown")
                 .to_string();
 
-            let toml_str = format!(
-                "[package]\nid = \"{id}\"\nname = \"{name}\"\nversion = \"{version}\"\n"
-            );
+            let toml_str =
+                format!("[package]\nid = \"{id}\"\nname = \"{name}\"\nversion = \"{version}\"\n");
             if let Ok(config) = Config::from_toml(&toml_str) {
                 return config;
             }
         }
     }
 
-    Config::from_toml(
-        "[package]\nid = \"unknown\"\nname = \"Application\"\nversion = \"0.0.0\"\n",
-    )
-    .unwrap()
+    Config::from_toml("[package]\nid = \"unknown\"\nname = \"Application\"\nversion = \"0.0.0\"\n")
+        .unwrap()
 }
 
 /// Show a fatal error to the user and exit.
@@ -234,7 +233,10 @@ fn fatal_error(msg: &str) -> ! {
         use std::os::windows::ffi::OsStrExt;
 
         fn to_wide(s: &str) -> Vec<u16> {
-            OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+            OsStr::new(s)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
         }
 
         let text = to_wide(msg);

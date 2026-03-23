@@ -46,9 +46,7 @@ pub fn check_prerequisites(
     Ok(())
 }
 
-fn check_single(
-    check: &crate::config::PrerequisiteCheck,
-) -> InstallerResult<bool> {
+fn check_single(check: &crate::config::PrerequisiteCheck) -> InstallerResult<bool> {
     if let Some(ref reg_path) = check.registry {
         return check_registry(reg_path, check.value.as_deref(), check.equals.as_ref());
     }
@@ -75,7 +73,10 @@ fn check_single(
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 #[cfg(windows)]
@@ -95,9 +96,7 @@ fn check_registry(
     let key_wide = to_wide(key);
     let mut hkey: HKEY = std::ptr::null_mut();
 
-    let result = unsafe {
-        RegOpenKeyExW(hroot, key_wide.as_ptr(), 0, KEY_READ, &mut hkey)
-    };
+    let result = unsafe { RegOpenKeyExW(hroot, key_wide.as_ptr(), 0, KEY_READ, &mut hkey) };
 
     if result != 0 {
         return Ok(false);
@@ -175,10 +174,7 @@ fn check_registry(
     Ok(false)
 }
 
-fn run_prerequisite_installer(
-    installer: &str,
-    arguments: Option<&str>,
-) -> InstallerResult<()> {
+fn run_prerequisite_installer(installer: &str, arguments: Option<&str>) -> InstallerResult<()> {
     let mut cmd = Command::new(installer);
     if let Some(args) = arguments {
         cmd.args(super::run::split_args(args));

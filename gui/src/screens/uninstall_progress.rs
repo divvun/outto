@@ -13,7 +13,8 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
 
     let mut log_col = column![].spacing(2);
     for line in &state.progress.log_lines {
-        log_col = log_col.push(text(format!("[{:?}] {}", line.level, line.message)).size(theme::FONT_LOG));
+        log_col = log_col
+            .push(text(format!("[{:?}] {}", line.level, line.message)).size(theme::FONT_LOG));
     }
     col = col.push(
         container(scrollable(log_col))

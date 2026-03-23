@@ -30,7 +30,13 @@ pub fn execute_install(
     execute_install_cleanup(&config.install_cleanup, resolver, callbacks)?;
 
     // Phase: before_install commands
-    run::execute_phase_commands(&config.run, &RunPhase::BeforeInstall, resolver, manifest, callbacks)?;
+    run::execute_phase_commands(
+        &config.run,
+        &RunPhase::BeforeInstall,
+        resolver,
+        manifest,
+        callbacks,
+    )?;
 
     // Create directories
     let total_dirs = config.dirs.len();
@@ -129,7 +135,13 @@ pub fn execute_install(
     }
 
     // Phase: after_install commands
-    run::execute_phase_commands(&config.run, &RunPhase::AfterInstall, resolver, manifest, callbacks)?;
+    run::execute_phase_commands(
+        &config.run,
+        &RunPhase::AfterInstall,
+        resolver,
+        manifest,
+        callbacks,
+    )?;
 
     Ok(())
 }
@@ -152,7 +164,10 @@ fn execute_install_cleanup(
     for path_str in &cleanup.delete_paths {
         if let Ok(path) = resolver.resolve_path(path_str) {
             if path.exists() {
-                callbacks.on_log(LogLevel::Info, &format!("Cleanup: deleting {}", path.display()));
+                callbacks.on_log(
+                    LogLevel::Info,
+                    &format!("Cleanup: deleting {}", path.display()),
+                );
                 if path.is_dir() {
                     let _ = std::fs::remove_dir_all(&path);
                 } else {
@@ -177,7 +192,11 @@ fn execute_install_cleanup(
         if let Ok(Some(existing)) = crate::detect::detect_existing_install(id) {
             callbacks.on_log(
                 LogLevel::Info,
-                &format!("Cleanup: uninstalling existing {} from {}", id, existing.install_dir.display()),
+                &format!(
+                    "Cleanup: uninstalling existing {} from {}",
+                    id,
+                    existing.install_dir.display()
+                ),
             );
             let _ = crate::uninstall::uninstall(&existing.install_dir, callbacks);
         }

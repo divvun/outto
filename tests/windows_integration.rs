@@ -4,14 +4,17 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 
-use outto::actions::registry;
-use outto::actions::shortcuts;
 use outto::actions::dirs;
-use outto::actions::run;
 use outto::actions::prerequisites;
+use outto::actions::registry;
+use outto::actions::run;
+use outto::actions::shortcuts;
 use outto::config::types::*;
 use outto::config::{Config, PathResolver};
-use outto::detect::{detect_existing_install, remove_uninstall_registry, write_uninstall_registry, UninstallRegistryInfo};
+use outto::detect::{
+    detect_existing_install, remove_uninstall_registry, write_uninstall_registry,
+    UninstallRegistryInfo,
+};
 use outto::elevation;
 use outto::manifest::{ActionRecord, InstallManifest};
 use outto::{install, uninstall_from_dir, InstallOptions, NoOpCallbacks};
@@ -23,7 +26,10 @@ use windows_sys::Win32::System::Registry::*;
 // ---------------------------------------------------------------------------
 
 fn to_wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 /// RAII guard that deletes HKCU registry keys and temp dirs on drop.
@@ -239,7 +245,8 @@ fn test_registry_string_value_write_read_delete() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest =
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
 
     let entry = RegistryEntry {
         root: RegistryRoot::Hkcu,
@@ -283,7 +290,8 @@ fn test_registry_dword_value() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest =
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
 
     let entry = RegistryEntry {
         root: RegistryRoot::Hkcu,
@@ -316,7 +324,8 @@ fn test_registry_multiple_values_on_same_key() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest =
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
 
     let entry = RegistryEntry {
         root: RegistryRoot::Hkcu,
@@ -362,7 +371,10 @@ fn test_registry_value_rollback_deletes_when_no_previous() {
 
     // Create key and set a value
     write_hkcu_string(key, "TempVal", "temporary");
-    assert_eq!(read_hkcu_string(key, "TempVal"), Some("temporary".to_string()));
+    assert_eq!(
+        read_hkcu_string(key, "TempVal"),
+        Some("temporary".to_string())
+    );
 
     // Rollback should delete the value (no previous data)
     registry::delete_value("HKCU", key, "TempVal").unwrap();
@@ -383,11 +395,17 @@ fn test_registry_value_rollback_restores_previous() {
 
     // Overwrite it
     write_hkcu_string(key, "RestoreMe", "overwritten");
-    assert_eq!(read_hkcu_string(key, "RestoreMe"), Some("overwritten".to_string()));
+    assert_eq!(
+        read_hkcu_string(key, "RestoreMe"),
+        Some("overwritten".to_string())
+    );
 
     // Restore via set_string_value (simulating rollback)
     registry::set_string_value("HKCU", key, "RestoreMe", "original").unwrap();
-    assert_eq!(read_hkcu_string(key, "RestoreMe"), Some("original".to_string()));
+    assert_eq!(
+        read_hkcu_string(key, "RestoreMe"),
+        Some("original".to_string())
+    );
 }
 
 #[test]
@@ -402,7 +420,8 @@ fn test_registry_key_created_and_deleted() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest =
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
 
     let entry = RegistryEntry {
         root: RegistryRoot::Hkcu,
@@ -418,10 +437,10 @@ fn test_registry_key_created_and_deleted() {
     assert!(hkcu_key_exists(key));
 
     // Verify RegistryKeyCreated was recorded
-    assert!(manifest.actions.iter().any(|a| matches!(
-        a,
-        ActionRecord::RegistryKeyCreated { .. }
-    )));
+    assert!(manifest
+        .actions
+        .iter()
+        .any(|a| matches!(a, ActionRecord::RegistryKeyCreated { .. })));
 
     // Delete
     registry::delete_key("HKCU", key).unwrap();
@@ -444,7 +463,14 @@ fn test_env_set_new_user_variable() {
     let name_wide = to_wide(var_name);
     unsafe {
         let mut hkey: HKEY = std::ptr::null_mut();
-        if RegOpenKeyExW(HKEY_CURRENT_USER, key_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) == 0 {
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            key_wide.as_ptr(),
+            0,
+            KEY_SET_VALUE,
+            &mut hkey,
+        ) == 0
+        {
             RegDeleteValueW(hkey, name_wide.as_ptr());
             RegCloseKey(hkey);
         }
@@ -452,7 +478,8 @@ fn test_env_set_new_user_variable() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest =
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
 
     let entry = EnvironmentEntry {
         name: var_name.to_string(),
@@ -487,7 +514,8 @@ fn test_env_append_user_variable() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest =
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
 
     let entry = EnvironmentEntry {
         name: var_name.to_string(),
@@ -514,7 +542,8 @@ fn test_env_prepend_user_variable() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest =
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
 
     let entry = EnvironmentEntry {
         name: var_name.to_string(),
@@ -541,7 +570,8 @@ fn test_env_remove_from_user_variable() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest =
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
 
     let entry = EnvironmentEntry {
         name: var_name.to_string(),
@@ -572,9 +602,7 @@ fn test_detect_returns_none_when_absent() {
 fn test_detect_finds_hkcu_install() {
     let mut cleanup = TestCleanup::new();
     let package_id = "com.outto.test.detect";
-    let key = format!(
-        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{package_id}"
-    );
+    let key = format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{package_id}");
     cleanup.track_key(&key);
 
     // Clean up first
@@ -599,9 +627,7 @@ fn test_detect_finds_hkcu_install() {
 fn test_write_and_remove_uninstall_registry() {
     let mut cleanup = TestCleanup::new();
     let package_id = "com.outto.test.uninstall_reg";
-    let key = format!(
-        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{package_id}"
-    );
+    let key = format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{package_id}");
     cleanup.track_key(&key);
 
     // Clean up first
@@ -911,10 +937,10 @@ fn test_create_directory_already_exists() {
 
     // Should succeed without error, but NOT record a DirectoryCreated action
     dirs::create_directory(&entry, &resolver, &mut manifest, &callbacks).unwrap();
-    assert!(!manifest.actions.iter().any(|a| matches!(
-        a,
-        ActionRecord::DirectoryCreated { .. }
-    )));
+    assert!(!manifest
+        .actions
+        .iter()
+        .any(|a| matches!(a, ActionRecord::DirectoryCreated { .. })));
 }
 
 // ---------------------------------------------------------------------------
@@ -961,7 +987,8 @@ fn test_needs_elevation_admin_when_elevated() {
 #[test]
 fn test_execute_phase_before_install() {
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest =
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
     let callbacks = NoOpCallbacks;
 
     let entries = vec![RunEntry {
@@ -976,8 +1003,14 @@ fn test_execute_phase_before_install() {
         run_as_original_user: false,
     }];
 
-    run::execute_phase_commands(&entries, &RunPhase::BeforeInstall, &resolver, &mut manifest, &callbacks)
-        .unwrap();
+    run::execute_phase_commands(
+        &entries,
+        &RunPhase::BeforeInstall,
+        &resolver,
+        &mut manifest,
+        &callbacks,
+    )
+    .unwrap();
 
     assert!(manifest.actions.iter().any(|a| matches!(
         a,
@@ -988,7 +1021,8 @@ fn test_execute_phase_before_install() {
 #[test]
 fn test_execute_phase_filtering() {
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest =
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
     let callbacks = NoOpCallbacks;
 
     let entries = vec![RunEntry {
@@ -1004,16 +1038,26 @@ fn test_execute_phase_filtering() {
     }];
 
     // Call with BeforeInstall phase — the AfterInstall entry should be skipped
-    run::execute_phase_commands(&entries, &RunPhase::BeforeInstall, &resolver, &mut manifest, &callbacks)
-        .unwrap();
+    run::execute_phase_commands(
+        &entries,
+        &RunPhase::BeforeInstall,
+        &resolver,
+        &mut manifest,
+        &callbacks,
+    )
+    .unwrap();
 
-    assert!(manifest.actions.is_empty(), "No commands should have been executed");
+    assert!(
+        manifest.actions.is_empty(),
+        "No commands should have been executed"
+    );
 }
 
 #[test]
 fn test_execute_command_nonzero_exit() {
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest =
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
     let callbacks = NoOpCallbacks;
 
     let entries = vec![RunEntry {
@@ -1029,7 +1073,13 @@ fn test_execute_command_nonzero_exit() {
     }];
 
     // Should succeed (non-fatal) even though command exits with 1
-    let result = run::execute_phase_commands(&entries, &RunPhase::AfterInstall, &resolver, &mut manifest, &callbacks);
+    let result = run::execute_phase_commands(
+        &entries,
+        &RunPhase::AfterInstall,
+        &resolver,
+        &mut manifest,
+        &callbacks,
+    );
     assert!(result.is_ok());
     assert_eq!(manifest.actions.len(), 1);
 }
@@ -1649,7 +1699,8 @@ fn test_prerequisite_not_required_skips() {
 #[test]
 fn test_execute_command_no_wait() {
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest =
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
     let callbacks = NoOpCallbacks;
 
     let entries = vec![RunEntry {
@@ -1664,8 +1715,14 @@ fn test_execute_command_no_wait() {
         run_as_original_user: false,
     }];
 
-    run::execute_phase_commands(&entries, &RunPhase::AfterInstall, &resolver, &mut manifest, &callbacks)
-        .unwrap();
+    run::execute_phase_commands(
+        &entries,
+        &RunPhase::AfterInstall,
+        &resolver,
+        &mut manifest,
+        &callbacks,
+    )
+    .unwrap();
 
     assert!(manifest.actions.iter().any(|a| matches!(
         a,

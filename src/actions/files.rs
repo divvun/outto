@@ -29,9 +29,8 @@ pub fn install_files(
         .to_string_lossy()
         .replace('\\', "/");
 
-    let matches = glob::glob(&source_pattern).map_err(|e| {
-        InstallerError::GlobPattern(format!("{}: {e}", entry.source))
-    })?;
+    let matches = glob::glob(&source_pattern)
+        .map_err(|e| InstallerError::GlobPattern(format!("{}: {e}", entry.source)))?;
 
     // Build exclusion patterns
     let exclude_patterns: Vec<glob::Pattern> = entry
@@ -42,9 +41,8 @@ pub fn install_files(
 
     let mut matched_any = false;
     for path_result in matches {
-        let source_path = path_result.map_err(|e| {
-            InstallerError::GlobPattern(format!("glob iteration error: {e}"))
-        })?;
+        let source_path = path_result
+            .map_err(|e| InstallerError::GlobPattern(format!("glob iteration error: {e}")))?;
 
         if source_path.is_dir() {
             continue;
@@ -84,13 +82,7 @@ pub fn install_files(
             continue;
         }
 
-        copy_file_with_policy(
-            &source_path,
-            &dest_path,
-            entry,
-            manifest,
-            callbacks,
-        )?;
+        copy_file_with_policy(&source_path, &dest_path, entry, manifest, callbacks)?;
     }
 
     if !matched_any && !entry.skip_if_missing {
@@ -117,9 +109,7 @@ fn compute_relative_path(
             ""
         }
     } else {
-        return Ok(PathBuf::from(
-            matched_path.file_name().unwrap_or_default(),
-        ));
+        return Ok(PathBuf::from(matched_path.file_name().unwrap_or_default()));
     };
 
     let base_path = if base.is_empty() {
@@ -354,7 +344,11 @@ fn verify_hash(
     // TODO: add a proper hash verification once a hash crate is added
     callbacks.on_log(
         LogLevel::Info,
-        &format!("Hash verification requested for {} (expected: {})", path.display(), expected),
+        &format!(
+            "Hash verification requested for {} (expected: {})",
+            path.display(),
+            expected
+        ),
     );
 
     let _ = file.read(&mut [0u8; 1]); // touch the file to ensure it's readable

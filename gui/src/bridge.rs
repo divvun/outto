@@ -2,9 +2,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use outto::{
-    ErrorAction, InstallerCallbacks, InstallerError, LogLevel, Prompt, PromptResponse,
-};
+use outto::{ErrorAction, InstallerCallbacks, InstallerError, LogLevel, Prompt, PromptResponse};
 
 /// Events sent from the install/uninstall thread to the GUI.
 pub enum BridgeEvent {
@@ -155,11 +153,7 @@ pub fn spawn_install(
 }
 
 /// Spawn the uninstall on a background thread.
-pub fn spawn_uninstall(
-    install_dir: PathBuf,
-    suppress_prompts: bool,
-    queue: BridgeQueue,
-) {
+pub fn spawn_uninstall(install_dir: PathBuf, suppress_prompts: bool, queue: BridgeQueue) {
     std::thread::spawn(move || {
         let callbacks = GuiCallbacks {
             queue: queue.clone(),

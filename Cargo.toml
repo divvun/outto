@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "gui", "uninstall", "cli"]
+members = [".", "gui", "uninstall", "cli", "sfx"]
 resolver = "2"
 
 [package]

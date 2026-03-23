@@ -84,10 +84,7 @@ fn apply_permission(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        callbacks.on_log(
-            LogLevel::Warn,
-            &format!("icacls warning: {stderr}"),
-        );
+        callbacks.on_log(LogLevel::Warn, &format!("icacls warning: {stderr}"));
     }
 
     manifest.record(ActionRecord::PermissionsSet {

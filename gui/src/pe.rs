@@ -24,12 +24,12 @@ pub fn find_section(exe_path: &Path, section_name: &str) -> io::Result<Option<(u
         f.read_exact(&mut name)?;
 
         if name == name_bytes {
-            let _virtual_size = read_u32(&mut f)?;
+            let virtual_size = read_u32(&mut f)?; // actual data length
             let _virtual_address = read_u32(&mut f)?;
-            let size_of_raw_data = read_u32(&mut f)?;
+            let _size_of_raw_data = read_u32(&mut f)?; // padded, don't use for length
             let pointer_to_raw_data = read_u32(&mut f)?;
 
-            return Ok(Some((pointer_to_raw_data as u64, size_of_raw_data as u64)));
+            return Ok(Some((pointer_to_raw_data as u64, virtual_size as u64)));
         }
     }
 
@@ -45,7 +45,10 @@ fn parse_pe_info(f: &mut File) -> io::Result<PeInfo> {
     f.seek(SeekFrom::Start(0))?;
     let dos_magic = read_u16(f)?;
     if dos_magic != DOS_MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Not a valid PE file"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Not a valid PE file",
+        ));
     }
 
     f.seek(SeekFrom::Start(0x3C))?;
@@ -54,7 +57,10 @@ fn parse_pe_info(f: &mut File) -> io::Result<PeInfo> {
     f.seek(SeekFrom::Start(e_lfanew))?;
     let pe_sig = read_u32(f)?;
     if pe_sig != PE_SIGNATURE {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Not a valid PE file"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Not a valid PE file",
+        ));
     }
 
     let coff_header_offset = e_lfanew + 4;
@@ -71,7 +77,10 @@ fn parse_pe_info(f: &mut File) -> io::Result<PeInfo> {
     f.seek(SeekFrom::Start(optional_header_offset))?;
     let opt_magic = read_u16(f)?;
     if opt_magic != PE32_MAGIC && opt_magic != PE32PLUS_MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Unknown PE optional header"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Unknown PE optional header",
+        ));
     }
 
     Ok(PeInfo {
