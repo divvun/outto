@@ -13,14 +13,14 @@ pub fn rollback_actions(
     let mut errors = Vec::new();
 
     for (i, action) in actions.iter().rev().enumerate() {
-        callbacks.on_progress("rollback", i as u64, total);
-        callbacks.on_log(LogLevel::Info, &format!("Rolling back action: {action:?}"));
+        callbacks.on_log(LogLevel::Info, &format!("Rollback: {action:?}"));
 
         if let Err(e) = rollback_single(action, restore_backups) {
-            let msg = format!("Failed to rollback {action:?}: {e}");
+            let msg = format!("Rollback: failed {action:?}: {e}");
             callbacks.on_log(LogLevel::Warn, &msg);
             errors.push(msg);
         }
+        callbacks.on_progress("rollback", (i + 1) as u64, total);
     }
 
     if errors.is_empty() {

@@ -17,7 +17,7 @@ pub fn create_directory(
     if !path.exists() {
         callbacks.on_log(
             LogLevel::Info,
-            &format!("Creating directory: {}", path.display()),
+            &format!("Dirs: creating {}", path.display()),
         );
         fs::create_dir_all(&path).map_err(|e| InstallerError::DirOp {
             path: path.clone(),
@@ -51,10 +51,10 @@ fn apply_permission(
     callbacks.on_log(
         LogLevel::Info,
         &format!(
-            "Setting permissions on {}: {} = {}",
-            path.display(),
+            "Dirs: setting permissions {}:{} on {}",
             identity,
-            access
+            access,
+            path.display()
         ),
     );
 
@@ -84,7 +84,7 @@ fn apply_permission(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        callbacks.on_log(LogLevel::Warn, &format!("icacls warning: {stderr}"));
+        callbacks.on_log(LogLevel::Warn, &format!("Dirs: icacls warning: {stderr}"));
     }
 
     manifest.record(ActionRecord::PermissionsSet {

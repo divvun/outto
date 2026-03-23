@@ -303,6 +303,10 @@ pub struct FileEntry {
 
     // NTFS
     pub set_ntfs_compression: Option<bool>,
+
+    // Signing
+    #[serde(default)]
+    pub codesign: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

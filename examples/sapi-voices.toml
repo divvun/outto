@@ -1,0 +1,78 @@
+# SAPI 5.x Voice Installer
+#
+# Checks that the TTS engine is installed, copies voice data files,
+# and registers one or more SAPI voice tokens.
+# Duplicate the [[registry]] pairs to add more voices.
+
+[package]
+id = "com.example.myttsvoices"
+name = "My TTS Voices"
+version = "1.0.0"
+publisher = "Example Corp"
+architecture = "x64"
+privileges = "admin"
+default_dir = "$pf/$package.name Voices"
+
+# Verify the engine is installed by checking its COM CLSID
+[[prerequisites]]
+name = "My TTS Engine"
+required = true
+[prerequisites.check]
+registry = "HKCR\\CLSID\\{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}"
+
+# Copy voice data files
+[[files]]
+source = "voices/**/*"
+dest = "$app"
+
+# ---------------------------------------------------------------------------
+# Voice 1
+# ---------------------------------------------------------------------------
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyVoice1"
+values = [
+    { name = "", type = "string", data = "My Voice 1" },
+    { name = "CLSID", type = "string", data = "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" },
+    { name = "VoicePath", type = "string", data = "$app\\voice1" },
+]
+uninstall = "remove_key"
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyVoice1\\Attributes"
+values = [
+    { name = "Name", type = "string", data = "My Voice 1" },
+    { name = "Language", type = "string", data = "409" },
+    { name = "Gender", type = "string", data = "Female" },
+    { name = "Age", type = "string", data = "Adult" },
+    { name = "Vendor", type = "string", data = "Example Corp" },
+]
+uninstall = "remove_key"
+
+# ---------------------------------------------------------------------------
+# Voice 2
+# ---------------------------------------------------------------------------
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyVoice2"
+values = [
+    { name = "", type = "string", data = "My Voice 2" },
+    { name = "CLSID", type = "string", data = "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" },
+    { name = "VoicePath", type = "string", data = "$app\\voice2" },
+]
+uninstall = "remove_key"
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyVoice2\\Attributes"
+values = [
+    { name = "Name", type = "string", data = "My Voice 2" },
+    { name = "Language", type = "string", data = "409" },
+    { name = "Gender", type = "string", data = "Male" },
+    { name = "Age", type = "string", data = "Adult" },
+    { name = "Vendor", type = "string", data = "Example Corp" },
+]
+uninstall = "remove_key"

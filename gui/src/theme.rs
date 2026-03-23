@@ -21,7 +21,7 @@ pub const HEADER_TEXT: Color = Color::WHITE;
 /// Windows 11 light theme.
 pub fn windows11_theme() -> Theme {
     Theme::custom(
-        "Windows 11".into(),
+        String::from("Windows 11"),
         iced::theme::Palette {
             background: Color::from_rgb(0.953, 0.953, 0.953), // #F3F3F3
             text: Color::from_rgb(0.122, 0.122, 0.122),       // #1F1F1F
@@ -36,28 +36,29 @@ pub fn windows11_theme() -> Theme {
 /// Windows 11-style button.
 pub fn win11_button(_theme: &Theme, status: button::Status) -> button::Style {
     let base = button::Style {
-        background: Some(Color::from_rgb(0.898, 0.898, 0.898).into()), // #E5E5E5
+        background: Some(Color::from_rgb(0.898, 0.898, 0.898).into()),
         text_color: Color::from_rgb(0.122, 0.122, 0.122),
         border: Border {
             radius: 4.0.into(),
             width: 1.0,
-            color: Color::from_rgb(0.800, 0.800, 0.800), // #CCCCCC
+            color: Color::from_rgb(0.800, 0.800, 0.800),
         },
         shadow: Default::default(),
+        snap: false,
     };
 
     match status {
         button::Status::Active => base,
         button::Status::Hovered => button::Style {
-            background: Some(Color::from_rgb(0.847, 0.847, 0.847).into()), // #D8D8D8
+            background: Some(Color::from_rgb(0.847, 0.847, 0.847).into()),
             ..base
         },
         button::Status::Pressed => button::Style {
-            background: Some(Color::from_rgb(0.780, 0.780, 0.780).into()), // #C7C7C7
+            background: Some(Color::from_rgb(0.780, 0.780, 0.780).into()),
             ..base
         },
         button::Status::Disabled => button::Style {
-            background: Some(Color::from_rgb(0.940, 0.940, 0.940).into()), // #F0F0F0
+            background: Some(Color::from_rgb(0.940, 0.940, 0.940).into()),
             text_color: Color::from_rgb(0.600, 0.600, 0.600),
             border: Border {
                 radius: 4.0.into(),
@@ -65,6 +66,7 @@ pub fn win11_button(_theme: &Theme, status: button::Status) -> button::Style {
                 color: Color::from_rgb(0.880, 0.880, 0.880),
             },
             shadow: Default::default(),
+            snap: false,
         },
     }
 }

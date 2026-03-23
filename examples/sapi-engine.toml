@@ -1,0 +1,23 @@
+# SAPI 5.x TTS Engine Installer
+#
+# Installs a text-to-speech engine DLL and registers it as a COM server.
+# The DLL must export DllRegisterServer / DllUnregisterServer.
+
+[package]
+id = "com.example.myttsengine"
+name = "My TTS Engine"
+version = "1.0.0"
+publisher = "Example Corp"
+architecture = "x64"
+privileges = "admin"
+default_dir = "$pf/$package.name"
+
+# Copy engine DLL to install dir
+[[files]]
+source = "engine/*.dll"
+dest = "$app"
+
+# COM-register the DLL (regsvr32 /s; auto-unregisters on uninstall)
+[[com]]
+file = "$app/MyTTSEngine.dll"
+action = "regserver"

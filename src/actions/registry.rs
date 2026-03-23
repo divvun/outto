@@ -41,6 +41,78 @@ pub(crate) fn root_from_str(s: &str) -> InstallerResult<HKEY> {
     }
 }
 
+/// Read an existing string value from the registry. Returns None if the key or value doesn't exist.
+#[cfg(windows)]
+fn read_existing_value(hkey: HKEY, value_name: &str) -> Option<String> {
+    let name_wide = to_wide(value_name);
+    let mut data_type: u32 = 0;
+    let mut data_size: u32 = 0;
+
+    let result = unsafe {
+        RegQueryValueExW(
+            hkey,
+            name_wide.as_ptr(),
+            std::ptr::null(),
+            &mut data_type,
+            std::ptr::null_mut(),
+            &mut data_size,
+        )
+    };
+    if result != 0 || data_size == 0 {
+        return None;
+    }
+
+    let mut buffer = vec![0u8; data_size as usize];
+    let result = unsafe {
+        RegQueryValueExW(
+            hkey,
+            name_wide.as_ptr(),
+            std::ptr::null(),
+            &mut data_type,
+            buffer.as_mut_ptr(),
+            &mut data_size,
+        )
+    };
+    if result != 0 {
+        return None;
+    }
+
+    // Convert to string for REG_SZ/REG_EXPAND_SZ, or hex for other types
+    match data_type {
+        REG_SZ | REG_EXPAND_SZ => {
+            let wide: Vec<u16> = buffer
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            Some(
+                String::from_utf16_lossy(&wide)
+                    .trim_end_matches('\0')
+                    .to_string(),
+            )
+        }
+        REG_DWORD if buffer.len() >= 4 => {
+            let val = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
+            Some(val.to_string())
+        }
+        REG_QWORD if buffer.len() >= 8 => {
+            let val = u64::from_le_bytes([
+                buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6],
+                buffer[7],
+            ]);
+            Some(val.to_string())
+        }
+        _ => {
+            // For binary and other types, store as hex
+            Some(
+                buffer
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<String>(),
+            )
+        }
+    }
+}
+
 pub fn apply_registry_entry(
     entry: &RegistryEntry,
     resolver: &PathResolver,
@@ -55,7 +127,10 @@ pub fn apply_registry_entry(
 
     let key = resolver.resolve(&entry.key)?;
 
-    callbacks.on_log(LogLevel::Info, &format!("Registry: {root_name}\\{key}"));
+    callbacks.on_log(
+        LogLevel::Info,
+        &format!("Registry: creating {root_name}\\{key}"),
+    );
 
     #[cfg(windows)]
     {
@@ -100,19 +175,22 @@ pub fn apply_registry_entry(
                 other => other.to_string(),
             };
 
+            // Read existing value before overwriting (for rollback)
+            let previous = read_existing_value(hkey, &val.name);
+
             set_registry_value(hkey, &val.name, &val.value_type, &resolved_data)?;
 
             manifest.record(ActionRecord::RegistryValueSet {
                 root: root_name.to_string(),
                 key: key.clone(),
                 value_name: val.name.clone(),
-                previous_data: None,
+                previous_data: previous,
                 on_uninstall: entry.uninstall.clone(),
             });
 
             callbacks.on_log(
-                LogLevel::Info,
-                &format!("  Set value: {} = {}", val.name, resolved_data),
+                LogLevel::Debug,
+                &format!("Registry: set {} = {}", val.name, resolved_data),
             );
         }
 
@@ -136,8 +214,8 @@ pub fn apply_registry_entry(
                 on_uninstall: entry.uninstall.clone(),
             });
             callbacks.on_log(
-                LogLevel::Info,
-                &format!("  [simulated] Set value: {} = {}", val.name, resolved),
+                LogLevel::Debug,
+                &format!("Registry: [simulated] set {} = {}", val.name, resolved),
             );
         }
     }

@@ -15,8 +15,8 @@ toml = "0.8"
 serde_json = "1"
 thiserror = "2"
 semver = { version = "1", features = ["serde"] }
-log = "0.4"
 glob = "0.3"
+blake3 = "1.8.3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

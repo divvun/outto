@@ -33,22 +33,43 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     exe_file.read_exact(&mut compressed)?;
     drop(exe_file);
 
-    // Decompress with zstd
-    let decompressed = zstd::decode_all(&compressed[..])?;
-
-    // Write to temp file
+    // Decompress with zstd, streaming directly to disk
+    eprintln!("Decompressing installer...");
     let temp_path =
         std::env::temp_dir().join(format!("outto-installer-{}.exe", std::process::id()));
-    fs::write(&temp_path, &decompressed)?;
+    {
+        let mut decoder = zstd::Decoder::new(&compressed[..])?;
+        let mut out_file = fs::File::create(&temp_path)?;
+        std::io::copy(&mut decoder, &mut out_file)?;
+    }
 
     // Get the command line args to forward (skip argv[0])
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     // Launch the real installer and wait for it
+    eprintln!("Launching installer...");
     let exit_code = launch_and_wait(&temp_path, &args);
+    eprintln!("Installer exited with code {exit_code}");
 
-    // Clean up temp file
-    let _ = fs::remove_file(&temp_path);
+    // Clean up temp file (schedule reboot delete if immediate delete fails)
+    if fs::remove_file(&temp_path).is_err() {
+        #[cfg(windows)]
+        {
+            use std::ffi::OsStr;
+            use std::os::windows::ffi::OsStrExt;
+            let wide: Vec<u16> = OsStr::new(&temp_path)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            unsafe {
+                windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+                    wide.as_ptr(),
+                    std::ptr::null(),
+                    windows_sys::Win32::Storage::FileSystem::MOVEFILE_DELAY_UNTIL_REBOOT,
+                );
+            }
+        }
+    }
 
     std::process::exit(exit_code);
 }
@@ -93,7 +114,7 @@ fn launch_and_wait(exe: &Path, args: &[String]) -> i32 {
             cmdline_wide.as_mut_ptr(),
             std::ptr::null(),
             std::ptr::null(),
-            0,
+            1, // bInheritHandles = TRUE, so child inherits console
             0,
             std::ptr::null(),
             std::ptr::null(),
@@ -103,6 +124,8 @@ fn launch_and_wait(exe: &Path, args: &[String]) -> i32 {
     };
 
     if ok == 0 {
+        let err = std::io::Error::last_os_error();
+        eprintln!("Failed to launch installer: {err}");
         return 1;
     }
 

@@ -57,7 +57,7 @@ pub struct SilentCallbacks;
 
 impl InstallerCallbacks for SilentCallbacks {
     fn on_progress(&self, phase: &str, current: u64, total: u64) {
-        println!("[{current}/{total}] {phase}");
+        println!("[{}/{total}] {phase}", current + 1);
     }
 
     fn on_log(&self, level: LogLevel, message: &str) {

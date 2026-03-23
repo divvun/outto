@@ -27,7 +27,7 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     col = col.push(
         checkbox(state.license_accepted)
             .label("I accept the terms in the License Agreement")
-            .size(14)
+            .size(20)
             .text_size(theme::FONT_BODY)
             .spacing(8)
             .on_toggle(Message::LicenseAccepted),

@@ -19,7 +19,7 @@ pub fn register_com(
 
     callbacks.on_log(
         LogLevel::Info,
-        &format!("COM registration ({action_str}): {file}"),
+        &format!("COM: registering {action_str} {file}"),
     );
 
     #[cfg(windows)]
@@ -34,7 +34,7 @@ pub fn register_com(
     {
         callbacks.on_log(
             LogLevel::Info,
-            &format!("  [simulated] COM {action_str} for {file}"),
+            &format!("COM: [simulated] registered {action_str} {file}"),
         );
     }
 

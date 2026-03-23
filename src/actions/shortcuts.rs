@@ -43,7 +43,7 @@ pub fn create_shortcut(
     callbacks.on_log(
         LogLevel::Info,
         &format!(
-            "Creating shortcut: {} -> {}",
+            "Shortcuts: creating {} -> {}",
             shortcut_path.display(),
             target
         ),

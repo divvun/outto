@@ -58,7 +58,7 @@ pub fn apply_env_entry(
     callbacks.on_log(
         LogLevel::Info,
         &format!(
-            "Environment: {} {} = {} (scope: {})",
+            "Environment: {} {} = {} ({})",
             action_str, entry.name, value, scope_str
         ),
     );
@@ -82,7 +82,7 @@ pub fn apply_env_entry(
     let previous_value: Option<String> = {
         callbacks.on_log(
             LogLevel::Info,
-            &format!("  [simulated] {action_str} {}", entry.name),
+            &format!("Environment: [simulated] {action_str} {}", entry.name),
         );
         None
     };

@@ -4,6 +4,7 @@ pub mod detect;
 pub mod elevation;
 pub mod error;
 pub mod manifest;
+pub mod pe;
 pub mod uninstall;
 
 use std::collections::HashSet;

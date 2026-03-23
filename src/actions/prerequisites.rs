@@ -13,14 +13,14 @@ pub fn check_prerequisites(
         if !met {
             callbacks.on_log(
                 LogLevel::Warn,
-                &format!("Prerequisite not met: {}", entry.name),
+                &format!("Prerequisites: not met: {}", entry.name),
             );
 
             if entry.required {
                 if let Some(ref installer) = entry.installer {
                     callbacks.on_log(
                         LogLevel::Info,
-                        &format!("Running prerequisite installer: {installer}"),
+                        &format!("Prerequisites: running installer {installer}"),
                     );
                     run_prerequisite_installer(installer, entry.arguments.as_deref())?;
 
@@ -39,7 +39,7 @@ pub fn check_prerequisites(
         } else {
             callbacks.on_log(
                 LogLevel::Info,
-                &format!("Prerequisite satisfied: {}", entry.name),
+                &format!("Prerequisites: satisfied: {}", entry.name),
             );
         }
     }

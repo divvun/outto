@@ -9,6 +9,7 @@ pub mod registry;
 pub mod run;
 pub mod services;
 pub mod shortcuts;
+pub mod signing;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -47,8 +48,8 @@ pub fn execute_install(
         if !arch_matches_entry(dir.arch.as_ref()) {
             continue;
         }
-        callbacks.on_progress("directories", i as u64, total_dirs as u64);
         dirs::create_directory(dir, resolver, manifest, callbacks)?;
+        callbacks.on_progress("directories", (i + 1) as u64, total_dirs as u64);
     }
 
     // Copy files
@@ -60,8 +61,8 @@ pub fn execute_install(
         if !arch_matches_entry(file.arch.as_ref()) {
             continue;
         }
-        callbacks.on_progress("files", i as u64, total_files as u64);
         files::install_files(file, source_dir, resolver, manifest, callbacks)?;
+        callbacks.on_progress("files", (i + 1) as u64, total_files as u64);
     }
 
     // Registry entries
@@ -70,8 +71,8 @@ pub fn execute_install(
         if !should_include(reg.component.as_deref(), selected_components) {
             continue;
         }
-        callbacks.on_progress("registry", i as u64, total_reg as u64);
         registry::apply_registry_entry(reg, resolver, manifest, callbacks)?;
+        callbacks.on_progress("registry", (i + 1) as u64, total_reg as u64);
     }
 
     // Shortcuts
@@ -80,8 +81,8 @@ pub fn execute_install(
         if !should_include(shortcut.component.as_deref(), selected_components) {
             continue;
         }
-        callbacks.on_progress("shortcuts", i as u64, total_shortcuts as u64);
         shortcuts::create_shortcut(shortcut, resolver, manifest, callbacks)?;
+        callbacks.on_progress("shortcuts", (i + 1) as u64, total_shortcuts as u64);
     }
 
     // Environment variables
@@ -90,8 +91,8 @@ pub fn execute_install(
         if !should_include(env.component.as_deref(), selected_components) {
             continue;
         }
-        callbacks.on_progress("environment", i as u64, total_env as u64);
         environment::apply_env_entry(env, resolver, manifest, callbacks)?;
+        callbacks.on_progress("environment", (i + 1) as u64, total_env as u64);
     }
 
     // Services
@@ -100,8 +101,8 @@ pub fn execute_install(
         if !should_include(svc.component.as_deref(), selected_components) {
             continue;
         }
-        callbacks.on_progress("services", i as u64, total_services as u64);
         services::install_service(svc, resolver, manifest, callbacks)?;
+        callbacks.on_progress("services", (i + 1) as u64, total_services as u64);
     }
 
     // File associations
@@ -110,8 +111,8 @@ pub fn execute_install(
         if !should_include(assoc.component.as_deref(), selected_components) {
             continue;
         }
-        callbacks.on_progress("associations", i as u64, total_assoc as u64);
         associations::create_association(assoc, resolver, manifest, callbacks)?;
+        callbacks.on_progress("associations", (i + 1) as u64, total_assoc as u64);
     }
 
     // COM registration
@@ -120,8 +121,8 @@ pub fn execute_install(
         if !should_include(com_entry.component.as_deref(), selected_components) {
             continue;
         }
-        callbacks.on_progress("com", i as u64, total_com as u64);
         com::register_com(com_entry, resolver, manifest, callbacks)?;
+        callbacks.on_progress("com", (i + 1) as u64, total_com as u64);
     }
 
     // Fonts
@@ -130,8 +131,8 @@ pub fn execute_install(
         if !should_include(font.component.as_deref(), selected_components) {
             continue;
         }
-        callbacks.on_progress("fonts", i as u64, total_fonts as u64);
         fonts::install_font(font, source_dir, manifest, callbacks)?;
+        callbacks.on_progress("fonts", (i + 1) as u64, total_fonts as u64);
     }
 
     // Phase: after_install commands

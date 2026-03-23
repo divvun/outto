@@ -19,7 +19,7 @@ pub fn create_association(
     callbacks.on_log(
         LogLevel::Info,
         &format!(
-            "File association: {} -> {} ({})",
+            "Associations: creating {} -> {} ({})",
             entry.extension, entry.prog_id, command
         ),
     );
@@ -40,7 +40,7 @@ pub fn create_association(
     {
         callbacks.on_log(
             LogLevel::Info,
-            &format!("  [simulated] Association {} registered", entry.extension),
+            &format!("Associations: [simulated] created {}", entry.extension),
         );
     }
 

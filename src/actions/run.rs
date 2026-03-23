@@ -41,7 +41,7 @@ fn execute_command(
     callbacks.on_log(
         LogLevel::Info,
         &format!(
-            "Running command ({phase_str}): {} {}",
+            "Run: executing ({phase_str}): {} {}",
             command,
             arguments.as_deref().unwrap_or("")
         ),
@@ -50,8 +50,12 @@ fn execute_command(
     let mut cmd = Command::new(&command);
 
     if let Some(ref args) = arguments {
-        // Split arguments respecting quotes
         cmd.args(split_args(args));
+    }
+
+    if let Some(ref wd) = entry.working_dir {
+        let resolved_wd = resolver.resolve(wd)?;
+        cmd.current_dir(&resolved_wd);
     }
 
     #[cfg(windows)]
@@ -74,7 +78,7 @@ fn execute_command(
             let stderr = String::from_utf8_lossy(&output.stderr);
             callbacks.on_log(
                 LogLevel::Warn,
-                &format!("Command exited with {}: {stderr}", output.status),
+                &format!("Run: command exited with {}: {stderr}", output.status),
             );
         }
     } else {

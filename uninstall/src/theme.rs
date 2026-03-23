@@ -20,7 +20,7 @@ pub const HEADER_TEXT: Color = Color::WHITE;
 
 pub fn windows11_theme() -> Theme {
     Theme::custom(
-        "Windows 11".into(),
+        String::from("Windows 11"),
         iced::theme::Palette {
             background: Color::from_rgb(0.953, 0.953, 0.953),
             text: Color::from_rgb(0.122, 0.122, 0.122),
@@ -42,6 +42,7 @@ pub fn win11_button(_theme: &Theme, status: button::Status) -> button::Style {
             color: Color::from_rgb(0.800, 0.800, 0.800),
         },
         shadow: Default::default(),
+        snap: false,
     };
 
     match status {
@@ -63,6 +64,7 @@ pub fn win11_button(_theme: &Theme, status: button::Status) -> button::Style {
                 color: Color::from_rgb(0.880, 0.880, 0.880),
             },
             shadow: Default::default(),
+            snap: false,
         },
     }
 }

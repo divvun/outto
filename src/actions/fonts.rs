@@ -25,7 +25,7 @@ pub fn install_font(
             message: "no filename".into(),
         })?;
 
-    callbacks.on_log(LogLevel::Info, &format!("Installing font: {}", font_name));
+    callbacks.on_log(LogLevel::Info, &format!("Fonts: installing {}", font_name));
 
     #[cfg(windows)]
     {
@@ -50,7 +50,7 @@ pub fn install_font(
     {
         callbacks.on_log(
             LogLevel::Info,
-            &format!("  [simulated] Font {font_name} installed"),
+            &format!("Fonts: [simulated] installed {font_name}"),
         );
         manifest.record(ActionRecord::FontInstalled {
             file: source_path,

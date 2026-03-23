@@ -428,7 +428,7 @@ pub fn run(state: AppState) -> iced::Result {
         view,
     )
     .subscription(subscription)
-    .theme(|_| theme::windows11_theme())
+    .theme(theme::windows11_theme())
     .window_size(iced::Size::new(theme::WINDOW_WIDTH, theme::WINDOW_HEIGHT))
     .resizable(false)
     .run()

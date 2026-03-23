@@ -14,7 +14,7 @@ pub fn install_service(
 
     callbacks.on_log(
         LogLevel::Info,
-        &format!("Installing service: {} ({})", entry.name, executable),
+        &format!("Services: installing {} ({})", entry.name, executable),
     );
 
     #[cfg(windows)]
@@ -32,7 +32,10 @@ pub fn install_service(
         });
 
         if matches!(entry.on_install, ServiceOnInstall::Start) {
-            callbacks.on_log(LogLevel::Info, &format!("Starting service: {}", entry.name));
+            callbacks.on_log(
+                LogLevel::Info,
+                &format!("Services: starting {}", entry.name),
+            );
             start_service_by_name(&entry.name)?;
             manifest.record(ActionRecord::ServiceStarted {
                 name: entry.name.clone(),
@@ -44,7 +47,7 @@ pub fn install_service(
     {
         callbacks.on_log(
             LogLevel::Info,
-            &format!("  [simulated] Service {} installed", entry.name),
+            &format!("Services: [simulated] installed {}", entry.name),
         );
         manifest.record(ActionRecord::ServiceInstalled {
             name: entry.name.clone(),

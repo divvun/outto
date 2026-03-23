@@ -20,7 +20,7 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
 
         let cb = checkbox(checked)
             .label(label.to_string())
-            .size(14)
+            .size(20)
             .text_size(theme::FONT_BODY)
             .spacing(8);
         if comp.required {

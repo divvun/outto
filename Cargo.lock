@@ -2491,8 +2491,8 @@ dependencies = [
 name = "outto"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "glob",
- "log",
  "semver",
  "serde",
  "serde_json",

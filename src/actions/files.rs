@@ -55,8 +55,8 @@ pub fn install_files(
             .unwrap_or("");
         if exclude_patterns.iter().any(|p| p.matches(filename)) {
             callbacks.on_log(
-                LogLevel::Info,
-                &format!("Excluding: {}", source_path.display()),
+                LogLevel::Debug,
+                &format!("Files: excluding {}", source_path.display()),
             );
             continue;
         }
@@ -76,8 +76,11 @@ pub fn install_files(
         // only_if_dest_exists: skip if dest doesn't exist
         if entry.only_if_dest_exists && !dest_path.exists() {
             callbacks.on_log(
-                LogLevel::Info,
-                &format!("Skipping (dest does not exist): {}", dest_path.display()),
+                LogLevel::Debug,
+                &format!(
+                    "Files: skipping {} (dest does not exist)",
+                    dest_path.display()
+                ),
             );
             continue;
         }
@@ -88,7 +91,7 @@ pub fn install_files(
     if !matched_any && !entry.skip_if_missing {
         callbacks.on_log(
             LogLevel::Warn,
-            &format!("No files matched source pattern: {}", entry.source),
+            &format!("Files: no matches for pattern {}", entry.source),
         );
     }
 
@@ -161,8 +164,8 @@ fn copy_file_with_policy(
 
     if !should_copy {
         callbacks.on_log(
-            LogLevel::Info,
-            &format!("Skipping (overwrite policy): {}", dest.display()),
+            LogLevel::Debug,
+            &format!("Files: skipping {} (overwrite policy)", dest.display()),
         );
         return Ok(());
     }
@@ -200,7 +203,7 @@ fn copy_file_with_policy(
     callbacks.on_log(
         LogLevel::Info,
         &format!(
-            "Copying {} -> {}",
+            "Files: copying {} -> {}",
             normalize_path(source).display(),
             normalize_path(dest).display()
         ),
@@ -213,11 +216,19 @@ fn copy_file_with_policy(
 
     // Post-copy: apply file attributes
     if let Some(ref attribs) = entry.attribs {
+        callbacks.on_log(
+            LogLevel::Debug,
+            &format!("Files: setting attributes on {}", dest.display()),
+        );
         apply_attribs(dest, attribs);
     }
 
     // Post-copy: touch (set modified time to now)
     if entry.touch {
+        callbacks.on_log(
+            LogLevel::Debug,
+            &format!("Files: touching {}", dest.display()),
+        );
         let _ = filetime_set_now(dest);
     }
 
@@ -229,6 +240,10 @@ fn copy_file_with_policy(
     // Post-copy: apply NTFS compression
     #[cfg(windows)]
     if let Some(compress) = entry.set_ntfs_compression {
+        callbacks.on_log(
+            LogLevel::Debug,
+            &format!("Files: setting NTFS compression on {}", dest.display()),
+        );
         set_ntfs_compression(dest, compress);
     }
 
@@ -244,6 +259,10 @@ fn copy_file_with_policy(
 
     // Post-copy: delete source after install (for temp files)
     if entry.delete_after_install {
+        callbacks.on_log(
+            LogLevel::Debug,
+            &format!("Files: deleting temp source {}", source.display()),
+        );
         let _ = fs::remove_file(source);
     }
 
@@ -339,19 +358,36 @@ fn verify_hash(
         source: e,
     })?;
 
-    // Simple SHA256-like check using a basic hash (we don't have a crypto dep)
-    // For now, just log the expected hash and skip verification
-    // TODO: add a proper hash verification once a hash crate is added
-    callbacks.on_log(
-        LogLevel::Info,
-        &format!(
-            "Hash verification requested for {} (expected: {})",
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| InstallerError::FileOp {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    let actual = hasher.finalize().to_hex();
+    let actual_str = actual.as_str();
+
+    if !actual_str.eq_ignore_ascii_case(expected) {
+        return Err(InstallerError::Other(format!(
+            "Files: hash mismatch for {}: expected {}, got {}",
             path.display(),
-            expected
-        ),
+            expected,
+            actual_str
+        )));
+    }
+
+    callbacks.on_log(
+        LogLevel::Debug,
+        &format!("Files: hash verified for {}", path.display()),
     );
 
-    let _ = file.read(&mut [0u8; 1]); // touch the file to ensure it's readable
     Ok(())
 }
 

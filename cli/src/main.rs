@@ -13,7 +13,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 || args[1] != "build" {
-        eprintln!("Usage: outto-cli build --config <file> --source <dir> --output <exe>");
+        eprintln!("Usage: outto-cli build --config <file> --source <dir> --output <exe> [--compress] [--sign <command>]");
         std::process::exit(2);
     }
 
@@ -21,6 +21,7 @@ fn main() {
     let mut source_dir: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut compress = false;
+    let mut sign_command: Option<String> = None;
 
     let mut i = 2;
     while i < args.len() {
@@ -39,6 +40,10 @@ fn main() {
             }
             "--compress" => {
                 compress = true;
+            }
+            "--sign" | "-S" => {
+                i += 1;
+                sign_command = args.get(i).cloned();
             }
             other => {
                 eprintln!("Unknown argument: {other}");
@@ -61,7 +66,13 @@ fn main() {
         std::process::exit(2);
     });
 
-    match build_installer(&config_path, &source_dir, &output, compress) {
+    match build_installer(
+        &config_path,
+        &source_dir,
+        &output,
+        compress,
+        sign_command.as_deref(),
+    ) {
         Ok(()) => {}
         Err(e) => {
             eprintln!("Build failed: {e}");
@@ -75,6 +86,7 @@ fn build_installer(
     source_dir: &Path,
     output: &Path,
     compress: bool,
+    sign_command: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !config_path.exists() {
         return Err(format!("Config file not found: {}", config_path.display()).into());
@@ -163,6 +175,17 @@ fn build_installer(
         // Replace output with SFX stub + compressed payload
         fs::copy(&sfx_stub, output)?;
         pe::embed_section(output, ".outto", &compressed)?;
+    }
+
+    // Sign output artifacts if --sign was provided
+    if let Some(cmd) = sign_command {
+        use outto::actions::signing;
+
+        let callbacks = outto::NoOpCallbacks;
+
+        eprintln!("Signing output...");
+        signing::sign_file(cmd, output, &callbacks)
+            .map_err(|e| format!("Failed to sign {}: {e}", output.display()))?;
     }
 
     let final_size = fs::metadata(output)?.len();
