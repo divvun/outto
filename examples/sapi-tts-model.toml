@@ -1,0 +1,34 @@
+# SAPI 5.x TTS Model Installer
+#
+# Installs the shared neural TTS model bundle (tts.drb) into a well-known
+# directory.  All voice configurations and text processors reference this
+# model via the BundlePath registry attribute.
+#
+# Install order: sapi-engine → sapi-tts-model → sapi-text-processors → sapi-voices
+
+[package]
+id = "com.example.mytts-model"
+name = "My TTS Model"
+version = "1.0.0"
+publisher = "Example Corp"
+architecture = "x64"
+privileges = "admin"
+depends_on = ["com.example.mytts-engine"]
+default_dir = "#{commonappdata}/MyTTS"
+disable_dir_page = true
+
+[uninstall]
+remove_app_dir = false          # shared with text processors
+
+# Verify the TTS engine COM server is installed
+[[prerequisites]]
+name = "My TTS Engine"
+required = true
+[prerequisites.check]
+registry = "HKCR\\CLSID\\{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}"
+
+# Copy the model bundle
+[[files]]
+source = "model/tts.drb"
+dest = "#{app}"
+overwrite = "if_newer"

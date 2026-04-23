@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use crate::config::{PathResolver, RunEntry, RunPhase, ShowWindow};
+use crate::config::{RunEntry, RunPhase, ShowWindow, VariableResolver};
 use crate::error::{InstallerError, InstallerResult};
 use crate::manifest::{ActionRecord, InstallManifest};
 use crate::{InstallerCallbacks, LogLevel};
@@ -8,7 +8,7 @@ use crate::{InstallerCallbacks, LogLevel};
 pub fn execute_phase_commands(
     entries: &[RunEntry],
     phase: &RunPhase,
-    resolver: &PathResolver,
+    resolver: &VariableResolver,
     manifest: &mut InstallManifest,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
@@ -20,7 +20,7 @@ pub fn execute_phase_commands(
 
 fn execute_command(
     entry: &RunEntry,
-    resolver: &PathResolver,
+    resolver: &VariableResolver,
     manifest: &mut InstallManifest,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {

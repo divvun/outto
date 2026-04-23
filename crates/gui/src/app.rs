@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
+use iced::keyboard;
 use iced::widget::{button, column, container, row, space, text};
 use iced::{Element, Fill, Subscription, Task};
 
@@ -35,6 +37,14 @@ pub enum WizardStep {
 pub enum AppMode {
     Install,
     Uninstall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FocusTarget {
+    LicenseCheckbox,
+    DirectoryInput,
+    ComponentCheckbox(usize),
+    Button(usize),
 }
 
 pub struct StepConfig {
@@ -177,6 +187,11 @@ pub enum Message {
 
     // Completion
     Finish,
+
+    // Keyboard
+    FocusNext,
+    FocusPrev,
+    ActivateFocused,
 }
 
 // --- App state ---
@@ -210,6 +225,13 @@ pub struct AppState {
     pub uninstall_exe: Option<PathBuf>,
 
     step_config: StepConfig,
+
+    // Keyboard focus
+    pub focused_index: usize,
+
+    // Minimum install time
+    pub install_started_at: Option<Instant>,
+    pub pending_finish: bool,
 }
 
 impl AppState {
@@ -300,10 +322,14 @@ impl AppState {
             uninstall_dir,
             uninstall_exe,
             step_config,
+            focused_index: 0,
+            install_started_at: None,
+            pending_finish: false,
         }
     }
 
     fn start_install(&mut self) {
+        self.install_started_at = Some(Instant::now());
         let selected: HashSet<String> = self
             .selected_components
             .iter()
@@ -334,9 +360,15 @@ impl AppState {
             .uninstall_dir
             .clone()
             .unwrap_or_else(|| PathBuf::from(&self.install_dir));
+        let package_id = self.config.package.id.clone();
 
         BRIDGE_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
-        bridge::spawn_uninstall(dir, self.flags.suppress_msgboxes, self.bridge_queue.clone());
+        bridge::spawn_uninstall(
+            dir,
+            package_id,
+            self.flags.suppress_msgboxes,
+            self.bridge_queue.clone(),
+        );
     }
 
     fn drain_bridge_queue(&mut self) {
@@ -387,10 +419,19 @@ impl AppState {
                 }
                 BridgeEvent::Finished(result) => {
                     self.result = Some(result);
-                    match self.step {
-                        WizardStep::Installing => self.step = WizardStep::Complete,
-                        WizardStep::Uninstalling => self.step = WizardStep::UninstallComplete,
-                        _ => {}
+                    // Check minimum display time (1 second)
+                    let elapsed = self
+                        .install_started_at
+                        .map(|t| t.elapsed().as_millis() >= 1000)
+                        .unwrap_or(true);
+                    if elapsed {
+                        match self.step {
+                            WizardStep::Installing => self.step = WizardStep::Complete,
+                            WizardStep::Uninstalling => self.step = WizardStep::UninstallComplete,
+                            _ => {}
+                        }
+                    } else {
+                        self.pending_finish = true;
                     }
                 }
             }
@@ -428,7 +469,9 @@ pub fn run(state: AppState) -> iced::Result {
         view,
     )
     .subscription(subscription)
+    .title(|state: &AppState| format!("{} Setup", state.config.package.name))
     .theme(theme::windows11_theme())
+    .default_font(iced::Font::DEFAULT)
     .window_size(iced::Size::new(theme::WINDOW_WIDTH, theme::WINDOW_HEIGHT))
     .resizable(false)
     .run()
@@ -439,12 +482,14 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
         Message::NextStep => {
             if let Some(next) = state.step.next(&state.step_config) {
                 state.step = next;
+                state.focused_index = 0;
             }
             Task::none()
         }
         Message::PrevStep => {
             if let Some(prev) = state.step.prev(&state.step_config) {
                 state.step = prev;
+                state.focused_index = 0;
             }
             Task::none()
         }
@@ -491,6 +536,21 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
         Message::BridgeUpdate => {
             state.drain_bridge_queue();
+            // Check if pending finish should now advance (minimum 1s elapsed)
+            if state.pending_finish {
+                let elapsed = state
+                    .install_started_at
+                    .map(|t| t.elapsed().as_millis() >= 1000)
+                    .unwrap_or(true);
+                if elapsed {
+                    state.pending_finish = false;
+                    match state.step {
+                        WizardStep::Installing => state.step = WizardStep::Complete,
+                        WizardStep::Uninstalling => state.step = WizardStep::UninstallComplete,
+                        _ => {}
+                    }
+                }
+            }
             Task::none()
         }
         Message::PromptResponse(response) => {
@@ -512,7 +572,236 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 1
             });
         }
+        Message::FocusNext => {
+            let count = focusable_items(state).len();
+            if count > 0 {
+                state.focused_index = (state.focused_index + 1) % count;
+            }
+            Task::none()
+        }
+        Message::FocusPrev => {
+            let count = focusable_items(state).len();
+            if count > 0 {
+                state.focused_index = if state.focused_index == 0 {
+                    count - 1
+                } else {
+                    state.focused_index - 1
+                };
+            }
+            Task::none()
+        }
+        Message::ActivateFocused => activate_focused(state),
     }
+}
+
+fn focusable_items(state: &AppState) -> Vec<FocusTarget> {
+    let mut items = vec![];
+    let no_cancel = state.flags.no_cancel;
+
+    // Content widgets first
+    match state.step {
+        WizardStep::License => {
+            items.push(FocusTarget::LicenseCheckbox);
+        }
+        WizardStep::Directory => {
+            items.push(FocusTarget::DirectoryInput);
+        }
+        WizardStep::Components => {
+            for (i, comp) in state.config.components.iter().enumerate() {
+                if !comp.required {
+                    items.push(FocusTarget::ComponentCheckbox(i));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // Button bar (only enabled buttons)
+    match state.step {
+        WizardStep::Welcome => {
+            items.push(FocusTarget::Button(0)); // Next
+            if !no_cancel {
+                items.push(FocusTarget::Button(1));
+            }
+        }
+        WizardStep::License => {
+            items.push(FocusTarget::Button(0)); // Back
+            if state.license_accepted {
+                items.push(FocusTarget::Button(1));
+            } // Next
+            if !no_cancel {
+                items.push(FocusTarget::Button(2));
+            }
+        }
+        WizardStep::Directory => {
+            items.push(FocusTarget::Button(0)); // Back
+            if !state.install_dir.is_empty() {
+                items.push(FocusTarget::Button(1));
+            } // Next
+            if !no_cancel {
+                items.push(FocusTarget::Button(2));
+            }
+        }
+        WizardStep::Components => {
+            items.push(FocusTarget::Button(0)); // Back
+            items.push(FocusTarget::Button(1)); // Next
+            if !no_cancel {
+                items.push(FocusTarget::Button(2));
+            }
+        }
+        WizardStep::Summary => {
+            items.push(FocusTarget::Button(0)); // Back
+            items.push(FocusTarget::Button(1)); // Install
+            if !no_cancel {
+                items.push(FocusTarget::Button(2));
+            }
+        }
+        WizardStep::Installing | WizardStep::Uninstalling => {
+            if !no_cancel {
+                items.push(FocusTarget::Button(0));
+            }
+        }
+        WizardStep::Complete | WizardStep::UninstallComplete => {
+            items.push(FocusTarget::Button(0)); // Finish
+        }
+        WizardStep::UninstallConfirm => {
+            items.push(FocusTarget::Button(0)); // Uninstall
+            if !no_cancel {
+                items.push(FocusTarget::Button(1));
+            }
+        }
+    }
+
+    items
+}
+
+pub fn current_focus_target(state: &AppState) -> Option<FocusTarget> {
+    let items = focusable_items(state);
+    items.get(state.focused_index).copied()
+}
+
+fn activate_focused(state: &mut AppState) -> Task<Message> {
+    let Some(target) = current_focus_target(state) else {
+        return Task::none();
+    };
+
+    match target {
+        FocusTarget::LicenseCheckbox => {
+            state.license_accepted = !state.license_accepted;
+        }
+        FocusTarget::ComponentCheckbox(i) => {
+            if let Some(comp) = state.config.components.get(i) {
+                let name = comp.name.clone();
+                let current = state
+                    .selected_components
+                    .get(&name)
+                    .copied()
+                    .unwrap_or(false);
+                state.selected_components.insert(name, !current);
+            }
+        }
+        FocusTarget::DirectoryInput => {
+            // Text input handles its own keyboard — no-op
+        }
+        FocusTarget::Button(idx) => {
+            return activate_button(state, idx);
+        }
+    }
+    Task::none()
+}
+
+fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
+    match state.step {
+        WizardStep::Welcome => match button_idx {
+            0 => {
+                if let Some(next) = state.step.next(&state.step_config) {
+                    state.step = next;
+                    state.focused_index = 0;
+                }
+            }
+            _ => std::process::exit(0),
+        },
+        WizardStep::License => match button_idx {
+            0 => {
+                if let Some(prev) = state.step.prev(&state.step_config) {
+                    state.step = prev;
+                    state.focused_index = 0;
+                }
+            }
+            1 => {
+                if state.license_accepted {
+                    if let Some(next) = state.step.next(&state.step_config) {
+                        state.step = next;
+                        state.focused_index = 0;
+                    }
+                }
+            }
+            _ => std::process::exit(0),
+        },
+        WizardStep::Directory => match button_idx {
+            0 => {
+                if let Some(prev) = state.step.prev(&state.step_config) {
+                    state.step = prev;
+                    state.focused_index = 0;
+                }
+            }
+            1 => {
+                if !state.install_dir.is_empty() {
+                    if let Some(next) = state.step.next(&state.step_config) {
+                        state.step = next;
+                        state.focused_index = 0;
+                    }
+                }
+            }
+            _ => std::process::exit(0),
+        },
+        WizardStep::Components => match button_idx {
+            0 => {
+                if let Some(prev) = state.step.prev(&state.step_config) {
+                    state.step = prev;
+                    state.focused_index = 0;
+                }
+            }
+            1 => {
+                if let Some(next) = state.step.next(&state.step_config) {
+                    state.step = next;
+                    state.focused_index = 0;
+                }
+            }
+            _ => std::process::exit(0),
+        },
+        WizardStep::Summary => match button_idx {
+            0 => {
+                if let Some(prev) = state.step.prev(&state.step_config) {
+                    state.step = prev;
+                    state.focused_index = 0;
+                }
+            }
+            1 => {
+                state.step = WizardStep::Installing;
+                state.start_install();
+                state.focused_index = 0;
+            }
+            _ => std::process::exit(0),
+        },
+        WizardStep::Complete | WizardStep::UninstallComplete => {
+            std::process::exit(if state.result.as_ref().is_some_and(|r| r.is_ok()) {
+                0
+            } else {
+                1
+            });
+        }
+        WizardStep::UninstallConfirm => match button_idx {
+            0 => {
+                state.step = WizardStep::Uninstalling;
+                state.start_uninstall();
+                state.focused_index = 0;
+            }
+            _ => std::process::exit(0),
+        },
+        _ => {}
+    }
+    Task::none()
 }
 
 fn view(state: &AppState) -> Element<'_, Message> {
@@ -545,72 +834,80 @@ fn view(state: &AppState) -> Element<'_, Message> {
     column![header, content, button_bar].into()
 }
 
-fn nav_button(label: &str) -> iced::widget::Button<'_, Message> {
+fn nav_button(label: &str, focused: bool) -> iced::widget::Button<'_, Message> {
+    let style = if focused {
+        theme::win11_button_focused as fn(&_, _) -> _
+    } else {
+        theme::win11_button as fn(&_, _) -> _
+    };
     button(text(label).size(theme::FONT_SECONDARY).center())
         .width(100)
         .padding([8, 16])
-        .style(theme::win11_button)
+        .style(style)
 }
 
 fn view_button_bar(state: &AppState) -> Element<'_, Message> {
     let mut bar = row![].spacing(10).padding([12.0, theme::PADDING]);
     bar = bar.push(space::horizontal());
 
+    let focus = current_focus_target(state);
+    let bf = |idx: usize| focus == Some(FocusTarget::Button(idx));
+
     match state.step {
         WizardStep::Welcome => {
-            bar = bar.push(nav_button("Next >").on_press(Message::NextStep));
+            bar = bar.push(nav_button("Next >", bf(0)).on_press(Message::NextStep));
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel").on_press(Message::Cancel));
+                bar = bar.push(nav_button("Cancel", bf(1)).on_press(Message::Cancel));
             }
         }
         WizardStep::License => {
-            bar = bar.push(nav_button("< Back").on_press(Message::PrevStep));
+            bar = bar.push(nav_button("< Back", bf(0)).on_press(Message::PrevStep));
             if state.license_accepted {
-                bar = bar.push(nav_button("Next >").on_press(Message::NextStep));
+                bar = bar.push(nav_button("Next >", bf(1)).on_press(Message::NextStep));
             } else {
-                bar = bar.push(nav_button("Next >"));
+                bar = bar.push(nav_button("Next >", false));
             }
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel").on_press(Message::Cancel));
+                bar = bar.push(nav_button("Cancel", bf(2)).on_press(Message::Cancel));
             }
         }
         WizardStep::Directory => {
-            bar = bar.push(nav_button("< Back").on_press(Message::PrevStep));
+            bar = bar.push(nav_button("< Back", bf(0)).on_press(Message::PrevStep));
             if !state.install_dir.is_empty() {
-                bar = bar.push(nav_button("Next >").on_press(Message::NextStep));
+                bar = bar.push(nav_button("Next >", bf(1)).on_press(Message::NextStep));
             } else {
-                bar = bar.push(nav_button("Next >"));
+                bar = bar.push(nav_button("Next >", false));
             }
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel").on_press(Message::Cancel));
+                bar = bar.push(nav_button("Cancel", bf(2)).on_press(Message::Cancel));
             }
         }
         WizardStep::Components => {
-            bar = bar.push(nav_button("< Back").on_press(Message::PrevStep));
-            bar = bar.push(nav_button("Next >").on_press(Message::NextStep));
+            bar = bar.push(nav_button("< Back", bf(0)).on_press(Message::PrevStep));
+            bar = bar.push(nav_button("Next >", bf(1)).on_press(Message::NextStep));
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel").on_press(Message::Cancel));
+                bar = bar.push(nav_button("Cancel", bf(2)).on_press(Message::Cancel));
             }
         }
         WizardStep::Summary => {
-            bar = bar.push(nav_button("< Back").on_press(Message::PrevStep));
-            bar = bar.push(nav_button("Install").on_press(Message::StartInstall));
+            bar = bar.push(nav_button("< Back", bf(0)).on_press(Message::PrevStep));
+            bar = bar.push(nav_button("Install", bf(1)).on_press(Message::StartInstall));
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel").on_press(Message::Cancel));
+                bar = bar.push(nav_button("Cancel", bf(2)).on_press(Message::Cancel));
             }
         }
         WizardStep::Installing | WizardStep::Uninstalling => {
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel").on_press(Message::Cancel));
+                bar = bar.push(nav_button("Cancel", bf(0)).on_press(Message::Cancel));
             }
         }
         WizardStep::Complete | WizardStep::UninstallComplete => {
-            bar = bar.push(nav_button("Finish").on_press(Message::Finish));
+            bar = bar.push(nav_button("Finish", bf(0)).on_press(Message::Finish));
         }
         WizardStep::UninstallConfirm => {
-            bar = bar.push(nav_button("Uninstall").on_press(Message::StartUninstall));
+            bar = bar.push(nav_button("Uninstall", bf(0)).on_press(Message::StartUninstall));
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel").on_press(Message::Cancel));
+                bar = bar.push(nav_button("Cancel", bf(1)).on_press(Message::Cancel));
             }
         }
     }
@@ -621,16 +918,43 @@ fn view_button_bar(state: &AppState) -> Element<'_, Message> {
 fn subscription(state: &AppState) -> Subscription<Message> {
     use std::time::Duration;
 
+    let mut subs = vec![];
+
+    // Keyboard events
+    subs.push(keyboard::listen().map(|event| {
+        if let keyboard::Event::KeyPressed { key, modifiers, .. } = event {
+            match key.as_ref() {
+                keyboard::Key::Named(keyboard::key::Named::Tab) => {
+                    if modifiers.shift() {
+                        return Message::FocusPrev;
+                    } else {
+                        return Message::FocusNext;
+                    }
+                }
+                keyboard::Key::Named(keyboard::key::Named::Enter) => {
+                    return Message::ActivateFocused
+                }
+                keyboard::Key::Named(keyboard::key::Named::Space) => {
+                    return Message::ActivateFocused
+                }
+                keyboard::Key::Named(keyboard::key::Named::Escape) => return Message::Cancel,
+                _ => {}
+            }
+        }
+        Message::BridgeUpdate // no-op fallback
+    }));
+
+    // Bridge polling (only when installing/uninstalling)
     let is_active = matches!(
         state.step,
         WizardStep::Installing | WizardStep::Uninstalling
     );
 
-    if !is_active || !BRIDGE_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
-        return Subscription::none();
+    if is_active
+        && (BRIDGE_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) || state.pending_finish)
+    {
+        subs.push(iced::time::every(Duration::from_millis(16)).map(|_| Message::BridgeUpdate));
     }
 
-    // Poll bridge queue at 60fps. The bridge_queue is populated by the background
-    // install thread, and we drain it in update() on each BridgeUpdate tick.
-    iced::time::every(Duration::from_millis(16)).map(|_| Message::BridgeUpdate)
+    Subscription::batch(subs)
 }

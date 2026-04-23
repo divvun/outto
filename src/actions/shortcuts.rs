@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-use crate::config::{PathResolver, ShortcutEntry, ShortcutLocation};
+use crate::config::{ShortcutEntry, ShortcutLocation, VariableResolver};
 use crate::error::{InstallerError, InstallerResult};
 use crate::manifest::{ActionRecord, InstallManifest};
 use crate::{InstallerCallbacks, LogLevel};
 
 pub fn create_shortcut(
     entry: &ShortcutEntry,
-    resolver: &PathResolver,
+    resolver: &VariableResolver,
     manifest: &mut InstallManifest,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
@@ -75,28 +75,14 @@ pub fn create_shortcut(
         .map(|i| resolver.resolve(i))
         .transpose()?;
 
-    #[cfg(windows)]
-    {
-        create_shortcut_powershell(
-            &shortcut_path,
-            &target,
-            arguments.as_deref(),
-            working_dir.as_deref(),
-            icon.as_deref(),
-            entry.description.as_deref(),
-        )?;
-    }
-
-    #[cfg(not(windows))]
-    {
-        // Create a placeholder .lnk file for testing on non-Windows
-        std::fs::write(&shortcut_path, format!("target={target}")).map_err(|e| {
-            InstallerError::FileOp {
-                path: shortcut_path.clone(),
-                source: e,
-            }
-        })?;
-    }
+    create_shortcut_powershell(
+        &shortcut_path,
+        &target,
+        arguments.as_deref(),
+        working_dir.as_deref(),
+        icon.as_deref(),
+        entry.description.as_deref(),
+    )?;
 
     manifest.record(ActionRecord::ShortcutCreated {
         path: shortcut_path,
@@ -105,7 +91,6 @@ pub fn create_shortcut(
     Ok(())
 }
 
-#[cfg(windows)]
 fn create_shortcut_powershell(
     shortcut_path: &std::path::Path,
     target: &str,

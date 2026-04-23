@@ -1,11 +1,11 @@
-use crate::config::{AssociationEntry, PathResolver};
+use crate::config::{AssociationEntry, VariableResolver};
 use crate::error::{InstallerError, InstallerResult};
 use crate::manifest::{ActionRecord, InstallManifest};
 use crate::{InstallerCallbacks, LogLevel};
 
 pub fn create_association(
     entry: &AssociationEntry,
-    resolver: &PathResolver,
+    resolver: &VariableResolver,
     manifest: &mut InstallManifest,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
@@ -24,25 +24,14 @@ pub fn create_association(
         ),
     );
 
-    #[cfg(windows)]
-    {
-        register_association_windows(
-            &entry.extension,
-            &entry.prog_id,
-            entry.description.as_deref(),
-            icon.as_deref(),
-            &command,
-        )?;
-        notify_shell_change();
-    }
-
-    #[cfg(not(windows))]
-    {
-        callbacks.on_log(
-            LogLevel::Info,
-            &format!("Associations: [simulated] created {}", entry.extension),
-        );
-    }
+    register_association_windows(
+        &entry.extension,
+        &entry.prog_id,
+        entry.description.as_deref(),
+        icon.as_deref(),
+        &command,
+    )?;
+    notify_shell_change();
 
     manifest.record(ActionRecord::AssociationCreated {
         extension: entry.extension.clone(),
@@ -52,7 +41,6 @@ pub fn create_association(
     Ok(())
 }
 
-#[cfg(windows)]
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -62,7 +50,6 @@ fn to_wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
-#[cfg(windows)]
 fn register_association_windows(
     extension: &str,
     prog_id: &str,
@@ -85,7 +72,6 @@ fn register_association_windows(
     Ok(())
 }
 
-#[cfg(windows)]
 fn set_hkcr_value(key: &str, value_name: &str, data: &str) -> InstallerResult<()> {
     use windows_sys::Win32::System::Registry::*;
 
@@ -140,7 +126,6 @@ fn set_hkcr_value(key: &str, value_name: &str, data: &str) -> InstallerResult<()
     Ok(())
 }
 
-#[cfg(windows)]
 fn notify_shell_change() {
     use windows_sys::Win32::UI::Shell::*;
     unsafe {
@@ -153,7 +138,6 @@ fn notify_shell_change() {
     }
 }
 
-#[cfg(windows)]
 pub fn remove_association(extension: &str, prog_id: &str) -> InstallerResult<()> {
     use windows_sys::Win32::System::Registry::*;
 

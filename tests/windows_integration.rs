@@ -245,8 +245,13 @@ fn test_registry_string_value_write_read_delete() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
 
     let entry = RegistryEntry {
         root: RegistryRoot::Hkcu,
@@ -290,8 +295,13 @@ fn test_registry_dword_value() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
 
     let entry = RegistryEntry {
         root: RegistryRoot::Hkcu,
@@ -324,8 +334,13 @@ fn test_registry_multiple_values_on_same_key() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
 
     let entry = RegistryEntry {
         root: RegistryRoot::Hkcu,
@@ -420,8 +435,13 @@ fn test_registry_key_created_and_deleted() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
 
     let entry = RegistryEntry {
         root: RegistryRoot::Hkcu,
@@ -478,8 +498,13 @@ fn test_env_set_new_user_variable() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
 
     let entry = EnvironmentEntry {
         name: var_name.to_string(),
@@ -514,8 +539,13 @@ fn test_env_append_user_variable() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
 
     let entry = EnvironmentEntry {
         name: var_name.to_string(),
@@ -542,8 +572,13 @@ fn test_env_prepend_user_variable() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
 
     let entry = EnvironmentEntry {
         name: var_name.to_string(),
@@ -570,8 +605,13 @@ fn test_env_remove_from_user_variable() {
 
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
 
     let entry = EnvironmentEntry {
         name: var_name.to_string(),
@@ -701,7 +741,7 @@ fn test_full_install_uninstall_with_registry_and_env() {
     std::fs::write(source_dir.join("bin/config.toml"), "key = \"val\"").unwrap();
 
     let toml = format!(
-        r#"
+        r##"
 [package]
 id = "com.outto.test.full"
 name = "FullCycleTest"
@@ -709,23 +749,23 @@ version = "1.0.0"
 
 [[files]]
 source = "bin/*"
-dest = "$app"
+dest = "#{{app}}"
 overwrite = "always"
 
 [[registry]]
 root = "hkcu"
 key = "Software\\\\OuttoTest_full_cycle"
 values = [
-    {{ name = "AppPath", type = "string", data = "$app" }},
-    {{ name = "Version", type = "string", data = "$package.version" }},
+    {{ name = "AppPath", type = "string", data = "#{{app}}" }},
+    {{ name = "Version", type = "string", data = "#{{package.version}}" }},
 ]
 
 [[environment]]
 name = "{env_var}"
-value = "$app/bin"
+value = "#{{app}}/bin"
 scope = "user"
 action = "set"
-"#
+"##
     );
 
     let config = Config::from_toml(&toml).unwrap();
@@ -793,12 +833,12 @@ fn test_shortcut_creation_basic() {
     let mut resolver = PathResolver::new(&dir, "Test", "1.0.0");
     resolver.set_variable("desktop", dir.to_string_lossy().as_ref());
 
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &dir);
+    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &dir, vec![]);
     let callbacks = NoOpCallbacks;
 
     let entry = ShortcutEntry {
         name: "TestApp".to_string(),
-        target: "$app/app.exe".to_string(),
+        target: "#{app}/app.exe".to_string(),
         location: ShortcutLocation::Desktop,
         icon: None,
         working_dir: None,
@@ -837,15 +877,15 @@ fn test_shortcut_with_all_fields() {
     let mut resolver = PathResolver::new(&dir, "Test", "1.0.0");
     resolver.set_variable("desktop", dir.to_string_lossy().as_ref());
 
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &dir);
+    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &dir, vec![]);
     let callbacks = NoOpCallbacks;
 
     let entry = ShortcutEntry {
         name: "FullShortcut".to_string(),
-        target: "$app/app.exe".to_string(),
+        target: "#{app}/app.exe".to_string(),
         location: ShortcutLocation::Desktop,
-        icon: Some("$app/app.exe,0".to_string()),
-        working_dir: Some("$app".to_string()),
+        icon: Some("#{app}/app.exe,0".to_string()),
+        working_dir: Some("#{app}".to_string()),
         arguments: Some("--verbose".to_string()),
         description: Some("A test shortcut".to_string()),
         component: None,
@@ -895,7 +935,7 @@ fn test_create_directory_basic() {
 
     let target = base.join("sub").join("deep");
     let resolver = PathResolver::new(&base, "Test", "1.0.0");
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &base);
+    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &base, vec![]);
     let callbacks = NoOpCallbacks;
 
     let entry = DirEntry {
@@ -924,7 +964,7 @@ fn test_create_directory_already_exists() {
     cleanup.track_dir(base.clone());
 
     let resolver = PathResolver::new(&base, "Test", "1.0.0");
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &base);
+    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &base, vec![]);
     let callbacks = NoOpCallbacks;
 
     let entry = DirEntry {
@@ -987,8 +1027,13 @@ fn test_needs_elevation_admin_when_elevated() {
 #[test]
 fn test_execute_phase_before_install() {
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
     let callbacks = NoOpCallbacks;
 
     let entries = vec![RunEntry {
@@ -1021,8 +1066,13 @@ fn test_execute_phase_before_install() {
 #[test]
 fn test_execute_phase_filtering() {
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
     let callbacks = NoOpCallbacks;
 
     let entries = vec![RunEntry {
@@ -1056,8 +1106,13 @@ fn test_execute_phase_filtering() {
 #[test]
 fn test_execute_command_nonzero_exit() {
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
     let callbacks = NoOpCallbacks;
 
     let entries = vec![RunEntry {
@@ -1238,7 +1293,7 @@ fn test_file_overwrite_always() {
     std::fs::write(source_dir.join("file.txt"), "new content").unwrap();
     std::fs::write(install_dir.join("file.txt"), "old content").unwrap();
 
-    let toml = r#"
+    let toml = r##"
 [package]
 id = "com.test.ow"
 name = "OverwriteTest"
@@ -1246,9 +1301,9 @@ version = "1.0.0"
 
 [[files]]
 source = "file.txt"
-dest = "$app"
+dest = "#{app}"
 overwrite = "always"
-"#;
+"##;
     let config = Config::from_toml(toml).unwrap();
     let options = InstallOptions {
         source_dir,
@@ -1278,7 +1333,7 @@ fn test_file_overwrite_never() {
     std::fs::write(source_dir.join("file.txt"), "new content").unwrap();
     std::fs::write(install_dir.join("file.txt"), "old content").unwrap();
 
-    let toml = r#"
+    let toml = r##"
 [package]
 id = "com.test.ow_never"
 name = "NeverTest"
@@ -1286,9 +1341,9 @@ version = "1.0.0"
 
 [[files]]
 source = "file.txt"
-dest = "$app"
+dest = "#{app}"
 overwrite = "never"
-"#;
+"##;
     let config = Config::from_toml(toml).unwrap();
     let options = InstallOptions {
         source_dir,
@@ -1321,7 +1376,7 @@ fn test_file_overwrite_if_newer_skips_older() {
     std::thread::sleep(std::time::Duration::from_millis(50));
     std::fs::write(install_dir.join("file.txt"), "newer dest").unwrap();
 
-    let toml = r#"
+    let toml = r##"
 [package]
 id = "com.test.ow_ifnewer"
 name = "IfNewerTest"
@@ -1329,9 +1384,9 @@ version = "1.0.0"
 
 [[files]]
 source = "file.txt"
-dest = "$app"
+dest = "#{app}"
 overwrite = "if_newer"
-"#;
+"##;
     let config = Config::from_toml(toml).unwrap();
     let options = InstallOptions {
         source_dir,
@@ -1362,7 +1417,7 @@ fn test_file_backup_created_on_overwrite() {
     std::fs::write(source_dir.join("app.exe"), "new exe").unwrap();
     std::fs::write(install_dir.join("app.exe"), "old exe").unwrap();
 
-    let toml = r#"
+    let toml = r##"
 [package]
 id = "com.test.backup"
 name = "BackupTest"
@@ -1370,9 +1425,9 @@ version = "1.0.0"
 
 [[files]]
 source = "app.exe"
-dest = "$app"
+dest = "#{app}"
 overwrite = "always"
-"#;
+"##;
     let config = Config::from_toml(toml).unwrap();
     let options = InstallOptions {
         source_dir,
@@ -1400,7 +1455,7 @@ fn test_file_no_glob_matches() {
     std::fs::create_dir_all(&source_dir).unwrap();
     cleanup.track_dir(dir.clone());
 
-    let toml = r#"
+    let toml = r##"
 [package]
 id = "com.test.noglob"
 name = "NoGlob"
@@ -1408,8 +1463,8 @@ version = "1.0.0"
 
 [[files]]
 source = "nonexistent_pattern_*.xyz"
-dest = "$app"
-"#;
+dest = "#{app}"
+"##;
     let config = Config::from_toml(toml).unwrap();
     let options = InstallOptions {
         source_dir,
@@ -1438,17 +1493,17 @@ fn test_install_with_dirs_and_run() {
     cleanup.track_dir(dir.clone());
 
     let toml = format!(
-        r#"
+        r##"
 [package]
 id = "com.test.dirsrun"
 name = "DirsRunTest"
 version = "1.0.0"
 
 [[dirs]]
-path = "$app/logs"
+path = "#{{app}}/logs"
 
 [[dirs]]
-path = "$app/data/cache"
+path = "#{{app}}/data/cache"
 
 [[run]]
 phase = "after_install"
@@ -1456,7 +1511,7 @@ command = "cmd"
 arguments = "/C echo done > \"{install_dir}/after.txt\""
 wait = true
 show = "hidden"
-"#,
+"##,
         install_dir = install_dir.to_string_lossy().replace('\\', "/")
     );
     let config = Config::from_toml(&toml).unwrap();
@@ -1515,7 +1570,7 @@ fn test_install_dir_from_default_dir() {
 
     let default_install = dir.join("installed_default");
     let toml = format!(
-        r#"
+        r##"
 [package]
 id = "com.test.defaultdir"
 name = "DefaultDirTest"
@@ -1524,8 +1579,8 @@ default_dir = "{}"
 
 [[files]]
 source = "app.exe"
-dest = "$app"
-"#,
+dest = "#{{app}}"
+"##,
         default_install.to_string_lossy().replace('\\', "/")
     );
     let config = Config::from_toml(&toml).unwrap();
@@ -1554,7 +1609,7 @@ fn test_install_rollback_on_failure() {
     // Create a good file, plus a run command that will fail
     std::fs::write(source_dir.join("good.txt"), "good").unwrap();
 
-    let toml = r#"
+    let toml = r##"
 [package]
 id = "com.test.rollback"
 name = "RollbackTest"
@@ -1562,14 +1617,14 @@ version = "1.0.0"
 
 [[files]]
 source = "good.txt"
-dest = "$app"
+dest = "#{app}"
 overwrite = "always"
 
 [[prerequisites]]
 name = "WillFail"
 check = { file = "C:\\nonexistent_outto_prereq_12345.exe" }
 required = true
-"#;
+"##;
     let config = Config::from_toml(toml).unwrap();
     let options = InstallOptions {
         source_dir,
@@ -1699,8 +1754,13 @@ fn test_prerequisite_not_required_skips() {
 #[test]
 fn test_execute_command_no_wait() {
     let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
     let callbacks = NoOpCallbacks;
 
     let entries = vec![RunEntry {
@@ -1747,12 +1807,12 @@ fn test_shortcut_startmenu_location() {
     let mut resolver = PathResolver::new(&dir, "Test", "1.0.0");
     resolver.set_variable("startmenu", dir.to_string_lossy().as_ref());
 
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &dir);
+    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &dir, vec![]);
     let callbacks = NoOpCallbacks;
 
     let entry = ShortcutEntry {
         name: "StartMenuApp".to_string(),
-        target: "$app/app.exe".to_string(),
+        target: "#{app}/app.exe".to_string(),
         location: ShortcutLocation::StartMenu,
         icon: None,
         working_dir: None,
@@ -1777,7 +1837,10 @@ fn test_shortcut_startmenu_location() {
 
 #[test]
 fn test_manifest_load_missing_file() {
-    let result = InstallManifest::load(std::path::Path::new("C:\\nonexistent_outto_dir_12345"));
+    let result = InstallManifest::load(
+        std::path::Path::new("C:\\nonexistent_outto_dir_12345"),
+        "com.test",
+    );
     assert!(result.is_err());
 }
 
@@ -1786,13 +1849,13 @@ fn test_manifest_load_corrupted_json() {
     let mut cleanup = TestCleanup::new();
     let dir = std::env::temp_dir().join("outto_test_manifest_corrupt");
     let _ = std::fs::remove_dir_all(&dir);
-    let manifest_dir = dir.join(".outto");
+    let manifest_dir = dir.join(".outto").join("com.test");
     std::fs::create_dir_all(&manifest_dir).unwrap();
     cleanup.track_dir(dir.clone());
 
     std::fs::write(manifest_dir.join("manifest.json"), "NOT VALID JSON {{{").unwrap();
 
-    let result = InstallManifest::load(&dir);
+    let result = InstallManifest::load(&dir, "com.test");
     assert!(result.is_err());
 }
 

@@ -2,16 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// Normalize path separators to the platform native format.
+/// Normalize path separators to Windows native format.
 fn normalize_path(path: &Path) -> PathBuf {
-    if cfg!(windows) {
-        PathBuf::from(path.to_string_lossy().replace('/', "\\"))
-    } else {
-        path.to_path_buf()
-    }
+    PathBuf::from(path.to_string_lossy().replace('/', "\\"))
 }
 
-use crate::config::{FileEntry, OverwritePolicy, PathResolver};
+use crate::config::{FileEntry, OverwritePolicy, VariableResolver};
 use crate::error::{InstallerError, InstallerResult};
 use crate::manifest::{ActionRecord, InstallManifest};
 use crate::{InstallerCallbacks, LogLevel, Prompt, PromptResponse};
@@ -19,7 +15,7 @@ use crate::{InstallerCallbacks, LogLevel, Prompt, PromptResponse};
 pub fn install_files(
     entry: &FileEntry,
     source_dir: &Path,
-    resolver: &PathResolver,
+    resolver: &VariableResolver,
     manifest: &mut InstallManifest,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
@@ -238,7 +234,6 @@ fn copy_file_with_policy(
     }
 
     // Post-copy: apply NTFS compression
-    #[cfg(windows)]
     if let Some(compress) = entry.set_ntfs_compression {
         callbacks.on_log(
             LogLevel::Debug,
@@ -300,41 +295,33 @@ fn clear_readonly(path: &Path) {
 }
 
 pub(crate) fn apply_attribs(path: &Path, attribs: &crate::config::types::FileAttribs) {
-    #[cfg(windows)]
-    {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
 
-        let wide: Vec<u16> = OsStr::new(path)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
+    let wide: Vec<u16> = OsStr::new(path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
 
-        let mut flags: u32 = 0;
-        if attribs.readonly {
-            flags |= 0x01; // FILE_ATTRIBUTE_READONLY
-        }
-        if attribs.hidden {
-            flags |= 0x02; // FILE_ATTRIBUTE_HIDDEN
-        }
-        if attribs.system {
-            flags |= 0x04; // FILE_ATTRIBUTE_SYSTEM
-        }
-        if attribs.not_content_indexed {
-            flags |= 0x2000; // FILE_ATTRIBUTE_NOT_CONTENT_INDEXED
-        }
-        if flags == 0 {
-            flags = 0x80; // FILE_ATTRIBUTE_NORMAL
-        }
-
-        unsafe {
-            windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(wide.as_ptr(), flags);
-        }
+    let mut flags: u32 = 0;
+    if attribs.readonly {
+        flags |= 0x01; // FILE_ATTRIBUTE_READONLY
+    }
+    if attribs.hidden {
+        flags |= 0x02; // FILE_ATTRIBUTE_HIDDEN
+    }
+    if attribs.system {
+        flags |= 0x04; // FILE_ATTRIBUTE_SYSTEM
+    }
+    if attribs.not_content_indexed {
+        flags |= 0x2000; // FILE_ATTRIBUTE_NOT_CONTENT_INDEXED
+    }
+    if flags == 0 {
+        flags = 0x80; // FILE_ATTRIBUTE_NORMAL
     }
 
-    #[cfg(not(windows))]
-    {
-        let _ = (path, attribs);
+    unsafe {
+        windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(wide.as_ptr(), flags);
     }
 }
 
@@ -391,7 +378,6 @@ fn verify_hash(
     Ok(())
 }
 
-#[cfg(windows)]
 fn set_ntfs_compression(path: &Path, compress: bool) {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;

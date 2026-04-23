@@ -1,5 +1,6 @@
+use iced::font::Weight;
 use iced::widget::{column, container, space, text};
-use iced::{Element, Fill};
+use iced::{Element, Fill, Font};
 
 use crate::app::{AppState, Message};
 use crate::theme;
@@ -20,7 +21,15 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     )));
 
     if let Some(ref publisher) = pkg.publisher {
-        col = col.push(text(format!("Publisher: {publisher}")));
+        let bold = Font {
+            weight: Weight::Bold,
+            ..Font::DEFAULT
+        };
+        col = col.push(
+            text(format!("Publisher: {publisher}"))
+                .font(bold)
+                .size(theme::FONT_SECONDARY),
+        );
     }
 
     col = col.push(space::vertical());

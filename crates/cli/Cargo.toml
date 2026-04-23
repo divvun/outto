@@ -5,9 +5,13 @@ edition = "2021"
 description = "Build tool for creating outto installers"
 license = "MIT"
 
+[[bin]]
+name = "outto"
+path = "src/main.rs"
+
 [dependencies]
-outto = { path = ".." }
-box-format = { path = "../../box", default-features = false, features = ["std", "zstd", "xz", "reader", "writer"] }
+outto = { path = "../.." }
+box-format = { path = "../../../box", default-features = false, features = ["std", "zstd", "reader", "writer"] }
 tempfile = "3"
 walkdir = "2"
 zstd = { version = "0.13", default-features = false }

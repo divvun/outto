@@ -5,7 +5,7 @@ pub mod validate;
 use serde::Deserialize;
 
 use crate::error::{InstallerError, InstallerResult};
-pub use paths::PathResolver;
+pub use paths::VariableResolver;
 pub use types::*;
 pub use validate::validate_config;
 
@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn test_parse_full_config() {
-        let toml = r#"
+        let toml = r##"
 [package]
 id = "com.example.myapp"
 name = "My Application"
@@ -81,20 +81,20 @@ support_url = "https://example.com/support"
 license_file = "LICENSE.txt"
 architecture = "x64"
 privileges = "admin"
-default_dir = "$pf/$package.name"
+default_dir = "#{pf}/#{package.name}"
 
 [logging]
 enabled = true
-path = "$app/install.log"
+path = "#{app}/install.log"
 
 [reboot]
 policy = "if_needed"
 restart_manager = true
 
 [uninstall]
-display_icon = "$app/myapp.exe"
+display_icon = "#{app}/myapp.exe"
 remove_app_dir = true
-extra_dirs = ["$userappdata/MyApp"]
+extra_dirs = ["#{userappdata}/MyApp"]
 
 [upgrade]
 policy = "overwrite"
@@ -114,46 +114,46 @@ default = false
 
 [[files]]
 source = "build/release/**/*"
-dest = "$app"
+dest = "#{app}"
 overwrite = "if_newer"
 component = "core"
 
 [[files]]
 source = "extras/*"
-dest = "$app/extras"
+dest = "#{app}/extras"
 overwrite = "always"
 component = "extras"
 
 [[dirs]]
-path = "$app/logs"
+path = "#{app}/logs"
 permissions = [{ identity = "Users", access = "modify" }]
 
 [[registry]]
 root = "hklm"
 key = "Software\\ExampleCorp\\MyApp"
 values = [
-    { name = "InstallPath", type = "string", data = "$app" },
-    { name = "Version", type = "string", data = "$package.version" },
+    { name = "InstallPath", type = "string", data = "#{app}" },
+    { name = "Version", type = "string", data = "#{package.version}" },
 ]
 uninstall = "remove_key"
 
 [[shortcuts]]
 name = "My Application"
-target = "$app/myapp.exe"
+target = "#{app}/myapp.exe"
 location = "start_menu"
-icon = "$app/myapp.exe,0"
-working_dir = "$app"
+icon = "#{app}/myapp.exe,0"
+working_dir = "#{app}"
 
 [[environment]]
 name = "PATH"
-value = "$app/bin"
+value = "#{app}/bin"
 scope = "system"
 action = "append"
 
 [[services]]
 name = "myapp-daemon"
 display_name = "MyApp Background Service"
-executable = "$app/myapp-svc.exe"
+executable = "#{app}/myapp-svc.exe"
 start_type = "delayed_auto"
 account = "LocalService"
 on_install = "start"
@@ -163,8 +163,8 @@ on_uninstall = "stop_and_delete"
 extension = ".myf"
 prog_id = "MyApp.Document"
 description = "MyApp Document"
-icon = "$app/myapp.exe,1"
-command = "\"$app/myapp.exe\" \"%1\""
+icon = "#{app}/myapp.exe,1"
+command = "\"#{app}/myapp.exe\" \"%1\""
 
 [[prerequisites]]
 name = "VC++ 2022 Redistributable"
@@ -176,7 +176,7 @@ required = true
 
 [[run]]
 phase = "after_install"
-command = "$app/myapp.exe"
+command = "#{app}/myapp.exe"
 arguments = "--init"
 wait = true
 show = "hidden"
@@ -185,9 +185,9 @@ show = "hidden"
 source = "assets/CustomFont.ttf"
 
 [[com]]
-file = "$app/mylib.dll"
+file = "#{app}/mylib.dll"
 action = "regserver"
-"#;
+"##;
         let config = Config::from_toml(toml).unwrap();
         assert_eq!(config.package.id, "com.example.myapp");
         assert_eq!(config.package.name, "My Application");

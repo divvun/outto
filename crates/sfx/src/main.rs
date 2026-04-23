@@ -1,13 +1,39 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
-
+use std::ffi::c_void;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 const SECTION_NAME: &str = ".outto";
+const DLL_PROCESS_ATTACH: u32 = 1;
+
+/// TLS callback: runs before main() to hide and free the auto-allocated console,
+/// preventing any visible flash when the exe is double-clicked.
+#[used]
+#[link_section = ".CRT$XLB"]
+static TLS_CALLBACK: unsafe extern "system" fn(*mut c_void, u32, *mut c_void) = on_tls;
+
+unsafe extern "system" fn on_tls(_: *mut c_void, reason: u32, _: *mut c_void) {
+    if reason == DLL_PROCESS_ATTACH {
+        // If we're the only process on this console, it was allocated for us (double-click).
+        // Hide it before freeing to prevent any visible flash.
+        // If count > 1, we inherited a parent's console (CLI) — just free without hiding.
+        let mut pids = [0u32; 2];
+        let count =
+            windows_sys::Win32::System::Console::GetConsoleProcessList(pids.as_mut_ptr(), 2);
+        if count <= 1 {
+            let hwnd = windows_sys::Win32::System::Console::GetConsoleWindow();
+            if !hwnd.is_null() {
+                windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
+                    hwnd,
+                    windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
+                );
+            }
+        }
+        windows_sys::Win32::System::Console::FreeConsole();
+    }
+}
 
 fn main() {
-    #[cfg(windows)]
     unsafe {
         windows_sys::Win32::System::Console::AttachConsole(
             windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
@@ -53,28 +79,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Clean up temp file (schedule reboot delete if immediate delete fails)
     if fs::remove_file(&temp_path).is_err() {
-        #[cfg(windows)]
-        {
-            use std::ffi::OsStr;
-            use std::os::windows::ffi::OsStrExt;
-            let wide: Vec<u16> = OsStr::new(&temp_path)
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-            unsafe {
-                windows_sys::Win32::Storage::FileSystem::MoveFileExW(
-                    wide.as_ptr(),
-                    std::ptr::null(),
-                    windows_sys::Win32::Storage::FileSystem::MOVEFILE_DELAY_UNTIL_REBOOT,
-                );
-            }
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = OsStr::new(&temp_path)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+                wide.as_ptr(),
+                std::ptr::null(),
+                windows_sys::Win32::Storage::FileSystem::MOVEFILE_DELAY_UNTIL_REBOOT,
+            );
         }
     }
 
     std::process::exit(exit_code);
 }
 
-#[cfg(windows)]
 fn launch_and_wait(exe: &Path, args: &[String]) -> i32 {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -141,15 +163,6 @@ fn launch_and_wait(exe: &Path, args: &[String]) -> i32 {
 
         exit_code as i32
     }
-}
-
-#[cfg(not(windows))]
-fn launch_and_wait(exe: &Path, args: &[String]) -> i32 {
-    std::process::Command::new(exe)
-        .args(args)
-        .status()
-        .map(|s| s.code().unwrap_or(1))
-        .unwrap_or(1)
 }
 
 // --- Inline PE section reader (no external dep) ---
@@ -223,29 +236,26 @@ fn read_u32(f: &mut fs::File) -> io::Result<u32> {
 fn fatal_error(msg: &str) -> ! {
     eprintln!("Error: {msg}");
 
-    #[cfg(windows)]
-    {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
 
-        let text: Vec<u16> = OsStr::new(msg)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let title: Vec<u16> = OsStr::new("Outto Installer")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
+    let text: Vec<u16> = OsStr::new(msg)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let title: Vec<u16> = OsStr::new("Outto Installer")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
 
-        unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
-                std::ptr::null_mut(),
-                text.as_ptr(),
-                title.as_ptr(),
-                windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
-                    | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
-            );
-        }
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
+                | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+        );
     }
 
     std::process::exit(1);

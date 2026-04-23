@@ -1,7 +1,7 @@
-use iced::widget::{checkbox, column, container, scrollable, space, text};
+use iced::widget::{checkbox, column, container, scrollable, text};
 use iced::{Element, Fill};
 
-use crate::app::{AppState, Message};
+use crate::app::{current_focus_target, AppState, FocusTarget, Message};
 use crate::theme;
 
 pub fn view(state: &AppState) -> Element<'_, Message> {
@@ -9,6 +9,8 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
         .license_text
         .as_deref()
         .unwrap_or("No license text available.");
+
+    let focused = current_focus_target(state) == Some(FocusTarget::LicenseCheckbox);
 
     let mut col = column![].spacing(theme::SPACING).padding(theme::PADDING);
 
@@ -19,21 +21,24 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
 
     col = col.push(
         container(scrollable(text(license_text).size(theme::FONT_SECONDARY)))
-            .height(250)
+            .height(Fill)
             .width(Fill)
             .style(container::bordered_box),
     );
 
-    col = col.push(
-        checkbox(state.license_accepted)
-            .label("I accept the terms in the License Agreement")
-            .size(20)
-            .text_size(theme::FONT_BODY)
-            .spacing(8)
-            .on_toggle(Message::LicenseAccepted),
-    );
+    let cb = checkbox(state.license_accepted)
+        .label("I accept the terms in the License Agreement")
+        .size(20)
+        .text_size(theme::FONT_BODY)
+        .spacing(8)
+        .on_toggle(Message::LicenseAccepted);
 
-    col = col.push(space::vertical());
+    let ring = if focused {
+        theme::focus_ring
+    } else {
+        theme::no_focus_ring
+    };
+    col = col.push(container(cb).padding(2).style(ring));
 
     container(col).width(Fill).height(Fill).into()
 }

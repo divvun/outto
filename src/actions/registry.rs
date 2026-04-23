@@ -1,17 +1,13 @@
-use crate::config::{PathResolver, RegistryEntry, RegistryRoot, RegistryValueType};
+use crate::config::{RegistryEntry, RegistryRoot, RegistryValueType, VariableResolver};
 use crate::error::{InstallerError, InstallerResult};
 use crate::manifest::{ActionRecord, InstallManifest};
 use crate::{InstallerCallbacks, LogLevel};
 
-#[cfg(windows)]
 use std::ffi::OsStr;
-#[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 
-#[cfg(windows)]
 use windows_sys::Win32::System::Registry::*;
 
-#[cfg(windows)]
 fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s)
         .encode_wide()
@@ -19,7 +15,6 @@ fn to_wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
-#[cfg(windows)]
 fn root_to_hkey(root: &RegistryRoot) -> HKEY {
     match root {
         RegistryRoot::Hklm => HKEY_LOCAL_MACHINE,
@@ -28,7 +23,6 @@ fn root_to_hkey(root: &RegistryRoot) -> HKEY {
     }
 }
 
-#[cfg(windows)]
 pub(crate) fn root_from_str(s: &str) -> InstallerResult<HKEY> {
     match s.to_uppercase().as_str() {
         "HKLM" => Ok(HKEY_LOCAL_MACHINE),
@@ -42,7 +36,6 @@ pub(crate) fn root_from_str(s: &str) -> InstallerResult<HKEY> {
 }
 
 /// Read an existing string value from the registry. Returns None if the key or value doesn't exist.
-#[cfg(windows)]
 fn read_existing_value(hkey: HKEY, value_name: &str) -> Option<String> {
     let name_wide = to_wide(value_name);
     let mut data_type: u32 = 0;
@@ -115,7 +108,7 @@ fn read_existing_value(hkey: HKEY, value_name: &str) -> Option<String> {
 
 pub fn apply_registry_entry(
     entry: &RegistryEntry,
-    resolver: &PathResolver,
+    resolver: &VariableResolver,
     manifest: &mut InstallManifest,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
@@ -132,98 +125,73 @@ pub fn apply_registry_entry(
         &format!("Registry: creating {root_name}\\{key}"),
     );
 
-    #[cfg(windows)]
-    {
-        let hroot = root_to_hkey(&entry.root);
-        let key_wide = to_wide(&key);
-        let mut hkey: HKEY = std::ptr::null_mut();
-        let mut disposition: u32 = 0;
+    let hroot = root_to_hkey(&entry.root);
+    let key_wide = to_wide(&key);
+    let mut hkey: HKEY = std::ptr::null_mut();
+    let mut disposition: u32 = 0;
 
-        let result = unsafe {
-            RegCreateKeyExW(
-                hroot,
-                key_wide.as_ptr(),
-                0,
-                std::ptr::null(),
-                REG_OPTION_NON_VOLATILE,
-                KEY_ALL_ACCESS,
-                std::ptr::null(),
-                &mut hkey,
-                &mut disposition,
-            )
-        };
+    let result = unsafe {
+        RegCreateKeyExW(
+            hroot,
+            key_wide.as_ptr(),
+            0,
+            std::ptr::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_ALL_ACCESS,
+            std::ptr::null(),
+            &mut hkey,
+            &mut disposition,
+        )
+    };
 
-        if result != 0 {
-            return Err(InstallerError::Registry {
-                key: format!("{root_name}\\{key}"),
-                message: format!("RegCreateKeyExW failed with error code {result}"),
-            });
-        }
-
-        let created = disposition == REG_CREATED_NEW_KEY;
-        if created {
-            manifest.record(ActionRecord::RegistryKeyCreated {
-                root: root_name.to_string(),
-                key: key.clone(),
-                on_uninstall: entry.uninstall.clone(),
-            });
-        }
-
-        for val in &entry.values {
-            let resolved_data = match &val.data {
-                toml::Value::String(s) => resolver.resolve(s)?,
-                other => other.to_string(),
-            };
-
-            // Read existing value before overwriting (for rollback)
-            let previous = read_existing_value(hkey, &val.name);
-
-            set_registry_value(hkey, &val.name, &val.value_type, &resolved_data)?;
-
-            manifest.record(ActionRecord::RegistryValueSet {
-                root: root_name.to_string(),
-                key: key.clone(),
-                value_name: val.name.clone(),
-                previous_data: previous,
-                on_uninstall: entry.uninstall.clone(),
-            });
-
-            callbacks.on_log(
-                LogLevel::Debug,
-                &format!("Registry: set {} = {}", val.name, resolved_data),
-            );
-        }
-
-        unsafe {
-            RegCloseKey(hkey);
-        }
+    if result != 0 {
+        return Err(InstallerError::Registry {
+            key: format!("{root_name}\\{key}"),
+            message: format!("RegCreateKeyExW failed with error code {result}"),
+        });
     }
 
-    #[cfg(not(windows))]
-    {
-        for val in &entry.values {
-            let resolved = match &val.data {
-                toml::Value::String(s) => resolver.resolve(s)?,
-                other => other.to_string(),
-            };
-            manifest.record(ActionRecord::RegistryValueSet {
-                root: root_name.to_string(),
-                key: key.clone(),
-                value_name: val.name.clone(),
-                previous_data: None,
-                on_uninstall: entry.uninstall.clone(),
-            });
-            callbacks.on_log(
-                LogLevel::Debug,
-                &format!("Registry: [simulated] set {} = {}", val.name, resolved),
-            );
-        }
+    let created = disposition == REG_CREATED_NEW_KEY;
+    if created {
+        manifest.record(ActionRecord::RegistryKeyCreated {
+            root: root_name.to_string(),
+            key: key.clone(),
+            on_uninstall: entry.uninstall.clone(),
+        });
+    }
+
+    for val in &entry.values {
+        let resolved_data = match &val.data {
+            toml::Value::String(s) => resolver.resolve(s)?,
+            other => other.to_string(),
+        };
+
+        // Read existing value before overwriting (for rollback)
+        let previous = read_existing_value(hkey, &val.name);
+
+        set_registry_value(hkey, &val.name, &val.value_type, &resolved_data)?;
+
+        manifest.record(ActionRecord::RegistryValueSet {
+            root: root_name.to_string(),
+            key: key.clone(),
+            value_name: val.name.clone(),
+            previous_data: previous,
+            on_uninstall: entry.uninstall.clone(),
+        });
+
+        callbacks.on_log(
+            LogLevel::Debug,
+            &format!("Registry: set {} = {}", val.name, resolved_data),
+        );
+    }
+
+    unsafe {
+        RegCloseKey(hkey);
     }
 
     Ok(())
 }
 
-#[cfg(windows)]
 fn set_registry_value(
     hkey: HKEY,
     name: &str,
@@ -321,7 +289,6 @@ pub(crate) fn parse_qword(data: &str) -> Result<u64, String> {
 }
 
 // Rollback helpers
-#[cfg(windows)]
 pub fn delete_key(root: &str, key: &str) -> InstallerResult<()> {
     let hroot = root_from_str(root)?;
     let key_wide = to_wide(key);
@@ -335,7 +302,6 @@ pub fn delete_key(root: &str, key: &str) -> InstallerResult<()> {
     Ok(())
 }
 
-#[cfg(windows)]
 pub fn delete_value(root: &str, key: &str, value_name: &str) -> InstallerResult<()> {
     let hroot = root_from_str(root)?;
     let key_wide = to_wide(key);
@@ -362,7 +328,6 @@ pub fn delete_value(root: &str, key: &str, value_name: &str) -> InstallerResult<
     Ok(())
 }
 
-#[cfg(windows)]
 pub fn set_string_value(
     root: &str,
     key: &str,

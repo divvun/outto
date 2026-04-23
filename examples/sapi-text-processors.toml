@@ -1,0 +1,68 @@
+# SAPI 5.x Text Processor Installer
+#
+# Installs language-specific text normalization bundles (text-*.drb) into
+# the shared TTS directory.  Each language is a selectable component.
+# Voice configurations require the corresponding text processor at runtime.
+#
+# Install order: sapi-engine → sapi-tts-model → sapi-text-processors → sapi-voices
+
+[package]
+id = "com.example.mytts-text"
+name = "My TTS Text Processors"
+version = "1.0.0"
+publisher = "Example Corp"
+architecture = "x64"
+privileges = "admin"
+depends_on = ["com.example.mytts-model"]
+default_dir = "#{commonappdata}/MyTTS"
+disable_dir_page = true
+
+[uninstall]
+remove_app_dir = false          # shared with the model
+
+# Verify the TTS engine is installed
+[[prerequisites]]
+name = "My TTS Engine"
+required = true
+[prerequisites.check]
+registry = "HKCR\\CLSID\\{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}"
+
+# ── Components ─────────────────────────────────────────────────────────────
+
+[[components]]
+name = "lang_se"
+display_name = "North Sami (se)"
+description = "Text normalization for Davvisámegiella"
+default = true
+
+[[components]]
+name = "lang_sma"
+display_name = "South Sami (sma)"
+description = "Text normalization for Åarjelsaemien gïele"
+default = true
+
+[[components]]
+name = "lang_smj"
+display_name = "Lule Sami (smj)"
+description = "Text normalization for Julevsámegiella"
+default = true
+
+# ── Text Processor Bundles ─────────────────────────────────────────────────
+
+[[files]]
+source = "text-processors/text-se.drb"
+dest = "#{app}"
+overwrite = "if_newer"
+component = "lang_se"
+
+[[files]]
+source = "text-processors/text-sma.drb"
+dest = "#{app}"
+overwrite = "if_newer"
+component = "lang_sma"
+
+[[files]]
+source = "text-processors/text-smj.drb"
+dest = "#{app}"
+overwrite = "if_newer"
+component = "lang_smj"

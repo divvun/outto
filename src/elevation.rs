@@ -1,17 +1,5 @@
 /// Check if the current process is running with elevated (admin) privileges.
 pub fn is_elevated() -> bool {
-    #[cfg(windows)]
-    {
-        is_elevated_windows()
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
-}
-
-#[cfg(windows)]
-fn is_elevated_windows() -> bool {
     use windows_sys::Win32::Foundation::*;
     use windows_sys::Win32::Security::*;
     use windows_sys::Win32::System::Threading::*;
@@ -50,24 +38,6 @@ pub fn needs_elevation(privileges: &crate::config::Privileges) -> bool {
 
 /// Get architecture of the current system.
 pub fn get_system_architecture() -> &'static str {
-    #[cfg(windows)]
-    {
-        get_arch_windows()
-    }
-    #[cfg(not(windows))]
-    {
-        if cfg!(target_arch = "x86_64") {
-            "x64"
-        } else if cfg!(target_arch = "x86") {
-            "x86"
-        } else {
-            "unknown"
-        }
-    }
-}
-
-#[cfg(windows)]
-fn get_arch_windows() -> &'static str {
     use windows_sys::Win32::System::SystemInformation::*;
 
     let mut info = std::mem::MaybeUninit::<SYSTEM_INFO>::zeroed();

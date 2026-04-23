@@ -69,7 +69,6 @@ fn check_single(check: &crate::config::PrerequisiteCheck) -> InstallerResult<boo
     Ok(false)
 }
 
-#[cfg(windows)]
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -79,7 +78,6 @@ fn to_wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
-#[cfg(windows)]
 fn check_registry(
     reg_path: &str,
     value_name: Option<&str>,
@@ -163,15 +161,6 @@ fn check_registry(
 
     unsafe { RegCloseKey(hkey) };
     Ok(found)
-}
-
-#[cfg(not(windows))]
-fn check_registry(
-    _reg_path: &str,
-    _value_name: Option<&str>,
-    _expected: Option<&toml::Value>,
-) -> InstallerResult<bool> {
-    Ok(false)
 }
 
 fn run_prerequisite_installer(installer: &str, arguments: Option<&str>) -> InstallerResult<()> {

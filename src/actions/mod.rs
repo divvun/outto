@@ -23,7 +23,7 @@ pub fn execute_install(
     config: &Config,
     source_dir: &Path,
     selected_components: &Option<HashSet<String>>,
-    resolver: &PathResolver,
+    resolver: &VariableResolver,
     manifest: &mut InstallManifest,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
@@ -156,7 +156,7 @@ fn arch_matches_entry(arch: Option<&Architecture>) -> bool {
 
 fn execute_install_cleanup(
     cleanup: &InstallCleanup,
-    resolver: &PathResolver,
+    resolver: &VariableResolver,
     callbacks: &dyn crate::InstallerCallbacks,
 ) -> InstallerResult<()> {
     use crate::LogLevel;
@@ -199,7 +199,7 @@ fn execute_install_cleanup(
                     existing.install_dir.display()
                 ),
             );
-            let _ = crate::uninstall::uninstall(&existing.install_dir, callbacks);
+            let _ = crate::uninstall::uninstall(&existing.install_dir, id, callbacks);
         }
     }
 

@@ -50,34 +50,55 @@ fn main() {
         i += 1;
     }
 
-    // Infer install_dir from own location if not provided
-    let install_dir = install_dir.unwrap_or_else(|| {
+    // Infer install_dir and package_id from own location if not provided
+    let (install_dir, package_id) = if let Some(dir) = install_dir {
+        // --dir was provided; scan for package_id from our exe location
+        let pkg_id = std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                exe.parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+        (dir, pkg_id)
+    } else {
         let Ok(exe) = std::env::current_exe() else {
             fatal_error("Missing --dir and could not determine own location.");
         };
-        let Some(parent) = exe.parent() else {
+        // Layout: {install_dir}/.outto/{package_id}/uninstall.exe
+        let Some(pkg_dir) = exe.parent() else {
             fatal_error("Could not determine uninstaller directory.");
         };
-        if !parent
+        let package_id = pkg_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let Some(outto_dir) = pkg_dir.parent() else {
+            fatal_error("Could not determine .outto directory.");
+        };
+        if !outto_dir
             .file_name()
             .and_then(|n| n.to_str())
             .is_some_and(|name| name.eq_ignore_ascii_case(".outto"))
         {
             fatal_error("Missing --dir <path>\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT]");
         }
-        let Some(install_dir) = parent.parent() else {
+        let Some(install_dir) = outto_dir.parent() else {
             fatal_error("Could not determine install directory.");
         };
-        install_dir.to_path_buf()
-    });
+        (install_dir.to_path_buf(), package_id)
+    };
 
-    let (app_name, app_version) = load_manifest_info(&install_dir);
+    let (app_name, app_version) = load_manifest_info(&install_dir, &package_id);
 
     // /VERYSILENT: no GUI
     if very_silent {
         relocate_self();
         let callbacks = SilentCallbacks;
-        match outto::uninstall_from_dir(&install_dir, &callbacks) {
+        match outto::uninstall_package(&install_dir, &package_id, &callbacks) {
             Ok(()) => {
                 cleanup_after_uninstall(&install_dir);
                 println!("Uninstall complete.");
@@ -90,7 +111,14 @@ fn main() {
     }
 
     // GUI mode — relocation happens when user clicks Uninstall (in app.rs)
-    let state = app::AppState::new(app_name, app_version, install_dir, silent, no_cancel);
+    let state = app::AppState::new(
+        app_name,
+        app_version,
+        install_dir,
+        package_id,
+        silent,
+        no_cancel,
+    );
 
     if let Err(e) = app::run(state) {
         fatal_error(&format!("Failed to start uninstaller: {e}"));
@@ -105,9 +133,10 @@ pub fn relocate_self() {
         return;
     };
 
-    // Only relocate if we're in an .outto directory
+    // Only relocate if we're in an .outto/{package_id}/ directory
     let in_outto = exe
-        .parent()
+        .parent() // .outto/{package_id}/
+        .and_then(|p| p.parent()) // .outto/
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .is_some_and(|name| name.eq_ignore_ascii_case(".outto"));
@@ -174,8 +203,11 @@ fn schedule_delete_on_reboot(path: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
-fn load_manifest_info(install_dir: &std::path::Path) -> (String, String) {
-    let manifest_path = install_dir.join(".outto").join("manifest.json");
+fn load_manifest_info(install_dir: &std::path::Path, package_id: &str) -> (String, String) {
+    let manifest_path = install_dir
+        .join(".outto")
+        .join(package_id)
+        .join("manifest.json");
     if let Ok(data) = std::fs::read_to_string(&manifest_path) {
         if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&data) {
             let name = manifest["package_name"]

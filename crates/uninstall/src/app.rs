@@ -53,6 +53,8 @@ pub struct AppState {
     pub app_name: String,
     pub app_version: String,
     pub install_dir: PathBuf,
+    pub package_id: String,
+    pub cascade_names: Vec<String>,
     pub progress: ProgressState,
     pub result: Option<Result<(), String>>,
     pub bridge_queue: BridgeQueue,
@@ -65,9 +67,24 @@ impl AppState {
         app_name: String,
         app_version: String,
         install_dir: PathBuf,
+        package_id: String,
         silent: bool,
         no_cancel: bool,
     ) -> Self {
+        // Find packages that will be cascade-uninstalled
+        let cascade = outto::uninstall::collect_cascade_order(&package_id);
+        let cascade_names: Vec<String> = cascade
+            .iter()
+            .map(|p| {
+                // Try to read display name from registry, fall back to package_id
+                outto::detect::detect_existing_install(&p.package_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|e| e.display_name)
+                    .unwrap_or_else(|| p.package_id.clone())
+            })
+            .collect();
+
         Self {
             step: if silent {
                 Step::Uninstalling
@@ -77,6 +94,8 @@ impl AppState {
             app_name,
             app_version,
             install_dir,
+            package_id,
+            cascade_names,
             progress: ProgressState::default(),
             result: None,
             bridge_queue: std::sync::Arc::new(Mutex::new(VecDeque::new())),
@@ -87,7 +106,11 @@ impl AppState {
 
     fn start_uninstall(&mut self) {
         BRIDGE_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
-        bridge::spawn_uninstall(self.install_dir.clone(), self.bridge_queue.clone());
+        bridge::spawn_uninstall(
+            self.install_dir.clone(),
+            self.package_id.clone(),
+            self.bridge_queue.clone(),
+        );
     }
 
     fn drain_bridge_queue(&mut self) {
@@ -147,7 +170,9 @@ pub fn run(state: AppState) -> iced::Result {
         view,
     )
     .subscription(subscription)
+    .title(|state: &AppState| format!("{} Uninstall", state.app_name))
     .theme(theme::windows11_theme())
+    .default_font(iced::Font::DEFAULT)
     .window_size(iced::Size::new(theme::WINDOW_WIDTH, theme::WINDOW_HEIGHT))
     .resizable(false)
     .run()
@@ -203,18 +228,38 @@ fn view(state: &AppState) -> Element<'_, Message> {
 }
 
 fn view_confirm(state: &AppState) -> Element<'_, Message> {
-    let col = column![
+    let mut col = column![
         text("Uninstall").size(theme::FONT_TITLE),
         text(format!(
             "Are you sure you want to completely remove {} v{} and all of its components?",
             state.app_name, state.app_version,
         ))
         .size(theme::FONT_BODY),
-        space::vertical(),
-        text("Click Uninstall to proceed, or Cancel to exit.").size(theme::FONT_SECONDARY),
     ]
     .spacing(theme::SPACING)
     .padding(theme::PADDING);
+
+    if !state.cascade_names.is_empty() {
+        col = col.push(
+            text("The following dependent packages will also be removed:").size(theme::FONT_BODY),
+        );
+        let mut list_col = column![].spacing(2);
+        for name in &state.cascade_names {
+            list_col =
+                list_col.push(text(format!("  \u{2022} {name}")).size(theme::FONT_SECONDARY));
+        }
+        col = col.push(
+            container(scrollable(list_col))
+                .height(Fill)
+                .width(Fill)
+                .style(container::bordered_box),
+        );
+    } else {
+        col = col.push(space::vertical());
+    }
+
+    col = col
+        .push(text("Click Uninstall to proceed, or Cancel to exit.").size(theme::FONT_SECONDARY));
 
     container(col).width(Fill).height(Fill).into()
 }

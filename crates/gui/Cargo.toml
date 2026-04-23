@@ -6,11 +6,11 @@ description = "Iced-based installer GUI for outto"
 license = "MIT"
 
 [dependencies]
-outto = { path = ".." }
-iced = { version = "0.14", features = ["tokio"] }
+outto = { path = "../.." }
+iced = { version = "0.14", default-features = false, features = ["tokio", "tiny-skia"] }
 serde_json = "1"
 rfd = "0.15"
-box-format = { path = "../../box", default-features = false, features = ["std", "zstd", "reader"] }
+box-format = { path = "../../../box", default-features = false, features = ["std", "zstd", "reader"] }
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]

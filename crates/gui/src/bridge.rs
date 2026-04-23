@@ -153,13 +153,18 @@ pub fn spawn_install(
 }
 
 /// Spawn the uninstall on a background thread.
-pub fn spawn_uninstall(install_dir: PathBuf, suppress_prompts: bool, queue: BridgeQueue) {
+pub fn spawn_uninstall(
+    install_dir: PathBuf,
+    package_id: String,
+    suppress_prompts: bool,
+    queue: BridgeQueue,
+) {
     std::thread::spawn(move || {
         let callbacks = GuiCallbacks {
             queue: queue.clone(),
             suppress_prompts,
         };
-        let result = outto::uninstall_from_dir(&install_dir, &callbacks);
+        let result = outto::uninstall_package(&install_dir, &package_id, &callbacks);
         let mut q = queue.lock().unwrap();
         q.push_back(BridgeEvent::Finished(result.map_err(|e| e.to_string())));
     });

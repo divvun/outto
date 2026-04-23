@@ -1,13 +1,13 @@
 use std::path::Path;
 
-use crate::config::{ComAction, ComEntry, PathResolver};
+use crate::config::{ComAction, ComEntry, VariableResolver};
 use crate::error::{InstallerError, InstallerResult};
 use crate::manifest::{ActionRecord, InstallManifest};
 use crate::{InstallerCallbacks, LogLevel};
 
 pub fn register_com(
     entry: &ComEntry,
-    resolver: &PathResolver,
+    resolver: &VariableResolver,
     manifest: &mut InstallManifest,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
@@ -22,20 +22,9 @@ pub fn register_com(
         &format!("COM: registering {action_str} {file}"),
     );
 
-    #[cfg(windows)]
-    {
-        match entry.action {
-            ComAction::Regserver => register_dll(&file)?,
-            ComAction::Typelib => register_typelib(&file)?,
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        callbacks.on_log(
-            LogLevel::Info,
-            &format!("COM: [simulated] registered {action_str} {file}"),
-        );
+    match entry.action {
+        ComAction::Regserver => register_dll(&file)?,
+        ComAction::Typelib => register_typelib(&file)?,
     }
 
     manifest.record(ActionRecord::ComRegistered {
@@ -46,7 +35,6 @@ pub fn register_com(
     Ok(())
 }
 
-#[cfg(windows)]
 fn register_dll(dll_path: &str) -> InstallerResult<()> {
     // Use regsvr32 for reliability
     let output = std::process::Command::new("regsvr32")
@@ -67,7 +55,6 @@ fn register_dll(dll_path: &str) -> InstallerResult<()> {
     Ok(())
 }
 
-#[cfg(windows)]
 fn register_typelib(tlb_path: &str) -> InstallerResult<()> {
     // Use regsvr32 for type libraries too (it handles .tlb files)
     let output = std::process::Command::new("regsvr32")
@@ -89,7 +76,6 @@ fn register_typelib(tlb_path: &str) -> InstallerResult<()> {
 }
 
 // Rollback helper
-#[cfg(windows)]
 pub fn unregister(file: &Path, action: &str) -> InstallerResult<()> {
     let file_str = file.to_string_lossy();
     match action {

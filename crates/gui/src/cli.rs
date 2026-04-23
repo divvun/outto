@@ -55,8 +55,8 @@ pub fn parse_args() -> Result<Args, String> {
 
     let subcommand = args[1].to_lowercase();
 
-    // If the first arg starts with / it's a flag, not a subcommand — embedded mode with flags
-    if subcommand.starts_with('/') {
+    // If the first arg starts with / or -- it's a flag, not a subcommand — embedded mode with flags
+    if subcommand.starts_with('/') || subcommand.starts_with("--") {
         let mut flags = CliFlags::default();
         parse_flags(
             &args[1..],
@@ -127,26 +127,26 @@ fn parse_flags(
         let arg = &rest[i];
         let upper = arg.to_uppercase();
 
-        // Inno-compatible /FLAGS
-        if upper == "/SILENT" {
+        // Inno-compatible /FLAGS (case-insensitive) and --flags
+        if upper == "/SILENT" || arg == "--silent" {
             flags.silent = true;
-        } else if upper == "/VERYSILENT" {
+        } else if upper == "/VERYSILENT" || arg == "--very-silent" {
             flags.very_silent = true;
             flags.silent = true;
-        } else if upper == "/SUPPRESSMSGBOXES" {
+        } else if upper == "/SUPPRESSMSGBOXES" || arg == "--suppress-msgboxes" {
             flags.suppress_msgboxes = true;
         } else if upper == "/SP-" {
             flags.sp_minus = true;
-        } else if upper == "/NORESTART" {
+        } else if upper == "/NORESTART" || arg == "--no-restart" {
             flags.no_restart = true;
-        } else if upper == "/NOCANCEL" {
+        } else if upper == "/NOCANCEL" || arg == "--no-cancel" {
             flags.no_cancel = true;
         } else if upper.starts_with("/DIR=") {
             flags.dir = Some(strip_value(arg, "/DIR="));
         } else if upper.starts_with("/COMPONENTS=") {
             let val = strip_value(arg, "/COMPONENTS=");
             flags.components = Some(val.split(',').map(|s| s.trim().to_string()).collect());
-        } else if upper == "/LOG" {
+        } else if upper == "/LOG" || arg == "--log" {
             flags.log = Some(None);
         } else if upper.starts_with("/LOG=") {
             flags.log = Some(Some(strip_value(arg, "/LOG=")));

@@ -98,25 +98,23 @@ fn run_install_inner(
     license_text: Option<String>,
     uninstall_exe: Option<PathBuf>,
 ) {
-    let default_install_dir = config
+    let resolver = outto::config::VariableResolver::new()
+        .with_package(&config.package.name, &config.package.version);
+    let default_install_dir: Option<PathBuf> = config
         .package
         .default_dir
         .as_ref()
-        .map(|d| {
-            d.replace("$pf", "C:\\Program Files")
-                .replace("$package.name", &config.package.name)
-        })
-        .unwrap_or_default();
+        .map(|d| resolver.resolve_path(d))
+        .transpose()
+        .unwrap_or_else(|e| fatal_error(&format!("Invalid default_dir: {e}")));
 
     // /VERYSILENT: no GUI at all
     if flags.very_silent {
-        let install_dir = flags.dir.as_ref().map(PathBuf::from).or_else(|| {
-            if default_install_dir.is_empty() {
-                None
-            } else {
-                Some(PathBuf::from(&default_install_dir))
-            }
-        });
+        let install_dir = flags
+            .dir
+            .as_ref()
+            .map(PathBuf::from)
+            .or(default_install_dir.clone());
 
         let selected = flags
             .components
@@ -143,7 +141,12 @@ fn run_install_inner(
         }
     }
 
-    // GUI mode
+    // GUI mode — convert to string for text input field
+    let default_install_dir_str = default_install_dir
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
     let state = AppState::new(
         AppMode::Install,
         config,
@@ -151,7 +154,7 @@ fn run_install_inner(
         license_text,
         source_dir,
         None,
-        default_install_dir,
+        default_install_dir_str,
         uninstall_exe,
     );
 
@@ -165,7 +168,7 @@ fn run_uninstall(flags: cli::CliFlags, install_dir: PathBuf) {
 
     if flags.very_silent {
         let callbacks = SilentCallbacks;
-        match outto::uninstall_from_dir(&install_dir, &callbacks) {
+        match outto::uninstall_package(&install_dir, &config.package.id, &callbacks) {
             Ok(()) => {
                 println!("Uninstall complete.");
                 std::process::exit(0);

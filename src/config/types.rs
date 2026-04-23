@@ -178,6 +178,11 @@ pub struct PackageConfig {
     pub close_applications: bool,
     #[serde(default)]
     pub disable_dir_page: bool,
+
+    /// Other outto package IDs this package depends on at runtime.
+    /// Uninstalling a dependency will cascade-uninstall this package first.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

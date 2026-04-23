@@ -1,11 +1,11 @@
-use crate::config::{PathResolver, ServiceEntry, ServiceOnInstall, ServiceStartType};
+use crate::config::{ServiceEntry, ServiceOnInstall, ServiceStartType, VariableResolver};
 use crate::error::{InstallerError, InstallerResult};
 use crate::manifest::{ActionRecord, InstallManifest};
 use crate::{InstallerCallbacks, LogLevel};
 
 pub fn install_service(
     entry: &ServiceEntry,
-    resolver: &PathResolver,
+    resolver: &VariableResolver,
     manifest: &mut InstallManifest,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
@@ -17,52 +17,32 @@ pub fn install_service(
         &format!("Services: installing {} ({})", entry.name, executable),
     );
 
-    #[cfg(windows)]
-    {
-        create_windows_service(
-            &entry.name,
-            display_name,
-            &executable,
-            &entry.start_type,
-            entry.account.as_deref(),
-        )?;
+    create_windows_service(
+        &entry.name,
+        display_name,
+        &executable,
+        &entry.start_type,
+        entry.account.as_deref(),
+    )?;
 
-        manifest.record(ActionRecord::ServiceInstalled {
-            name: entry.name.clone(),
-        });
+    manifest.record(ActionRecord::ServiceInstalled {
+        name: entry.name.clone(),
+    });
 
-        if matches!(entry.on_install, ServiceOnInstall::Start) {
-            callbacks.on_log(
-                LogLevel::Info,
-                &format!("Services: starting {}", entry.name),
-            );
-            start_service_by_name(&entry.name)?;
-            manifest.record(ActionRecord::ServiceStarted {
-                name: entry.name.clone(),
-            });
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
+    if matches!(entry.on_install, ServiceOnInstall::Start) {
         callbacks.on_log(
             LogLevel::Info,
-            &format!("Services: [simulated] installed {}", entry.name),
+            &format!("Services: starting {}", entry.name),
         );
-        manifest.record(ActionRecord::ServiceInstalled {
+        start_service_by_name(&entry.name)?;
+        manifest.record(ActionRecord::ServiceStarted {
             name: entry.name.clone(),
         });
-        if matches!(entry.on_install, ServiceOnInstall::Start) {
-            manifest.record(ActionRecord::ServiceStarted {
-                name: entry.name.clone(),
-            });
-        }
     }
 
     Ok(())
 }
 
-#[cfg(windows)]
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -72,7 +52,6 @@ fn to_wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
-#[cfg(windows)]
 fn create_windows_service(
     name: &str,
     display_name: &str,
@@ -159,7 +138,6 @@ fn create_windows_service(
     Ok(())
 }
 
-#[cfg(windows)]
 fn start_service_by_name(name: &str) -> InstallerResult<()> {
     use windows_sys::Win32::System::Services::*;
 
@@ -199,7 +177,6 @@ fn start_service_by_name(name: &str) -> InstallerResult<()> {
     Ok(())
 }
 
-#[cfg(windows)]
 pub fn stop_service(name: &str) -> InstallerResult<()> {
     use windows_sys::Win32::System::Services::*;
 
@@ -227,7 +204,6 @@ pub fn stop_service(name: &str) -> InstallerResult<()> {
     Ok(())
 }
 
-#[cfg(windows)]
 pub fn delete_service(name: &str) -> InstallerResult<()> {
     use windows_sys::Win32::System::Services::*;
 

@@ -1,14 +1,14 @@
 use std::fs;
 use std::path::Path;
 
-use crate::config::{DirEntry, PathResolver};
+use crate::config::{DirEntry, VariableResolver};
 use crate::error::{InstallerError, InstallerResult};
 use crate::manifest::{ActionRecord, InstallManifest};
 use crate::{InstallerCallbacks, LogLevel};
 
 pub fn create_directory(
     entry: &DirEntry,
-    resolver: &PathResolver,
+    resolver: &VariableResolver,
     manifest: &mut InstallManifest,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {

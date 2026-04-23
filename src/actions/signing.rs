@@ -9,7 +9,7 @@ const RETRY_DELAY_SECS: u64 = 2;
 
 /// Build the full command string from the template and file path.
 fn build_command(sign_command: &str, file: &Path) -> String {
-    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let abs_path = dunce::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let file_str = abs_path.to_string_lossy();
 
     if sign_command.contains("#{file}") {

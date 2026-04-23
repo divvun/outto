@@ -13,7 +13,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 || args[1] != "build" {
-        eprintln!("Usage: outto-cli build --config <file> --source <dir> --output <exe> [--compress] [--sign <command>]");
+        eprintln!("Usage: outto build --config <file> --source <dir> --output <exe> [--compress] [--compression-level <0-22>] [-S|--sign <command>]");
         std::process::exit(2);
     }
 
@@ -21,6 +21,7 @@ fn main() {
     let mut source_dir: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut compress = false;
+    let mut compression_level: i32 = 3;
     let mut sign_command: Option<String> = None;
 
     let mut i = 2;
@@ -40,6 +41,14 @@ fn main() {
             }
             "--compress" => {
                 compress = true;
+            }
+            "--compression-level" => {
+                i += 1;
+                compression_level = args.get(i).and_then(|v| v.parse().ok()).unwrap_or(3);
+                if !(0..=22).contains(&compression_level) {
+                    eprintln!("Compression level must be 0-22");
+                    std::process::exit(2);
+                }
             }
             "--sign" | "-S" => {
                 i += 1;
@@ -71,6 +80,7 @@ fn main() {
         &source_dir,
         &output,
         compress,
+        compression_level,
         sign_command.as_deref(),
     ) {
         Ok(()) => {}
@@ -86,6 +96,7 @@ fn build_installer(
     source_dir: &Path,
     output: &Path,
     compress: bool,
+    compression_level: i32,
     sign_command: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !config_path.exists() {
@@ -98,27 +109,50 @@ fn build_installer(
     // Validate the config parses
     let _config = Config::from_file(config_path).map_err(|e| format!("Invalid config: {e}"))?;
 
-    // Find the installer template (outto-gui.exe) and uninstaller next to us
+    // Find sibling binaries: installed layout is bin/outto.exe + ../libexec/*
+    // Dev layout has everything in the same directory (target/release/)
     let cli_exe = std::env::current_exe()?;
     let cli_dir = cli_exe
         .parent()
         .ok_or("Cannot determine CLI exe directory")?;
 
-    let template_exe = cli_dir.join("outto-gui.exe");
-    if !template_exe.exists() {
-        return Err(format!(
-            "Installer template not found: {}\nBuild outto-gui first and place it next to outto-cli.",
-            template_exe.display()
-        ).into());
-    }
+    let libexec_dir = cli_dir
+        .join("../libexec")
+        .canonicalize()
+        .unwrap_or_else(|_| cli_dir.to_path_buf());
 
-    let uninstall_exe = find_binary(cli_dir, &["outto-uninstall.exe", "uninstall.exe"]);
+    let template_exe = find_binary(&[&libexec_dir, cli_dir], "outto-gui.exe").ok_or_else(|| {
+        format!(
+            "Installer template not found.\nLooked in: {}, {}",
+            libexec_dir.display(),
+            cli_dir.display()
+        )
+    })?;
+
+    let mut uninstall_exe = find_binary(&[&libexec_dir, cli_dir], "outto-uninstall.exe");
     if let Some(ref p) = uninstall_exe {
         eprintln!("Uninstaller: {}", p.display());
     } else {
         eprintln!(
             "Warning: outto-uninstall binary not found. Installer will not include an uninstaller."
         );
+    }
+
+    // Sign the uninstaller before packing it into the payload
+    if let (Some(cmd), Some(ref uninstall_path)) = (sign_command, &uninstall_exe) {
+        use outto::actions::signing;
+        let callbacks = outto::NoOpCallbacks;
+
+        // Copy to temp so we don't modify the shared binary
+        let temp_uninstall = tempfile::tempdir()?.into_path().join("outto-uninstall.exe");
+        fs::copy(uninstall_path, &temp_uninstall)?;
+
+        eprintln!("Signing uninstaller...");
+        signing::sign_file(cmd, &temp_uninstall, &callbacks)
+            .map_err(|e| format!("Failed to sign uninstaller: {e}"))?;
+
+        // Use the signed copy for packing
+        uninstall_exe = Some(temp_uninstall);
     }
 
     // Create the .box archive
@@ -151,19 +185,28 @@ fn build_installer(
     pe::embed_section(output, ".outto", &box_data)?;
 
     if compress {
-        // Compress the raw installer into an SFX wrapper
-        let sfx_stub = cli_dir.join("outto-sfx.exe");
-        if !sfx_stub.exists() {
-            return Err(format!(
-                "SFX stub not found: {}\nBuild outto-sfx first and place it next to outto-cli.",
-                sfx_stub.display()
-            )
-            .into());
+        // Sign the uncompressed installer before compressing
+        // (the SFX stub will extract and run this, so it needs its own signature)
+        if let Some(cmd) = sign_command {
+            use outto::actions::signing;
+            let callbacks = outto::NoOpCallbacks;
+            eprintln!("Signing installer...");
+            signing::sign_file(cmd, output, &callbacks)
+                .map_err(|e| format!("Failed to sign installer: {e}"))?;
         }
+
+        // Compress the signed installer into an SFX wrapper
+        let sfx_stub = find_binary(&[&libexec_dir, cli_dir], "outto-sfx.exe").ok_or_else(|| {
+            format!(
+                "SFX stub not found.\nLooked in: {}, {}",
+                libexec_dir.display(),
+                cli_dir.display()
+            )
+        })?;
 
         eprintln!("Compressing installer...");
         let raw_installer = fs::read(output)?;
-        let compressed = zstd::encode_all(&raw_installer[..], 19)?; // level 19 for max compression
+        let compressed = zstd::encode_all(&raw_installer[..], compression_level)?;
 
         eprintln!(
             "Compressed: {:.1} MB -> {:.1} MB ({:.0}% reduction)",
@@ -177,12 +220,10 @@ fn build_installer(
         pe::embed_section(output, ".outto", &compressed)?;
     }
 
-    // Sign output artifacts if --sign was provided
+    // Sign the final output (the SFX wrapper, or the uncompressed installer if no compression)
     if let Some(cmd) = sign_command {
         use outto::actions::signing;
-
         let callbacks = outto::NoOpCallbacks;
-
         eprintln!("Signing output...");
         signing::sign_file(cmd, output, &callbacks)
             .map_err(|e| format!("Failed to sign {}: {e}", output.display()))?;
@@ -255,8 +296,8 @@ fn pack_payload(
     Ok(())
 }
 
-fn find_binary(dir: &Path, candidates: &[&str]) -> Option<PathBuf> {
-    for name in candidates {
+fn find_binary(dirs: &[&Path], name: &str) -> Option<PathBuf> {
+    for dir in dirs {
         let path = dir.join(name);
         if path.exists() {
             return Some(path);

@@ -1,78 +1,366 @@
-# SAPI 5.x Voice Installer
+# SAPI 5.x Voice Configuration Installer
 #
-# Checks that the TTS engine is installed, copies voice data files,
-# and registers one or more SAPI voice tokens.
-# Duplicate the [[registry]] pairs to add more voices.
+# Registers SAPI voice tokens in the Windows registry.  Does not install
+# any files — it relies on the TTS model and text processor bundles already
+# being present in the shared directory.
+#
+# Each voice is a selectable component under its language group.  The
+# language group components mirror those in sapi-text-processors.toml;
+# the user should install the matching text processor for each language.
+#
+# Install order: sapi-engine → sapi-tts-model → sapi-text-processors → sapi-voices
 
 [package]
-id = "com.example.myttsvoices"
+id = "com.example.mytts-voices"
 name = "My TTS Voices"
 version = "1.0.0"
 publisher = "Example Corp"
 architecture = "x64"
 privileges = "admin"
-default_dir = "$pf/$package.name Voices"
+depends_on = ["com.example.mytts-model", "com.example.mytts-text"]
+default_dir = "#{commonappdata}/MyTTS"
+disable_dir_page = true
 
-# Verify the engine is installed by checking its COM CLSID
+[uninstall]
+remove_app_dir = false
+
+# ── Prerequisites ──────────────────────────────────────────────────────────
+
+# The TTS engine COM server must be registered
 [[prerequisites]]
 name = "My TTS Engine"
 required = true
 [prerequisites.check]
 registry = "HKCR\\CLSID\\{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}"
 
-# Copy voice data files
-[[files]]
-source = "voices/**/*"
-dest = "$app"
+# The shared TTS model must be installed
+[[prerequisites]]
+name = "My TTS Model"
+required = true
+[prerequisites.check]
+registry = "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\com.example.mytts-model"
 
-# ---------------------------------------------------------------------------
-# Voice 1
-# ---------------------------------------------------------------------------
+# ── Components ─────────────────────────────────────────────────────────────
+#
+# Language groups are parents; individual speakers are children.
+# Deselecting a language group skips all its voices.
+
+# North Sami (se) ──────────────────────
+[[components]]
+name = "lang_se"
+display_name = "North Sami (se)"
+description = "Voices for Davvisámegiella"
+default = true
+
+[[components]]
+name = "voice_se_biret"
+display_name = "Biret (Female)"
+parent = "lang_se"
+default = true
+
+[[components]]
+name = "voice_se_mahtte"
+display_name = "Máhtte (Male)"
+parent = "lang_se"
+default = true
+
+[[components]]
+name = "voice_se_sunna"
+display_name = "Sunná (Female)"
+parent = "lang_se"
+default = true
+
+# South Sami (sma) ─────────────────────
+[[components]]
+name = "lang_sma"
+display_name = "South Sami (sma)"
+description = "Voices for Åarjelsaemien gïele"
+default = true
+
+[[components]]
+name = "voice_sma_aanna"
+display_name = "Aanna (Female)"
+parent = "lang_sma"
+default = true
+
+# Lule Sami (smj) ──────────────────────
+[[components]]
+name = "lang_smj"
+display_name = "Lule Sami (smj)"
+description = "Voices for Julevsámegiella"
+default = true
+
+[[components]]
+name = "voice_smj_abmut"
+display_name = "Ábmut (Male)"
+parent = "lang_smj"
+default = true
+
+[[components]]
+name = "voice_smj_nihkol"
+display_name = "Nihkol (Male)"
+parent = "lang_smj"
+default = true
+
+[[components]]
+name = "voice_smj_sigga"
+display_name = "Siggá (Female)"
+parent = "lang_smj"
+default = true
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Voice Token Registry Entries
+#
+# Each voice needs two registry blocks:
+#   1. Token root key  — display name, locale strings, CLSID
+#   2. Attributes subkey — metadata the engine reads at runtime
+#
+# BundlePath  = "#{app}"  → resolves to the shared #{commonappdata}/MyTTS dir
+# BundleName  = "tts"   → engine loads {BundlePath}\tts.drb
+# LanguageIndex / SpeakerIndex select the language and speaker within the model
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── North Sami: Biret ──────────────────────────────────────────────────────
 
 [[registry]]
 root = "hklm"
-key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyVoice1"
-values = [
-    { name = "", type = "string", data = "My Voice 1" },
-    { name = "CLSID", type = "string", data = "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" },
-    { name = "VoicePath", type = "string", data = "$app\\voice1" },
-]
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_se_Biret"
+component = "voice_se_biret"
 uninstall = "remove_key"
+values = [
+    { name = "", type = "string", data = "Biret - Davvisámegiella" },
+    { name = "409", type = "string", data = "Biret - North Sami" },
+    { name = "003B", type = "string", data = "Biret - Davvisámegiella" },
+    { name = "CLSID", type = "string", data = "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" },
+]
 
 [[registry]]
 root = "hklm"
-key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyVoice1\\Attributes"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_se_Biret\\Attributes"
+component = "voice_se_biret"
+uninstall = "remove_key"
 values = [
-    { name = "Name", type = "string", data = "My Voice 1" },
-    { name = "Language", type = "string", data = "409" },
+    { name = "Name", type = "string", data = "Biret - Davvisámegiella" },
+    { name = "ShortName", type = "string", data = "Biret" },
+    { name = "Language", type = "string", data = "003B" },
+    { name = "LanguageCode", type = "string", data = "se" },
     { name = "Gender", type = "string", data = "Female" },
     { name = "Age", type = "string", data = "Adult" },
     { name = "Vendor", type = "string", data = "Example Corp" },
+    { name = "Version", type = "string", data = "1.0" },
+    { name = "VendorPreferred", type = "string", data = "" },
+    { name = "BundlePath", type = "string", data = "#{app}" },
+    { name = "BundleName", type = "string", data = "tts" },
+    { name = "SpeakerIndex", type = "dword", data = 2 },
+    { name = "LanguageIndex", type = "dword", data = 1 },
 ]
-uninstall = "remove_key"
 
-# ---------------------------------------------------------------------------
-# Voice 2
-# ---------------------------------------------------------------------------
+# ── North Sami: Máhtte ────────────────────────────────────────────────────
 
 [[registry]]
 root = "hklm"
-key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyVoice2"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_se_Mahtte"
+component = "voice_se_mahtte"
+uninstall = "remove_key"
 values = [
-    { name = "", type = "string", data = "My Voice 2" },
+    { name = "", type = "string", data = "Máhtte - Davvisámegiella" },
+    { name = "409", type = "string", data = "Máhtte - North Sami" },
+    { name = "003B", type = "string", data = "Máhtte - Davvisámegiella" },
     { name = "CLSID", type = "string", data = "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" },
-    { name = "VoicePath", type = "string", data = "$app\\voice2" },
 ]
-uninstall = "remove_key"
 
 [[registry]]
 root = "hklm"
-key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyVoice2\\Attributes"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_se_Mahtte\\Attributes"
+component = "voice_se_mahtte"
+uninstall = "remove_key"
 values = [
-    { name = "Name", type = "string", data = "My Voice 2" },
-    { name = "Language", type = "string", data = "409" },
+    { name = "Name", type = "string", data = "Máhtte - Davvisámegiella" },
+    { name = "ShortName", type = "string", data = "Máhtte" },
+    { name = "Language", type = "string", data = "003B" },
+    { name = "LanguageCode", type = "string", data = "se" },
     { name = "Gender", type = "string", data = "Male" },
     { name = "Age", type = "string", data = "Adult" },
     { name = "Vendor", type = "string", data = "Example Corp" },
+    { name = "Version", type = "string", data = "1.0" },
+    { name = "VendorPreferred", type = "string", data = "" },
+    { name = "BundlePath", type = "string", data = "#{app}" },
+    { name = "BundleName", type = "string", data = "tts" },
+    { name = "SpeakerIndex", type = "dword", data = 5 },
+    { name = "LanguageIndex", type = "dword", data = 1 },
 ]
+
+# ── North Sami: Sunná ─────────────────────────────────────────────────────
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_se_Sunna"
+component = "voice_se_sunna"
 uninstall = "remove_key"
+values = [
+    { name = "", type = "string", data = "Sunná - Davvisámegiella" },
+    { name = "409", type = "string", data = "Sunná - North Sami" },
+    { name = "003B", type = "string", data = "Sunná - Davvisámegiella" },
+    { name = "CLSID", type = "string", data = "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" },
+]
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_se_Sunna\\Attributes"
+component = "voice_se_sunna"
+uninstall = "remove_key"
+values = [
+    { name = "Name", type = "string", data = "Sunná - Davvisámegiella" },
+    { name = "ShortName", type = "string", data = "Sunná" },
+    { name = "Language", type = "string", data = "003B" },
+    { name = "LanguageCode", type = "string", data = "se" },
+    { name = "Gender", type = "string", data = "Female" },
+    { name = "Age", type = "string", data = "Adult" },
+    { name = "Vendor", type = "string", data = "Example Corp" },
+    { name = "Version", type = "string", data = "1.0" },
+    { name = "VendorPreferred", type = "string", data = "" },
+    { name = "BundlePath", type = "string", data = "#{app}" },
+    { name = "BundleName", type = "string", data = "tts" },
+    { name = "SpeakerIndex", type = "dword", data = 7 },
+    { name = "LanguageIndex", type = "dword", data = 1 },
+]
+
+# ── South Sami: Aanna ─────────────────────────────────────────────────────
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_sma_Aanna"
+component = "voice_sma_aanna"
+uninstall = "remove_key"
+values = [
+    { name = "", type = "string", data = "Aanna - Åarjelsaemien gïele" },
+    { name = "409", type = "string", data = "Aanna - South Sami" },
+    { name = "783B", type = "string", data = "Aanna - Åarjelsaemien gïele" },
+    { name = "CLSID", type = "string", data = "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" },
+]
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_sma_Aanna\\Attributes"
+component = "voice_sma_aanna"
+uninstall = "remove_key"
+values = [
+    { name = "Name", type = "string", data = "Aanna - Åarjelsaemien gïele" },
+    { name = "ShortName", type = "string", data = "Aanna" },
+    { name = "Language", type = "string", data = "783B" },
+    { name = "LanguageCode", type = "string", data = "sma" },
+    { name = "Gender", type = "string", data = "Female" },
+    { name = "Age", type = "string", data = "Adult" },
+    { name = "Vendor", type = "string", data = "Example Corp" },
+    { name = "Version", type = "string", data = "1.0" },
+    { name = "VendorPreferred", type = "string", data = "" },
+    { name = "BundlePath", type = "string", data = "#{app}" },
+    { name = "BundleName", type = "string", data = "tts" },
+    { name = "SpeakerIndex", type = "dword", data = 1 },
+    { name = "LanguageIndex", type = "dword", data = 0 },
+]
+
+# ── Lule Sami: Ábmut ──────────────────────────────────────────────────────
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_smj_Abmut"
+component = "voice_smj_abmut"
+uninstall = "remove_key"
+values = [
+    { name = "", type = "string", data = "Ábmut - Julevsámegiella" },
+    { name = "409", type = "string", data = "Ábmut - Lule Sami" },
+    { name = "7C3B", type = "string", data = "Ábmut - Julevsámegiella" },
+    { name = "CLSID", type = "string", data = "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" },
+]
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_smj_Abmut\\Attributes"
+component = "voice_smj_abmut"
+uninstall = "remove_key"
+values = [
+    { name = "Name", type = "string", data = "Ábmut - Julevsámegiella" },
+    { name = "ShortName", type = "string", data = "Ábmut" },
+    { name = "Language", type = "string", data = "7C3B" },
+    { name = "LanguageCode", type = "string", data = "smj" },
+    { name = "Gender", type = "string", data = "Male" },
+    { name = "Age", type = "string", data = "Adult" },
+    { name = "Vendor", type = "string", data = "Example Corp" },
+    { name = "Version", type = "string", data = "1.0" },
+    { name = "VendorPreferred", type = "string", data = "" },
+    { name = "BundlePath", type = "string", data = "#{app}" },
+    { name = "BundleName", type = "string", data = "tts" },
+    { name = "SpeakerIndex", type = "dword", data = 3 },
+    { name = "LanguageIndex", type = "dword", data = 2 },
+]
+
+# ── Lule Sami: Nihkol ─────────────────────────────────────────────────────
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_smj_Nihkol"
+component = "voice_smj_nihkol"
+uninstall = "remove_key"
+values = [
+    { name = "", type = "string", data = "Nihkol - Julevsámegiella" },
+    { name = "409", type = "string", data = "Nihkol - Lule Sami" },
+    { name = "7C3B", type = "string", data = "Nihkol - Julevsámegiella" },
+    { name = "CLSID", type = "string", data = "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" },
+]
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_smj_Nihkol\\Attributes"
+component = "voice_smj_nihkol"
+uninstall = "remove_key"
+values = [
+    { name = "Name", type = "string", data = "Nihkol - Julevsámegiella" },
+    { name = "ShortName", type = "string", data = "Nihkol" },
+    { name = "Language", type = "string", data = "7C3B" },
+    { name = "LanguageCode", type = "string", data = "smj" },
+    { name = "Gender", type = "string", data = "Male" },
+    { name = "Age", type = "string", data = "Adult" },
+    { name = "Vendor", type = "string", data = "Example Corp" },
+    { name = "Version", type = "string", data = "1.0" },
+    { name = "VendorPreferred", type = "string", data = "" },
+    { name = "BundlePath", type = "string", data = "#{app}" },
+    { name = "BundleName", type = "string", data = "tts" },
+    { name = "SpeakerIndex", type = "dword", data = 8 },
+    { name = "LanguageIndex", type = "dword", data = 2 },
+]
+
+# ── Lule Sami: Siggá ──────────────────────────────────────────────────────
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_smj_Sigga"
+component = "voice_smj_sigga"
+uninstall = "remove_key"
+values = [
+    { name = "", type = "string", data = "Siggá - Julevsámegiella" },
+    { name = "409", type = "string", data = "Siggá - Lule Sami" },
+    { name = "7C3B", type = "string", data = "Siggá - Julevsámegiella" },
+    { name = "CLSID", type = "string", data = "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" },
+]
+
+[[registry]]
+root = "hklm"
+key = "SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MyTTS_smj_Sigga\\Attributes"
+component = "voice_smj_sigga"
+uninstall = "remove_key"
+values = [
+    { name = "Name", type = "string", data = "Siggá - Julevsámegiella" },
+    { name = "ShortName", type = "string", data = "Siggá" },
+    { name = "Language", type = "string", data = "7C3B" },
+    { name = "LanguageCode", type = "string", data = "smj" },
+    { name = "Gender", type = "string", data = "Female" },
+    { name = "Age", type = "string", data = "Adult" },
+    { name = "Vendor", type = "string", data = "Example Corp" },
+    { name = "Version", type = "string", data = "1.0" },
+    { name = "VendorPreferred", type = "string", data = "" },
+    { name = "BundlePath", type = "string", data = "#{app}" },
+    { name = "BundleName", type = "string", data = "tts" },
+    { name = "SpeakerIndex", type = "dword", data = 9 },
+    { name = "LanguageIndex", type = "dword", data = 2 },
+]

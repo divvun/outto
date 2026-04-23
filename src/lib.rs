@@ -115,10 +115,9 @@ pub fn install(
                 .replace('/', std::path::MAIN_SEPARATOR_STR),
         )
     } else if let Some(ref default_dir) = config.package.default_dir {
-        // Create a temporary resolver just for the default_dir
-        let temp_resolver =
-            config::PathResolver::new(Path::new(""), &config.package.name, &config.package.version);
-        temp_resolver.resolve_path(default_dir)?
+        let config_resolver = config::VariableResolver::new()
+            .with_package(&config.package.name, &config.package.version);
+        config_resolver.resolve_path(default_dir)?
     } else {
         return Err(InstallerError::Config(
             "no install directory specified (set install_dir in options or default_dir in config)"
@@ -127,17 +126,21 @@ pub fn install(
     };
 
     // Create path resolver with actual install dir
-    let resolver =
-        config::PathResolver::new(&install_dir, &config.package.name, &config.package.version);
+    let resolver = config::VariableResolver::new()
+        .with_package(&config.package.name, &config.package.version)
+        .with_install_dir(&install_dir);
 
     // Check for existing installation
+    let mut old_manifest: Option<InstallManifest> = None;
+    let mut old_install_dir: Option<PathBuf> = None;
     if let Some(existing) = detect::detect_existing_install(&config.package.id)? {
         callbacks.on_log(
             LogLevel::Info,
             &format!(
-                "Existing installation found: {} v{}",
+                "Existing installation found: {} v{} at {}",
                 existing.display_name.as_deref().unwrap_or("unknown"),
-                existing.version.as_deref().unwrap_or("unknown")
+                existing.version.as_deref().unwrap_or("unknown"),
+                existing.install_dir.display()
             ),
         );
 
@@ -152,7 +155,12 @@ pub fn install(
                 // Allow side-by-side (different dir)
             }
             UpgradePolicy::Overwrite => {
-                // Continue and overwrite
+                // Load manifest from the OLD install location (may differ from new)
+                old_manifest =
+                    InstallManifest::load(&existing.install_dir, &config.package.id).ok();
+                if existing.install_dir != install_dir {
+                    old_install_dir = Some(existing.install_dir);
+                }
             }
         }
     }
@@ -172,6 +180,7 @@ pub fn install(
         &config.package.name,
         &config.package.version,
         &install_dir,
+        config.package.depends_on.clone(),
     );
     install_manifest.record(manifest::ActionRecord::DirectoryCreated {
         path: install_dir.clone(),
@@ -192,10 +201,53 @@ pub fn install(
             // Save manifest for uninstallation
             install_manifest.save()?;
 
+            // Clean up files from previous version that are no longer installed
+            if let Some(old) = old_manifest {
+                let new_files: std::collections::HashSet<PathBuf> = install_manifest
+                    .actions
+                    .iter()
+                    .filter_map(|a| match a {
+                        manifest::ActionRecord::FileCopied { dest, .. } => Some(dest.clone()),
+                        _ => None,
+                    })
+                    .collect();
+
+                for action in &old.actions {
+                    if let manifest::ActionRecord::FileCopied { dest, .. } = action {
+                        if !new_files.contains(dest) && dest.exists() {
+                            callbacks.on_log(
+                                LogLevel::Info,
+                                &format!("Upgrade: removing orphaned file {}", dest.display()),
+                            );
+                            let _ = std::fs::remove_file(dest);
+                        }
+                    }
+                }
+
+                // If install dir changed, clean up old .outto/{package_id}/ directory
+                if let Some(ref old_dir) = old_install_dir {
+                    let old_pkg_dir = InstallManifest::package_dir(old_dir, &config.package.id);
+                    if old_pkg_dir.exists() {
+                        callbacks.on_log(
+                            LogLevel::Info,
+                            &format!(
+                                "Upgrade: removing old package dir {}",
+                                old_pkg_dir.display()
+                            ),
+                        );
+                        let _ = std::fs::remove_dir_all(&old_pkg_dir);
+                    }
+                    // Remove old install dir if empty
+                    if old_dir.exists() {
+                        let _ = std::fs::remove_dir(old_dir);
+                    }
+                }
+            }
+
             // Copy uninstaller exe if provided
             let uninstall_string = if let Some(ref uninstall_exe_src) = options.uninstall_exe {
-                let outto_dir = install_dir.join(".outto");
-                let uninstall_dest = outto_dir.join("uninstall.exe");
+                let pkg_dir = InstallManifest::package_dir(&install_dir, &config.package.id);
+                let uninstall_dest = pkg_dir.join("uninstall.exe");
                 std::fs::copy(uninstall_exe_src, &uninstall_dest).map_err(|e| {
                     InstallerError::FileOp {
                         path: uninstall_dest.clone(),
@@ -233,6 +285,7 @@ pub fn install(
                 url: config.package.url.as_deref(),
                 support_url: config.package.support_url.as_deref(),
                 uninstall_string: uninstall_string.as_deref(),
+                depends_on: &config.package.depends_on,
             })?;
 
             callbacks.on_log(LogLevel::Info, "Installation complete");
@@ -263,12 +316,13 @@ pub fn install(
     }
 }
 
-/// Uninstall from a manifest stored at the given install directory.
-pub fn uninstall_from_dir(
+/// Uninstall a package and cascade-uninstall all dependents.
+pub fn uninstall_package(
     install_dir: &Path,
+    package_id: &str,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
-    uninstall::uninstall(install_dir, callbacks)
+    uninstall::uninstall(install_dir, package_id, callbacks)
 }
 
 #[cfg(test)]
@@ -309,7 +363,7 @@ mod tests {
         fs::write(source_dir.join("build/app.exe"), "fake exe").unwrap();
         fs::write(source_dir.join("build/readme.txt"), "readme").unwrap();
 
-        let toml = r#"
+        let toml = r##"
 [package]
 id = "com.test.basic"
 name = "BasicTest"
@@ -317,9 +371,9 @@ version = "1.0.0"
 
 [[files]]
 source = "build/*"
-dest = "$app"
+dest = "#{app}"
 overwrite = "always"
-"#;
+"##;
         let config = Config::from_toml(toml).unwrap();
         let callbacks = TestCallbacks::default();
 
@@ -338,10 +392,10 @@ overwrite = "always"
         assert!(install_dir.join("readme.txt").exists());
 
         // Verify manifest was created
-        assert!(InstallManifest::manifest_path(&install_dir).exists());
+        assert!(InstallManifest::manifest_path(&install_dir, "com.test.basic").exists());
 
         // Test uninstall
-        let result = uninstall_from_dir(&install_dir, &callbacks);
+        let result = uninstall_package(&install_dir, "com.test.basic", &callbacks);
         assert!(result.is_ok(), "Uninstall failed: {result:?}");
 
         // Verify files were removed
@@ -364,7 +418,7 @@ overwrite = "always"
         fs::write(source_dir.join("core/app.exe"), "core").unwrap();
         fs::write(source_dir.join("extras/plugin.dll"), "extras").unwrap();
 
-        let toml = r#"
+        let toml = r##"
 [package]
 id = "com.test.comp"
 name = "CompTest"
@@ -379,14 +433,14 @@ name = "extras"
 
 [[files]]
 source = "core/*"
-dest = "$app"
+dest = "#{app}"
 component = "core"
 
 [[files]]
 source = "extras/*"
-dest = "$app/extras"
+dest = "#{app}/extras"
 component = "extras"
-"#;
+"##;
         let config = Config::from_toml(toml).unwrap();
         let callbacks = TestCallbacks::default();
 
@@ -429,7 +483,7 @@ component = "extras"
 
     #[test]
     fn test_config_roundtrip() {
-        let toml = r#"
+        let toml = r##"
 [package]
 id = "com.test.roundtrip"
 name = "RoundTrip"
@@ -437,14 +491,14 @@ version = "1.0.0"
 publisher = "Test Corp"
 architecture = "x64"
 privileges = "admin"
-default_dir = "$pf/$package.name"
+default_dir = "#{pf}/#{package.name}"
 
 [logging]
 enabled = true
 
 [[files]]
 source = "build/*"
-dest = "$app"
+dest = "#{app}"
 
 [[registry]]
 root = "hkcu"
@@ -453,9 +507,9 @@ values = [{ name = "Key", type = "string", data = "Value" }]
 
 [[shortcuts]]
 name = "TestApp"
-target = "$app/test.exe"
+target = "#{app}/test.exe"
 location = "desktop"
-"#;
+"##;
         let config = Config::from_toml(toml).unwrap();
         assert_eq!(config.package.id, "com.test.roundtrip");
         assert_eq!(config.package.architecture, Architecture::X64);

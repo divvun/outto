@@ -13,6 +13,8 @@ pub struct InstallManifest {
     pub package_name: String,
     pub package_version: String,
     pub install_dir: PathBuf,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
     pub actions: Vec<ActionRecord>,
 }
 
@@ -91,12 +93,14 @@ impl InstallManifest {
         package_name: &str,
         package_version: &str,
         install_dir: &Path,
+        depends_on: Vec<String>,
     ) -> Self {
         Self {
             package_id: package_id.to_string(),
             package_name: package_name.to_string(),
             package_version: package_version.to_string(),
             install_dir: install_dir.to_path_buf(),
+            depends_on,
             actions: Vec::new(),
         }
     }
@@ -105,30 +109,30 @@ impl InstallManifest {
         self.actions.push(action);
     }
 
-    pub fn manifest_dir(install_dir: &Path) -> PathBuf {
-        install_dir.join(".outto")
+    pub fn package_dir(install_dir: &Path, package_id: &str) -> PathBuf {
+        install_dir.join(".outto").join(package_id)
     }
 
-    pub fn manifest_path(install_dir: &Path) -> PathBuf {
-        Self::manifest_dir(install_dir).join("manifest.json")
+    pub fn manifest_path(install_dir: &Path, package_id: &str) -> PathBuf {
+        Self::package_dir(install_dir, package_id).join("manifest.json")
     }
 
     pub fn save(&self) -> InstallerResult<()> {
-        let dir = Self::manifest_dir(&self.install_dir);
+        let dir = Self::package_dir(&self.install_dir, &self.package_id);
         fs::create_dir_all(&dir).map_err(|e| InstallerError::DirOp {
             path: dir.clone(),
             source: e,
         })?;
 
-        let path = Self::manifest_path(&self.install_dir);
+        let path = Self::manifest_path(&self.install_dir, &self.package_id);
         let json = serde_json::to_string_pretty(self)?;
         fs::write(&path, json).map_err(|e| InstallerError::FileOp { path, source: e })?;
 
         Ok(())
     }
 
-    pub fn load(install_dir: &Path) -> InstallerResult<Self> {
-        let path = Self::manifest_path(install_dir);
+    pub fn load(install_dir: &Path, package_id: &str) -> InstallerResult<Self> {
+        let path = Self::manifest_path(install_dir, package_id);
         let content = fs::read_to_string(&path).map_err(|e| InstallerError::FileOp {
             path: path.clone(),
             source: e,
@@ -149,7 +153,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let mut manifest = InstallManifest::new("com.test", "Test", "1.0.0", &dir);
+        let mut manifest = InstallManifest::new("com.test", "Test", "1.0.0", &dir, vec![]);
         manifest.record(ActionRecord::DirectoryCreated {
             path: dir.join("subdir"),
         });
@@ -164,7 +168,7 @@ mod tests {
 
         manifest.save().unwrap();
 
-        let loaded = InstallManifest::load(&dir).unwrap();
+        let loaded = InstallManifest::load(&dir, "com.test").unwrap();
         assert_eq!(loaded.package_id, "com.test");
         assert_eq!(loaded.actions.len(), 2);
 
@@ -175,12 +179,12 @@ mod tests {
     fn test_manifest_paths() {
         let dir = Path::new("C:\\Program Files\\MyApp");
         assert_eq!(
-            InstallManifest::manifest_dir(dir),
-            PathBuf::from("C:\\Program Files\\MyApp\\.outto")
+            InstallManifest::package_dir(dir, "com.example"),
+            PathBuf::from("C:\\Program Files\\MyApp\\.outto\\com.example")
         );
         assert_eq!(
-            InstallManifest::manifest_path(dir),
-            PathBuf::from("C:\\Program Files\\MyApp\\.outto\\manifest.json")
+            InstallManifest::manifest_path(dir, "com.example"),
+            PathBuf::from("C:\\Program Files\\MyApp\\.outto\\com.example\\manifest.json")
         );
     }
 }

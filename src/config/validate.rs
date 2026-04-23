@@ -206,7 +206,7 @@ version = "not-semver"
     #[test]
     fn test_unknown_component_reference() {
         let config: Config = toml::from_str(
-            r#"
+            r##"
 [package]
 id = "com.test"
 name = "TestApp"
@@ -218,9 +218,9 @@ required = true
 
 [[files]]
 source = "build/*"
-dest = "$app"
+dest = "#{app}"
 component = "nonexistent"
-"#,
+"##,
         )
         .unwrap();
         assert!(validate_config(&config).is_err());
@@ -339,7 +339,7 @@ name = "core"
     fn test_component_ref_with_no_components_defined() {
         // When no components are defined, references should be accepted (components are optional)
         let config: Config = toml::from_str(
-            r#"
+            r##"
 [package]
 id = "com.test"
 name = "TestApp"
@@ -347,9 +347,9 @@ version = "1.0.0"
 
 [[files]]
 source = "build/*"
-dest = "$app"
+dest = "#{app}"
 component = "anything"
-"#,
+"##,
         )
         .unwrap();
         // This should pass because component_names is empty, so the check is skipped
@@ -359,7 +359,7 @@ component = "anything"
     #[test]
     fn test_empty_file_source() {
         let config: Config = toml::from_str(
-            r#"
+            r##"
 [package]
 id = "com.test"
 name = "TestApp"
@@ -367,8 +367,8 @@ version = "1.0.0"
 
 [[files]]
 source = ""
-dest = "$app"
-"#,
+dest = "#{app}"
+"##,
         )
         .unwrap();
         assert!(validate_config(&config).is_err());
@@ -413,7 +413,7 @@ key = ""
     #[test]
     fn test_empty_shortcut_name() {
         let config: Config = toml::from_str(
-            r#"
+            r##"
 [package]
 id = "com.test"
 name = "TestApp"
@@ -421,9 +421,9 @@ version = "1.0.0"
 
 [[shortcuts]]
 name = ""
-target = "$app/test.exe"
+target = "#{app}/test.exe"
 location = "desktop"
-"#,
+"##,
         )
         .unwrap();
         assert!(validate_config(&config).is_err());
@@ -451,7 +451,7 @@ location = "desktop"
     #[test]
     fn test_empty_service_name() {
         let config: Config = toml::from_str(
-            r#"
+            r##"
 [package]
 id = "com.test"
 name = "TestApp"
@@ -459,8 +459,8 @@ version = "1.0.0"
 
 [[services]]
 name = ""
-executable = "$app/svc.exe"
-"#,
+executable = "#{app}/svc.exe"
+"##,
         )
         .unwrap();
         assert!(validate_config(&config).is_err());

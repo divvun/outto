@@ -27,41 +27,25 @@ pub fn install_font(
 
     callbacks.on_log(LogLevel::Info, &format!("Fonts: installing {}", font_name));
 
-    #[cfg(windows)]
-    {
-        let fonts_dir = get_fonts_dir()?;
-        let dest_path = fonts_dir.join(file_name);
+    let fonts_dir = get_fonts_dir()?;
+    let dest_path = fonts_dir.join(file_name);
 
-        fs::copy(&source_path, &dest_path).map_err(|e| InstallerError::Font {
-            file: entry.source.clone(),
-            message: format!("failed to copy to fonts dir: {e}"),
-        })?;
+    fs::copy(&source_path, &dest_path).map_err(|e| InstallerError::Font {
+        file: entry.source.clone(),
+        message: format!("failed to copy to fonts dir: {e}"),
+    })?;
 
-        register_font(&dest_path)?;
-        add_font_registry_entry(&font_name, &file_name.to_string_lossy())?;
+    register_font(&dest_path)?;
+    add_font_registry_entry(&font_name, &file_name.to_string_lossy())?;
 
-        manifest.record(ActionRecord::FontInstalled {
-            file: dest_path,
-            font_name: font_name.clone(),
-        });
-    }
-
-    #[cfg(not(windows))]
-    {
-        callbacks.on_log(
-            LogLevel::Info,
-            &format!("Fonts: [simulated] installed {font_name}"),
-        );
-        manifest.record(ActionRecord::FontInstalled {
-            file: source_path,
-            font_name: font_name.clone(),
-        });
-    }
+    manifest.record(ActionRecord::FontInstalled {
+        file: dest_path,
+        font_name: font_name.clone(),
+    });
 
     Ok(())
 }
 
-#[cfg(windows)]
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -71,13 +55,11 @@ fn to_wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
-#[cfg(windows)]
 fn get_fonts_dir() -> InstallerResult<PathBuf> {
     let windir = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
     Ok(PathBuf::from(windir).join("Fonts"))
 }
 
-#[cfg(windows)]
 fn register_font(font_path: &Path) -> InstallerResult<()> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -100,7 +82,6 @@ fn register_font(font_path: &Path) -> InstallerResult<()> {
     Ok(())
 }
 
-#[cfg(windows)]
 fn add_font_registry_entry(font_name: &str, file_name: &str) -> InstallerResult<()> {
     use windows_sys::Win32::System::Registry::*;
 
@@ -155,7 +136,6 @@ fn add_font_registry_entry(font_name: &str, file_name: &str) -> InstallerResult<
     Ok(())
 }
 
-#[cfg(windows)]
 fn broadcast_font_change() {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
     unsafe {
@@ -171,7 +151,6 @@ fn broadcast_font_change() {
     }
 }
 
-#[cfg(windows)]
 pub fn uninstall_font(font_path: &Path, font_name: &str) -> InstallerResult<()> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;

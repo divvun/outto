@@ -1,4 +1,4 @@
-use crate::config::{EnvAction, EnvScope, EnvironmentEntry, PathResolver};
+use crate::config::{EnvAction, EnvScope, EnvironmentEntry, VariableResolver};
 use crate::error::{InstallerError, InstallerResult};
 use crate::manifest::{ActionRecord, InstallManifest};
 use crate::{InstallerCallbacks, LogLevel};
@@ -39,7 +39,7 @@ pub fn compute_env_value(
 
 pub fn apply_env_entry(
     entry: &EnvironmentEntry,
-    resolver: &PathResolver,
+    resolver: &VariableResolver,
     manifest: &mut InstallManifest,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
@@ -63,7 +63,6 @@ pub fn apply_env_entry(
         ),
     );
 
-    #[cfg(windows)]
     let previous_value = {
         let prev = read_env_var(&entry.name, &entry.scope)?;
 
@@ -78,15 +77,6 @@ pub fn apply_env_entry(
         prev
     };
 
-    #[cfg(not(windows))]
-    let previous_value: Option<String> = {
-        callbacks.on_log(
-            LogLevel::Info,
-            &format!("Environment: [simulated] {action_str} {}", entry.name),
-        );
-        None
-    };
-
     manifest.record(ActionRecord::EnvironmentVariableSet {
         name: entry.name.clone(),
         scope: scope_str.to_string(),
@@ -98,7 +88,6 @@ pub fn apply_env_entry(
     Ok(())
 }
 
-#[cfg(windows)]
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -108,7 +97,6 @@ fn to_wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
-#[cfg(windows)]
 fn env_registry_location(
     scope: &EnvScope,
 ) -> (windows_sys::Win32::System::Registry::HKEY, &'static str) {
@@ -122,7 +110,6 @@ fn env_registry_location(
     }
 }
 
-#[cfg(windows)]
 fn read_env_var(name: &str, scope: &EnvScope) -> InstallerResult<Option<String>> {
     use windows_sys::Win32::System::Registry::*;
 
@@ -183,7 +170,6 @@ fn read_env_var(name: &str, scope: &EnvScope) -> InstallerResult<Option<String>>
     Ok(Some(value))
 }
 
-#[cfg(windows)]
 fn write_env_var(name: &str, value: &str, scope: &EnvScope) -> InstallerResult<()> {
     use windows_sys::Win32::System::Registry::*;
 
@@ -231,7 +217,6 @@ fn write_env_var(name: &str, value: &str, scope: &EnvScope) -> InstallerResult<(
     Ok(())
 }
 
-#[cfg(windows)]
 fn broadcast_settings_change() {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -250,10 +235,11 @@ fn broadcast_settings_change() {
     }
 }
 
-#[cfg(windows)]
 pub fn rollback_env_var(
     name: &str,
     scope: &str,
+    action: &str,
+    value: &str,
     previous_value: Option<&str>,
 ) -> InstallerResult<()> {
     let env_scope = match scope {
@@ -261,28 +247,65 @@ pub fn rollback_env_var(
         _ => EnvScope::User,
     };
 
-    match previous_value {
-        Some(prev) => write_env_var(name, prev, &env_scope),
-        None => {
-            use windows_sys::Win32::System::Registry::*;
-
-            let (hkey_root, subkey) = env_registry_location(&env_scope);
-            let key_wide = to_wide(subkey);
-            let name_wide = to_wide(name);
-
-            let mut hkey: HKEY = std::ptr::null_mut();
-            let result =
-                unsafe { RegOpenKeyExW(hkey_root, key_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) };
-            if result == 0 {
-                unsafe {
-                    RegDeleteValueW(hkey, name_wide.as_ptr());
-                    RegCloseKey(hkey);
+    match action {
+        "append" | "prepend" => {
+            // Read current value and remove just our entry
+            let current = read_env_var(name, &env_scope)?;
+            if let Some(current_str) = current {
+                let new_val = current_str
+                    .split(';')
+                    .filter(|part| *part != value)
+                    .collect::<Vec<_>>()
+                    .join(";");
+                if new_val.is_empty() {
+                    delete_env_var(name, &env_scope)?;
+                } else {
+                    write_env_var(name, &new_val, &env_scope)?;
                 }
             }
             broadcast_settings_change();
             Ok(())
         }
+        "set" => {
+            // Restore previous value or delete if there was none
+            match previous_value {
+                Some(prev) => {
+                    write_env_var(name, prev, &env_scope)?;
+                    broadcast_settings_change();
+                    Ok(())
+                }
+                None => {
+                    delete_env_var(name, &env_scope)?;
+                    broadcast_settings_change();
+                    Ok(())
+                }
+            }
+        }
+        "remove" => {
+            // User explicitly wanted it gone — do nothing on uninstall
+            Ok(())
+        }
+        _ => Ok(()),
     }
+}
+
+fn delete_env_var(name: &str, scope: &EnvScope) -> InstallerResult<()> {
+    use windows_sys::Win32::System::Registry::*;
+
+    let (hkey_root, subkey) = env_registry_location(scope);
+    let key_wide = to_wide(subkey);
+    let name_wide = to_wide(name);
+
+    let mut hkey: HKEY = std::ptr::null_mut();
+    let result =
+        unsafe { RegOpenKeyExW(hkey_root, key_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) };
+    if result == 0 {
+        unsafe {
+            RegDeleteValueW(hkey, name_wide.as_ptr());
+            RegCloseKey(hkey);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

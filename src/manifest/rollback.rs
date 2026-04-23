@@ -169,14 +169,17 @@ fn rollback_single(action: &ActionRecord, restore_backups: bool) -> InstallerRes
         ActionRecord::EnvironmentVariableSet {
             name,
             scope,
+            action,
+            value,
             previous_value,
-            ..
         } => {
             #[cfg(windows)]
             {
                 crate::actions::environment::rollback_env_var(
                     name,
                     scope,
+                    action,
+                    value,
                     previous_value.as_deref(),
                 )?;
             }
