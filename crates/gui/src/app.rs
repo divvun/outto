@@ -7,7 +7,9 @@ use iced::keyboard;
 use iced::widget::{button, column, container, row, space, text};
 use iced::{Element, Fill, Subscription, Task};
 
-use outto::{Config, ErrorAction, LogLevel, PromptResponse};
+use outto_core::{ErrorAction, LogLevel, PromptResponse};
+
+use crate::bridge::Config;
 
 use crate::bridge::{self, BridgeEvent, BridgeQueue, PendingError, PendingPrompt};
 use crate::cli::CliFlags;

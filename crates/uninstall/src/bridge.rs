@@ -2,7 +2,14 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use outto::{ErrorAction, InstallerCallbacks, InstallerError, LogLevel, Prompt, PromptResponse};
+use outto_core::{
+    ErrorAction, InstallerCallbacks, InstallerError, LogLevel, Prompt, PromptResponse,
+};
+
+#[cfg(target_os = "macos")]
+use outto_macos as platform;
+#[cfg(windows)]
+use outto_windows as platform;
 
 pub enum BridgeEvent {
     Progress {
@@ -79,7 +86,7 @@ pub fn spawn_uninstall(install_dir: PathBuf, package_id: String, queue: BridgeQu
         let callbacks = UninstallCallbacks {
             queue: queue.clone(),
         };
-        let result = outto::uninstall_package(&install_dir, &package_id, &callbacks);
+        let result = platform::uninstall_package(&install_dir, &package_id, &callbacks);
         let mut q = queue.lock().unwrap();
         q.push_back(BridgeEvent::Finished(result.map_err(|e| e.to_string())));
     });

@@ -6,7 +6,7 @@ description = "Iced-based installer GUI for outto"
 license = "MIT"
 
 [dependencies]
-outto = { path = "../.." }
+outto-core = { path = "../core" }
 iced = { version = "0.14", default-features = false, features = ["tokio", "tiny-skia"] }
 serde_json = "1"
 rfd = "0.15"
@@ -14,7 +14,12 @@ box-format = { path = "../../../box", default-features = false, features = ["std
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
+outto-windows = { path = "../windows" }
 windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+outto-macos = { path = "../macos" }
+# Keep box-format available on macOS too for payload extraction in the GUI.
 
 [build-dependencies]
 winres = "0.1"

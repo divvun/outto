@@ -3,7 +3,9 @@
 mod app;
 mod bridge;
 mod cli;
+#[cfg(any(windows, target_os = "macos"))]
 mod payload;
+#[cfg(windows)]
 mod pe;
 mod screens;
 mod theme;
@@ -11,14 +13,18 @@ mod theme;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use outto::Config;
+#[cfg(target_os = "macos")]
+use outto_macos as platform;
+#[cfg(windows)]
+use outto_windows as platform;
+
+use platform::Config;
 
 use app::{AppMode, AppState};
 use bridge::SilentCallbacks;
 use cli::Mode;
 
 fn main() {
-    // Reattach to parent console if launched from cmd (needed for /VERYSILENT output)
     #[cfg(windows)]
     unsafe {
         windows_sys::Win32::System::Console::AttachConsole(
@@ -42,6 +48,7 @@ fn main() {
     }
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 fn run_embedded_install(flags: cli::CliFlags) {
     let payload = match payload::extract_embedded_payload() {
         Ok(Some(p)) => p,
@@ -63,6 +70,11 @@ fn run_embedded_install(flags: cli::CliFlags) {
         payload.license_text,
         payload.uninstall_exe,
     );
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn run_embedded_install(_flags: cli::CliFlags) {
+    fatal_error("Embedded payload extraction is only supported on Windows and macOS.");
 }
 
 fn run_install(flags: cli::CliFlags, config_path: PathBuf, source_dir: PathBuf) {
@@ -98,7 +110,7 @@ fn run_install_inner(
     license_text: Option<String>,
     uninstall_exe: Option<PathBuf>,
 ) {
-    let resolver = outto::config::VariableResolver::new()
+    let resolver = outto_core::config::VariableResolver::new()
         .with_package(&config.package.name, &config.package.version);
     let default_install_dir: Option<PathBuf> = config
         .package
@@ -108,7 +120,6 @@ fn run_install_inner(
         .transpose()
         .unwrap_or_else(|e| fatal_error(&format!("Invalid default_dir: {e}")));
 
-    // /VERYSILENT: no GUI at all
     if flags.very_silent {
         let install_dir = flags
             .dir
@@ -122,14 +133,14 @@ fn run_install_inner(
             .map(|list| list.iter().cloned().collect::<HashSet<String>>());
 
         let callbacks = SilentCallbacks;
-        let options = outto::InstallOptions {
+        let options = outto_core::InstallOptions {
             source_dir,
             install_dir,
             selected_components: selected,
             uninstall_exe,
         };
 
-        match outto::install(&config, &options, &callbacks) {
+        match platform::install(&config, &options, &callbacks) {
             Ok(()) => {
                 println!("Installation complete.");
                 std::process::exit(0);
@@ -141,7 +152,6 @@ fn run_install_inner(
         }
     }
 
-    // GUI mode — convert to string for text input field
     let default_install_dir_str = default_install_dir
         .as_ref()
         .map(|p| p.to_string_lossy().into_owned())
@@ -168,7 +178,7 @@ fn run_uninstall(flags: cli::CliFlags, install_dir: PathBuf) {
 
     if flags.very_silent {
         let callbacks = SilentCallbacks;
-        match outto::uninstall_package(&install_dir, &config.package.id, &callbacks) {
+        match platform::uninstall_package(&install_dir, &config.package.id, &callbacks) {
             Ok(()) => {
                 println!("Uninstall complete.");
                 std::process::exit(0);
@@ -226,7 +236,6 @@ fn load_config_for_uninstall(install_dir: &std::path::Path) -> Config {
         .unwrap()
 }
 
-/// Show a fatal error to the user and exit.
 fn fatal_error(msg: &str) -> ! {
     eprintln!("Error: {msg}");
 
@@ -263,7 +272,6 @@ fn find_uninstaller() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
 
-    // Look next to the current exe (development or extracted payload)
     let candidates = [
         exe_dir.join("outto-uninstall.exe"),
         exe_dir.join("uninstall.exe"),

@@ -1,0 +1,25 @@
+[package]
+name = "outto-core"
+version = "0.1.0"
+edition = "2021"
+description = "Platform-neutral framework shared by outto's per-OS installer backends"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+serde_json = "1"
+thiserror = "2"
+semver = { version = "1", features = ["serde"] }
+glob = "0.3"
+blake3 = "1.8.3"
+dunce = "1"
+box-format = { path = "../../../box", default-features = false, features = ["std", "zstd", "xz", "reader", "writer"] }
+walkdir = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }

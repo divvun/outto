@@ -1,0 +1,463 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+use crate::callbacks::{InstallerCallbacks, LogLevel, Prompt, PromptResponse};
+use crate::config::{FileEntry, OverwritePolicy, VariableResolver};
+use crate::error::{InstallerError, InstallerResult};
+use crate::manifest::{CoreAction, InstallManifest};
+
+/// Normalize path separators for the native OS. On Windows this rewrites `/` to `\`;
+/// on other platforms it's a no-op.
+fn normalize_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(path.to_string_lossy().replace('/', "\\"))
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
+pub fn install_files<A>(
+    entry: &FileEntry,
+    source_dir: &Path,
+    resolver: &VariableResolver,
+    manifest: &mut InstallManifest<A>,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()>
+where
+    A: From<CoreAction>,
+{
+    let dest_dir = resolver.resolve_path(&entry.dest)?;
+    let source_pattern = source_dir
+        .join(&entry.source)
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    let matches = glob::glob(&source_pattern)
+        .map_err(|e| InstallerError::GlobPattern(format!("{}: {e}", entry.source)))?;
+
+    let exclude_patterns: Vec<glob::Pattern> = entry
+        .excludes
+        .iter()
+        .filter_map(|ex| glob::Pattern::new(ex).ok())
+        .collect();
+
+    let mut matched_any = false;
+    for path_result in matches {
+        let source_path = path_result
+            .map_err(|e| InstallerError::GlobPattern(format!("glob iteration error: {e}")))?;
+
+        if source_path.is_dir() {
+            continue;
+        }
+
+        let filename = source_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        if exclude_patterns.iter().any(|p| p.matches(filename)) {
+            callbacks.on_log(
+                LogLevel::Debug,
+                &format!("Files: excluding {}", source_path.display()),
+            );
+            continue;
+        }
+
+        matched_any = true;
+
+        let relative = compute_relative_path(&entry.source, &source_path, source_dir)?;
+
+        let dest_path = if let Some(ref dest_name) = entry.dest_name {
+            dest_dir.join(dest_name)
+        } else {
+            dest_dir.join(&relative)
+        };
+
+        if entry.only_if_dest_exists && !dest_path.exists() {
+            callbacks.on_log(
+                LogLevel::Debug,
+                &format!(
+                    "Files: skipping {} (dest does not exist)",
+                    dest_path.display()
+                ),
+            );
+            continue;
+        }
+
+        copy_file_with_policy(&source_path, &dest_path, entry, manifest, callbacks)?;
+    }
+
+    if !matched_any && !entry.skip_if_missing {
+        callbacks.on_log(
+            LogLevel::Warn,
+            &format!("Files: no matches for pattern {}", entry.source),
+        );
+    }
+
+    Ok(())
+}
+
+fn compute_relative_path(
+    pattern: &str,
+    matched_path: &Path,
+    source_dir: &Path,
+) -> InstallerResult<PathBuf> {
+    let normalized = pattern.replace('\\', "/");
+    let base = if let Some(pos) = normalized.find(['*', '?', '[']) {
+        let prefix = &normalized[..pos];
+        if let Some(last_sep) = prefix.rfind('/') {
+            &normalized[..last_sep]
+        } else {
+            ""
+        }
+    } else {
+        return Ok(PathBuf::from(matched_path.file_name().unwrap_or_default()));
+    };
+
+    let base_path = if base.is_empty() {
+        source_dir.to_path_buf()
+    } else {
+        source_dir.join(base)
+    };
+
+    matched_path
+        .strip_prefix(&base_path)
+        .map(|p| p.to_path_buf())
+        .or_else(|_| Ok(PathBuf::from(matched_path.file_name().unwrap_or_default())))
+}
+
+fn copy_file_with_policy<A>(
+    source: &Path,
+    dest: &Path,
+    entry: &FileEntry,
+    manifest: &mut InstallManifest<A>,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()>
+where
+    A: From<CoreAction>,
+{
+    let should_copy = if dest.exists() {
+        match &entry.overwrite {
+            OverwritePolicy::Always | OverwritePolicy::IgnoreVersion => true,
+            OverwritePolicy::Never => false,
+            OverwritePolicy::IfNewer | OverwritePolicy::ReplaceSameVersion => {
+                is_newer(source, dest)?
+            }
+            OverwritePolicy::Prompt => {
+                let response = callbacks.on_prompt(Prompt::OverwriteFile {
+                    path: dest.to_path_buf(),
+                });
+                matches!(response, PromptResponse::Yes)
+            }
+            OverwritePolicy::PromptIfOlder => {
+                if is_newer(dest, source)? {
+                    let response = callbacks.on_prompt(Prompt::OverwriteFile {
+                        path: dest.to_path_buf(),
+                    });
+                    matches!(response, PromptResponse::Yes)
+                } else {
+                    true
+                }
+            }
+        }
+    } else {
+        true
+    };
+
+    if !should_copy {
+        callbacks.on_log(
+            LogLevel::Debug,
+            &format!("Files: skipping {} (overwrite policy)", dest.display()),
+        );
+        return Ok(());
+    }
+
+    if let Some(parent) = dest.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| InstallerError::DirOp {
+                path: parent.to_path_buf(),
+                source: e,
+            })?;
+            manifest.record(CoreAction::DirectoryCreated {
+                path: parent.to_path_buf(),
+            });
+        }
+    }
+
+    if dest.exists() && entry.overwrite_readonly {
+        clear_readonly(dest);
+    }
+
+    let backup = if dest.exists() {
+        let backup_path = make_backup_path(dest);
+        fs::copy(dest, &backup_path).map_err(|e| InstallerError::FileOp {
+            path: dest.to_path_buf(),
+            source: e,
+        })?;
+        Some(backup_path)
+    } else {
+        None
+    };
+
+    callbacks.on_log(
+        LogLevel::Info,
+        &format!(
+            "Files: copying {} -> {}",
+            normalize_path(source).display(),
+            normalize_path(dest).display()
+        ),
+    );
+
+    fs::copy(source, dest).map_err(|e| InstallerError::FileOp {
+        path: dest.to_path_buf(),
+        source: e,
+    })?;
+
+    #[cfg(windows)]
+    if let Some(ref attribs) = entry.attribs {
+        callbacks.on_log(
+            LogLevel::Debug,
+            &format!("Files: setting attributes on {}", dest.display()),
+        );
+        apply_attribs(dest, attribs);
+    }
+
+    if entry.touch {
+        callbacks.on_log(
+            LogLevel::Debug,
+            &format!("Files: touching {}", dest.display()),
+        );
+        let _ = filetime_set_now(dest);
+    }
+
+    if let Some(ref expected_hash) = entry.hash {
+        verify_hash(dest, expected_hash, callbacks)?;
+    }
+
+    #[cfg(windows)]
+    if let Some(compress) = entry.set_ntfs_compression {
+        callbacks.on_log(
+            LogLevel::Debug,
+            &format!("Files: setting NTFS compression on {}", dest.display()),
+        );
+        set_ntfs_compression(dest, compress);
+    }
+
+    manifest.record(CoreAction::FileCopied {
+        dest: normalize_path(dest),
+        backup,
+        preserve_on_uninstall: entry.preserve_on_uninstall,
+        uninst_remove_readonly: entry.uninst_remove_readonly,
+        uninst_restart_delete: entry.uninst_restart_delete,
+        restart_replace: entry.restart_replace,
+    });
+
+    if entry.delete_after_install {
+        callbacks.on_log(
+            LogLevel::Debug,
+            &format!("Files: deleting temp source {}", source.display()),
+        );
+        let _ = fs::remove_file(source);
+    }
+
+    Ok(())
+}
+
+fn is_newer(source: &Path, dest: &Path) -> InstallerResult<bool> {
+    let source_modified = fs::metadata(source)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let dest_modified = fs::metadata(dest)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    Ok(source_modified > dest_modified)
+}
+
+fn make_backup_path(path: &Path) -> PathBuf {
+    let mut backup = path.to_path_buf();
+    let ext = backup
+        .extension()
+        .map(|e| format!("{}.bak", e.to_string_lossy()))
+        .unwrap_or_else(|| "bak".into());
+    backup.set_extension(ext);
+    backup
+}
+
+fn clear_readonly(path: &Path) {
+    if let Ok(metadata) = fs::metadata(path) {
+        let mut perms = metadata.permissions();
+        if perms.readonly() {
+            perms.set_readonly(false);
+            let _ = fs::set_permissions(path, perms);
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn apply_attribs(path: &Path, attribs: &crate::config::types::FileAttribs) {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    let wide: Vec<u16> = OsStr::new(path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut flags: u32 = 0;
+    if attribs.readonly {
+        flags |= 0x01;
+    }
+    if attribs.hidden {
+        flags |= 0x02;
+    }
+    if attribs.system {
+        flags |= 0x04;
+    }
+    if attribs.not_content_indexed {
+        flags |= 0x2000;
+    }
+    if flags == 0 {
+        flags = 0x80;
+    }
+
+    unsafe {
+        windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(wide.as_ptr(), flags);
+    }
+}
+
+fn filetime_set_now(path: &Path) -> std::io::Result<()> {
+    let now = SystemTime::now();
+    let file = fs::File::options().write(true).open(path)?;
+    file.set_modified(now)?;
+    Ok(())
+}
+
+fn verify_hash(
+    path: &Path,
+    expected: &str,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()> {
+    use std::io::Read;
+
+    let mut file = fs::File::open(path).map_err(|e| InstallerError::FileOp {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| InstallerError::FileOp {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    let actual = hasher.finalize().to_hex();
+    let actual_str = actual.as_str();
+
+    if !actual_str.eq_ignore_ascii_case(expected) {
+        return Err(InstallerError::Other(format!(
+            "Files: hash mismatch for {}: expected {}, got {}",
+            path.display(),
+            expected,
+            actual_str
+        )));
+    }
+
+    callbacks.on_log(
+        LogLevel::Debug,
+        &format!("Files: hash verified for {}", path.display()),
+    );
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn set_ntfs_compression(path: &Path, compress: bool) {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    let wide: Vec<u16> = OsStr::new(path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let handle = unsafe {
+        windows_sys::Win32::Storage::FileSystem::CreateFileW(
+            wide.as_ptr(),
+            windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ
+                | windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE,
+            0,
+            std::ptr::null(),
+            windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+
+    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return;
+    }
+
+    let compression_format: u16 = if compress { 1 } else { 0 };
+
+    let mut bytes_returned: u32 = 0;
+    unsafe {
+        windows_sys::Win32::System::IO::DeviceIoControl(
+            handle,
+            0x0009C040,
+            &compression_format as *const u16 as *const std::ffi::c_void,
+            2,
+            std::ptr::null_mut(),
+            0,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+        );
+        windows_sys::Win32::Foundation::CloseHandle(handle);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_is_newer() {
+        let dir = std::env::temp_dir().join("outto_test_is_newer");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let old = dir.join("old.txt");
+        let new = dir.join("new.txt");
+
+        fs::write(&old, "old").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(&new, "new").unwrap();
+
+        assert!(is_newer(&new, &old).unwrap());
+        assert!(!is_newer(&old, &new).unwrap());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_make_backup_path() {
+        assert_eq!(
+            make_backup_path(Path::new("file.txt")),
+            PathBuf::from("file.txt.bak")
+        );
+        assert_eq!(
+            make_backup_path(Path::new("file")),
+            PathBuf::from("file.bak")
+        );
+    }
+}

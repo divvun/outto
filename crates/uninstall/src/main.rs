@@ -8,6 +8,11 @@ use std::path::PathBuf;
 
 use bridge::SilentCallbacks;
 
+#[cfg(target_os = "macos")]
+use outto_macos as platform;
+#[cfg(windows)]
+use outto_windows as platform;
+
 fn main() {
     #[cfg(windows)]
     unsafe {
@@ -98,7 +103,7 @@ fn main() {
     if very_silent {
         relocate_self();
         let callbacks = SilentCallbacks;
-        match outto::uninstall_package(&install_dir, &package_id, &callbacks) {
+        match platform::uninstall_package(&install_dir, &package_id, &callbacks) {
             Ok(()) => {
                 cleanup_after_uninstall(&install_dir);
                 println!("Uninstall complete.");

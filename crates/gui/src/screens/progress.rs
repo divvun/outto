@@ -1,6 +1,6 @@
 use iced::widget::{button, column, container, progress_bar, row, scrollable, space, text};
 use iced::{Element, Fill};
-use outto::PromptResponse;
+use outto_core::PromptResponse;
 
 use crate::app::{AppState, Message};
 use crate::bridge::PendingPrompt;
@@ -40,13 +40,13 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
 
 fn prompt_view(pending: &PendingPrompt) -> Element<'_, Message> {
     let prompt_text = match &pending.prompt {
-        outto::Prompt::OverwriteFile { path } => {
+        outto_core::Prompt::OverwriteFile { path } => {
             format!(
                 "File already exists: {}\nOverwrite?",
                 theme::normalize_path(&path.display().to_string())
             )
         }
-        outto::Prompt::ExistingInstallDetected { existing } => {
+        outto_core::Prompt::ExistingInstallDetected { existing } => {
             format!(
                 "Existing installation detected: {} v{}\nContinue?",
                 existing.display_name.as_deref().unwrap_or("unknown"),
@@ -72,9 +72,9 @@ fn prompt_view(pending: &PendingPrompt) -> Element<'_, Message> {
 
 fn error_view(error_message: &str) -> Element<'_, Message> {
     let buttons = row![
-        button("Abort").on_press(Message::ErrorResponse(outto::ErrorAction::Abort)),
-        button("Retry").on_press(Message::ErrorResponse(outto::ErrorAction::Retry)),
-        button("Ignore").on_press(Message::ErrorResponse(outto::ErrorAction::Ignore)),
+        button("Abort").on_press(Message::ErrorResponse(outto_core::ErrorAction::Abort)),
+        button("Retry").on_press(Message::ErrorResponse(outto_core::ErrorAction::Retry)),
+        button("Ignore").on_press(Message::ErrorResponse(outto_core::ErrorAction::Ignore)),
     ]
     .spacing(8);
 

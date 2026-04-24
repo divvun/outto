@@ -2,7 +2,16 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use outto::{ErrorAction, InstallerCallbacks, InstallerError, LogLevel, Prompt, PromptResponse};
+use outto_core::{
+    ErrorAction, InstallerCallbacks, InstallerError, LogLevel, Prompt, PromptResponse,
+};
+
+#[cfg(target_os = "macos")]
+use outto_macos as platform;
+#[cfg(windows)]
+use outto_windows as platform;
+
+pub type Config = platform::Config;
 
 /// Events sent from the install/uninstall thread to the GUI.
 pub enum BridgeEvent {
@@ -81,7 +90,6 @@ impl InstallerCallbacks for GuiCallbacks {
                 response_tx: tx,
             });
         }
-        // Block the install thread until the GUI user responds
         rx.recv().unwrap_or(PromptResponse::Cancel)
     }
 
@@ -126,7 +134,7 @@ impl InstallerCallbacks for SilentCallbacks {
 
 /// Spawn the install on a background thread.
 pub fn spawn_install(
-    config: outto::Config,
+    config: Config,
     source_dir: PathBuf,
     install_dir: Option<PathBuf>,
     selected_components: Option<std::collections::HashSet<String>>,
@@ -139,14 +147,14 @@ pub fn spawn_install(
             queue: queue.clone(),
             suppress_prompts,
         };
-        let options = outto::InstallOptions {
+        let options = outto_core::InstallOptions {
             source_dir,
             install_dir,
             selected_components,
             uninstall_exe,
         };
 
-        let result = outto::install(&config, &options, &callbacks);
+        let result = platform::install(&config, &options, &callbacks);
         let mut q = queue.lock().unwrap();
         q.push_back(BridgeEvent::Finished(result.map_err(|e| e.to_string())));
     });
@@ -164,7 +172,7 @@ pub fn spawn_uninstall(
             queue: queue.clone(),
             suppress_prompts,
         };
-        let result = outto::uninstall_package(&install_dir, &package_id, &callbacks);
+        let result = platform::uninstall_package(&install_dir, &package_id, &callbacks);
         let mut q = queue.lock().unwrap();
         q.push_back(BridgeEvent::Finished(result.map_err(|e| e.to_string())));
     });

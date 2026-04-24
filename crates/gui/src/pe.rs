@@ -1,2 +1,3 @@
-//! Re-export PE section utilities from the outto library.
-pub use outto::pe::*;
+//! Re-export PE section utilities from outto-windows.
+#![cfg(windows)]
+pub use outto_windows::pe::*;

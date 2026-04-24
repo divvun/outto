@@ -5,7 +5,29 @@ use std::sync::{atomic::AtomicBool, Mutex};
 use iced::widget::{button, column, container, progress_bar, row, scrollable, space, text};
 use iced::{Element, Fill, Subscription, Task};
 
-use outto::LogLevel;
+use outto_core::LogLevel;
+
+/// Return the display names of packages that will be cascade-uninstalled.
+/// On Windows, walks the Add/Remove Programs registry. On macOS (stub), empty.
+#[cfg(windows)]
+fn collect_cascade_names(package_id: &str) -> Vec<String> {
+    let cascade = outto_windows::uninstall::collect_cascade_order(package_id);
+    cascade
+        .iter()
+        .map(|p| {
+            outto_windows::detect::detect_existing_install(&p.package_id)
+                .ok()
+                .flatten()
+                .and_then(|e| e.display_name)
+                .unwrap_or_else(|| p.package_id.clone())
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn collect_cascade_names(_package_id: &str) -> Vec<String> {
+    Vec::new()
+}
 
 use crate::bridge::{self, BridgeEvent, BridgeQueue};
 use crate::theme;
@@ -71,19 +93,9 @@ impl AppState {
         silent: bool,
         no_cancel: bool,
     ) -> Self {
-        // Find packages that will be cascade-uninstalled
-        let cascade = outto::uninstall::collect_cascade_order(&package_id);
-        let cascade_names: Vec<String> = cascade
-            .iter()
-            .map(|p| {
-                // Try to read display name from registry, fall back to package_id
-                outto::detect::detect_existing_install(&p.package_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|e| e.display_name)
-                    .unwrap_or_else(|| p.package_id.clone())
-            })
-            .collect();
+        // Find packages that will be cascade-uninstalled (Windows-only for now —
+        // the macOS backend has no cascade detection yet, so its list is empty).
+        let cascade_names: Vec<String> = collect_cascade_names(&package_id);
 
         Self {
             step: if silent {
