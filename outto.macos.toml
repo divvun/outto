@@ -1,0 +1,52 @@
+# Manifest used by scripts/build-release.sh to self-package outto on macOS.
+# The staged layout prepared by the script is:
+#   <stage>/bin/outto                         (CLI)
+#   <stage>/libexec/outto-gui                 (iced installer GUI)
+#   <stage>/libexec/outto-uninstall           (uninstaller GUI)
+#   <stage>/libexec/outto-sfx-macos           (Mach-O self-extractor)
+#
+# The `outto build` invocation wraps those binaries into a signed .app bundle;
+# that bundle, when run, copies itself (and the built-in uninstaller) into
+# /Applications/outto.app and symlinks the CLI into /usr/local/bin/outto.
+
+[package]
+id = "no.divvun.outto"
+name = "outto"
+version = "0.1.0"
+publisher = "Divvun"
+url = "https://divvun.no"
+license_file = "LICENSE-MIT"
+default_dir = "#{applications}/outto.app"
+min_macos_version = "11.0"
+
+[privileges]
+# /usr/local/bin symlink writes need admin; osascript handles the prompt.
+required = "auto"
+auto_elevate = true
+
+[upgrade]
+policy = "overwrite"
+
+[[files]]
+# Copy the whole outto.app (built by the CLI) into /Applications.
+source = "bin/outto"
+dest = "#{app}/Contents/MacOS"
+overwrite = "always"
+
+[[files]]
+source = "libexec/outto-gui"
+dest = "#{app}/Contents/MacOS"
+overwrite = "always"
+
+[[files]]
+source = "libexec/outto-uninstall"
+dest = "#{app}/Contents/MacOS"
+overwrite = "always"
+
+[[symlinks]]
+target = "#{app}/Contents/MacOS/outto"
+link = "#{local_bin}/outto"
+overwrite = "always"
+
+[uninstall]
+remove_app_dir = true

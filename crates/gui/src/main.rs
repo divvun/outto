@@ -110,8 +110,9 @@ fn run_install_inner(
     license_text: Option<String>,
     uninstall_exe: Option<PathBuf>,
 ) {
-    let resolver = outto_core::config::VariableResolver::new()
-        .with_package(&config.package.name, &config.package.version);
+    // Use the platform's make_resolver so #{applications}/#{pf}/etc. resolve
+    // while expanding default_dir.
+    let resolver = platform::make_resolver(&config, None);
     let default_install_dir: Option<PathBuf> = config
         .package
         .default_dir

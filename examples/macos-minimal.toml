@@ -1,0 +1,38 @@
+# Minimal macOS manifest for smoke-testing the install/uninstall cycle.
+#
+# Usage:
+#   mkdir -p /tmp/outto-stage/MyApp.app/Contents/MacOS
+#   echo "test" > /tmp/outto-stage/MyApp.app/Contents/MacOS/myapp
+#   chmod +x /tmp/outto-stage/MyApp.app/Contents/MacOS/myapp
+#   cargo +nightly run -p outto-cli -- build \
+#       --config examples/macos-minimal.toml \
+#       --source /tmp/outto-stage \
+#       --output /tmp/MyApp-Installer.app
+#   open /tmp/MyApp-Installer.app
+#
+# After install, check:
+#   ls ~/Library/no.divvun.install/packages/no.divvun.minimal/
+#   ls "/Applications/MyApp Minimal.app"
+# To uninstall, run the uninstall.app alongside the receipt.
+
+[package]
+id = "no.divvun.minimal"
+name = "MyApp Minimal"
+version = "0.1.0"
+publisher = "Divvun"
+default_dir = "#{applications}/MyApp Minimal.app"
+
+[privileges]
+required = "user"
+
+[upgrade]
+policy = "overwrite"
+
+[[files]]
+source = "MyApp.app"
+dest = "#{applications}"
+bundle = true
+overwrite = "always"
+
+[uninstall]
+remove_app_dir = true

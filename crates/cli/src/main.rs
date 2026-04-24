@@ -240,7 +240,6 @@ fn build_installer(
     use outto_core::actions::signing;
     use outto_core::archive::pack_payload;
     use outto_core::NoOpCallbacks;
-    use outto_macos::macho;
 
     if !config_path.exists() {
         return Err(format!("Config file not found: {}", config_path.display()).into());
@@ -318,11 +317,12 @@ fn build_installer(
         "installer",
     )?;
 
-    // Embed payload into the installer's Mach-O.
-    let inner_mach_o = inner_app.join("Contents/MacOS/installer");
-    eprintln!("Embedding payload into {}...", inner_mach_o.display());
-    let box_data = std::fs::read(&box_path)?;
-    macho::embed_segment(&inner_mach_o, "__OUTTO", &box_data)?;
+    // Copy the payload into Contents/Resources/ instead of a Mach-O segment —
+    // segment-append after __LINKEDIT breaks codesign's strict layout validation,
+    // and Resources/ is what codesign --deep naturally covers.
+    let inner_payload = inner_app.join("Contents/Resources/payload.box");
+    eprintln!("Staging payload at {}...", inner_payload.display());
+    std::fs::copy(&box_path, &inner_payload)?;
 
     if let Some(cmd) = sign_command {
         eprintln!("Signing inner installer.app...");
@@ -368,9 +368,11 @@ fn build_installer(
         "sfx",
     )?;
 
-    let outer_mach_o = output.join("Contents/MacOS/sfx");
-    eprintln!("Embedding compressed payload into SFX...");
-    macho::embed_segment(&outer_mach_o, "__OUTTO", &compressed)?;
+    // Stash the compressed tarball in the SFX's Resources/ — see the
+    // inner installer payload for the rationale (codesign strict layout).
+    let outer_payload = output.join("Contents/Resources/payload.tar.zst");
+    eprintln!("Staging compressed payload at {}...", outer_payload.display());
+    std::fs::write(&outer_payload, &compressed)?;
 
     if let Some(cmd) = sign_command {
         eprintln!("Signing SFX .app...");
@@ -478,17 +480,19 @@ fn ditto(src: &Path, dst: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Tar up a directory tree (non-compressed) into `output`.
+/// Tar up a directory tree with a flat archive layout — `src`'s *contents*
+/// become the tarball's root, not `src` itself. The SFX stub unpacks into
+/// a fresh `$TMPDIR/outto-installer-<pid>.app/` and expects to find
+/// `Contents/MacOS/...` directly, no extra nesting.
 #[cfg(target_os = "macos")]
 fn tar_directory(src: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let tar_file = std::fs::File::create(output)?;
     let mut builder = tar::Builder::new(tar_file);
-    let parent = src.parent().unwrap_or(std::path::Path::new("."));
-    let name = src.file_name().unwrap_or(std::ffi::OsStr::new("."));
     builder.follow_symlinks(false);
-    builder.append_dir_all(name, src)?;
+    // append_dir_all("", src) uses empty prefix so archive entries are
+    // "Contents/Info.plist", "Contents/MacOS/installer", etc.
+    builder.append_dir_all("", src)?;
     builder.finish()?;
-    let _ = parent;
     Ok(())
 }
 

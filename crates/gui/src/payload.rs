@@ -1,8 +1,12 @@
-//! Extract embedded `.box` payloads from the installer's own executable
-//! (PE `.outto` section on Windows, Mach-O `__OUTTO` segment on macOS).
+//! Locate and extract the installer's embedded `.box` payload.
+//!
+//! - **Windows**: the `.outto` PE section of the installer `.exe`.
+//! - **macOS**: `Contents/Resources/payload.box` next to the installer's
+//!   Mach-O binary. Stored as a plain file rather than a Mach-O segment so
+//!   codesign can cover it via `--deep` without any Mach-O surgery.
 
 use std::fs;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io;
 use std::path::PathBuf;
 
 use box_format::sync::BoxReader;
@@ -17,45 +21,51 @@ pub struct ExtractedPayload {
     _temp_dir: tempfile::TempDir,
 }
 
+/// Obtain a `.box` file on disk for the current process to read, or `None`
+/// if there's no embedded payload (running as a standalone CLI, for example).
+///
+/// Windows: extracts the `.outto` PE section into a temp `.box`.
+/// macOS: returns the path of `Contents/Resources/payload.box` directly.
 #[cfg(windows)]
-const SECTION_NAME: &str = ".outto";
-#[cfg(target_os = "macos")]
-const SECTION_NAME: &str = "__OUTTO";
-
-#[cfg(windows)]
-fn find_payload_section(exe_path: &std::path::Path) -> io::Result<Option<(u64, u64)>> {
-    crate::pe::find_section(exe_path, SECTION_NAME)
+fn locate_box(_scratch: &std::path::Path) -> io::Result<Option<PathBuf>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let exe_path = std::env::current_exe()?;
+    let Some((offset, size)) = crate::pe::find_section(&exe_path, ".outto")? else {
+        return Ok(None);
+    };
+    let tmp = _scratch.join("payload.box");
+    let mut f = fs::File::open(&exe_path)?;
+    f.seek(SeekFrom::Start(offset))?;
+    let mut buf = vec![0u8; size as usize];
+    f.read_exact(&mut buf)?;
+    fs::write(&tmp, &buf)?;
+    Ok(Some(tmp))
 }
 
 #[cfg(target_os = "macos")]
-fn find_payload_section(exe_path: &std::path::Path) -> io::Result<Option<(u64, u64)>> {
-    outto_macos::macho::find_segment(exe_path, SECTION_NAME)
+fn locate_box(_scratch: &std::path::Path) -> io::Result<Option<PathBuf>> {
+    let exe_path = std::env::current_exe()?;
+    // Contents/MacOS/<exe> → Contents/Resources/payload.box
+    let Some(contents) = exe_path.parent().and_then(|p| p.parent()) else {
+        return Ok(None);
+    };
+    let candidate = contents.join("Resources/payload.box");
+    if candidate.exists() {
+        Ok(Some(candidate))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Extract the embedded payload from the current executable, if any.
-///
-/// Windows: reads the PE `.outto` section from the installer .exe.
-/// macOS: reads the Mach-O `__OUTTO` segment from the installer binary
-/// (typically at `*.app/Contents/MacOS/installer`).
 pub fn extract_embedded_payload() -> Result<Option<ExtractedPayload>, Box<dyn std::error::Error>> {
-    let exe_path = std::env::current_exe()?;
+    let temp_dir = tempfile::tempdir()?;
 
-    let Some((offset, size)) = find_payload_section(&exe_path)? else {
+    let Some(box_path) = locate_box(temp_dir.path())? else {
         return Ok(None);
     };
 
-    let temp_dir = tempfile::tempdir()?;
-
-    let temp_box_path = temp_dir.path().join("payload.box");
-    {
-        let mut exe_file = fs::File::open(&exe_path)?;
-        exe_file.seek(SeekFrom::Start(offset))?;
-        let mut box_data = vec![0u8; size as usize];
-        exe_file.read_exact(&mut box_data)?;
-        fs::write(&temp_box_path, &box_data)?;
-    }
-
-    let reader = BoxReader::open(&temp_box_path).map_err(|e| {
+    let reader = BoxReader::open(&box_path).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("Failed to open embedded payload: {e}"),

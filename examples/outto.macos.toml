@@ -1,0 +1,42 @@
+# Reference manifest for self-packaging outto on macOS. See outto.macos.toml
+# at the repo root for the canonical copy used by scripts/build-release.sh.
+
+[package]
+id = "no.divvun.outto"
+name = "outto"
+version = "0.1.0"
+publisher = "Divvun"
+url = "https://divvun.no"
+license_file = "LICENSE-MIT"
+default_dir = "#{applications}/outto.app"
+min_macos_version = "11.0"
+
+[privileges]
+required = "auto"
+auto_elevate = true
+
+[upgrade]
+policy = "overwrite"
+
+[[files]]
+source = "bin/outto"
+dest = "#{app}/Contents/MacOS"
+overwrite = "always"
+
+[[files]]
+source = "libexec/outto-gui"
+dest = "#{app}/Contents/MacOS"
+overwrite = "always"
+
+[[files]]
+source = "libexec/outto-uninstall"
+dest = "#{app}/Contents/MacOS"
+overwrite = "always"
+
+[[symlinks]]
+target = "#{app}/Contents/MacOS/outto"
+link = "#{local_bin}/outto"
+overwrite = "always"
+
+[uninstall]
+remove_app_dir = true

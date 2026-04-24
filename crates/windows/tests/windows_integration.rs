@@ -4,16 +4,12 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 
-// NOTE: this test file has pre-existing API drift — it uses `PathResolver::new(path, name, version)`
-// (a constructor that was replaced by `VariableResolver`'s builder pattern) and an
-// `uninstall_from_dir` function that no longer exists. Those are tech debt that predates
-// the workspace split and need a separate update pass before these tests will compile.
-
 use outto_core::actions::prerequisites;
 use outto_core::actions::run;
 use outto_core::config::types::*;
 use outto_core::config::{Config, VariableResolver as PathResolver};
-use outto_core::manifest::{ActionRecord, InstallManifest};
+use outto_core::manifest::InstallManifest;
+use outto_windows::manifest::Action as ActionRecord;
 use outto_core::{InstallOptions, NoOpCallbacks};
 use outto_windows::actions::{dirs, registry, shortcuts};
 use outto_windows::detect::{
@@ -21,9 +17,17 @@ use outto_windows::detect::{
     UninstallRegistryInfo,
 };
 use outto_windows::elevation;
-use outto_windows::{install, uninstall_package as uninstall_from_dir};
+use outto_windows::{install, uninstall_package};
 
 use windows_sys::Win32::System::Registry::*;
+
+/// Test-only helper matching the old `PathResolver::new(path, name, version)`
+/// constructor, built on top of the current `VariableResolver` builder.
+fn path_resolver_new(install_dir: &std::path::Path, name: &str, version: &str) -> PathResolver {
+    PathResolver::new()
+        .with_package(name, version)
+        .with_install_dir(install_dir)
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -247,7 +251,7 @@ fn test_registry_string_value_write_read_delete() {
     let key_wide = to_wide(key);
     unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, key_wide.as_ptr()) };
 
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
     let mut manifest = InstallManifest::new(
         "test",
@@ -297,7 +301,7 @@ fn test_registry_dword_value() {
     let key_wide = to_wide(key);
     unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, key_wide.as_ptr()) };
 
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
     let mut manifest = InstallManifest::new(
         "test",
@@ -336,7 +340,7 @@ fn test_registry_multiple_values_on_same_key() {
     let key_wide = to_wide(key);
     unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, key_wide.as_ptr()) };
 
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
     let mut manifest = InstallManifest::new(
         "test",
@@ -437,7 +441,7 @@ fn test_registry_key_created_and_deleted() {
     unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, key_wide.as_ptr()) };
     assert!(!hkcu_key_exists(key));
 
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
     let mut manifest = InstallManifest::new(
         "test",
@@ -500,7 +504,7 @@ fn test_env_set_new_user_variable() {
         }
     }
 
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
     let mut manifest = InstallManifest::new(
         "test",
@@ -541,7 +545,7 @@ fn test_env_append_user_variable() {
     // Set initial value
     write_hkcu_string("Environment", var_name, "A;B");
 
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
     let mut manifest = InstallManifest::new(
         "test",
@@ -574,7 +578,7 @@ fn test_env_prepend_user_variable() {
 
     write_hkcu_string("Environment", var_name, "A;B");
 
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
     let mut manifest = InstallManifest::new(
         "test",
@@ -607,7 +611,7 @@ fn test_env_remove_from_user_variable() {
 
     write_hkcu_string("Environment", var_name, "A;B;C");
 
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let callbacks = NoOpCallbacks;
     let mut manifest = InstallManifest::new(
         "test",
@@ -688,6 +692,7 @@ fn test_write_and_remove_uninstall_registry() {
         url: None,
         support_url: None,
         uninstall_string: None,
+        depends_on: &[],
     };
 
     write_uninstall_registry(&info).unwrap();
@@ -804,7 +809,7 @@ action = "set"
     assert!(env_val.is_some());
 
     // Uninstall
-    let result = uninstall_from_dir(&install_dir, &callbacks);
+    let result = uninstall_package(&install_dir, "com.outto.test.full", &callbacks);
     assert!(result.is_ok(), "Uninstall failed: {result:?}");
 
     // Verify files removed
@@ -834,7 +839,7 @@ fn test_shortcut_creation_basic() {
     // Create a fake target file
     std::fs::write(dir.join("app.exe"), "fake").unwrap();
 
-    let mut resolver = PathResolver::new(&dir, "Test", "1.0.0");
+    let mut resolver = path_resolver_new(&dir, "Test", "1.0.0");
     resolver.set_variable("desktop", dir.to_string_lossy().as_ref());
 
     let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &dir, vec![]);
@@ -878,7 +883,7 @@ fn test_shortcut_with_all_fields() {
 
     std::fs::write(dir.join("app.exe"), "fake").unwrap();
 
-    let mut resolver = PathResolver::new(&dir, "Test", "1.0.0");
+    let mut resolver = path_resolver_new(&dir, "Test", "1.0.0");
     resolver.set_variable("desktop", dir.to_string_lossy().as_ref());
 
     let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &dir, vec![]);
@@ -938,7 +943,7 @@ fn test_create_directory_basic() {
     cleanup.track_dir(base.clone());
 
     let target = base.join("sub").join("deep");
-    let resolver = PathResolver::new(&base, "Test", "1.0.0");
+    let resolver = path_resolver_new(&base, "Test", "1.0.0");
     let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &base, vec![]);
     let callbacks = NoOpCallbacks;
 
@@ -967,7 +972,7 @@ fn test_create_directory_already_exists() {
     std::fs::create_dir_all(&base).unwrap();
     cleanup.track_dir(base.clone());
 
-    let resolver = PathResolver::new(&base, "Test", "1.0.0");
+    let resolver = path_resolver_new(&base, "Test", "1.0.0");
     let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &base, vec![]);
     let callbacks = NoOpCallbacks;
 
@@ -1030,7 +1035,7 @@ fn test_needs_elevation_admin_when_elevated() {
 
 #[test]
 fn test_execute_phase_before_install() {
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let mut manifest = InstallManifest::new(
         "test",
         "Test",
@@ -1069,7 +1074,7 @@ fn test_execute_phase_before_install() {
 
 #[test]
 fn test_execute_phase_filtering() {
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let mut manifest = InstallManifest::new(
         "test",
         "Test",
@@ -1109,7 +1114,7 @@ fn test_execute_phase_filtering() {
 
 #[test]
 fn test_execute_command_nonzero_exit() {
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let mut manifest = InstallManifest::new(
         "test",
         "Test",
@@ -1757,7 +1762,7 @@ fn test_prerequisite_not_required_skips() {
 
 #[test]
 fn test_execute_command_no_wait() {
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let mut manifest = InstallManifest::new(
         "test",
         "Test",
@@ -1808,7 +1813,7 @@ fn test_shortcut_startmenu_location() {
 
     std::fs::write(dir.join("app.exe"), "fake").unwrap();
 
-    let mut resolver = PathResolver::new(&dir, "Test", "1.0.0");
+    let mut resolver = path_resolver_new(&dir, "Test", "1.0.0");
     resolver.set_variable("startmenu", dir.to_string_lossy().as_ref());
 
     let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &dir, vec![]);
@@ -1872,6 +1877,6 @@ fn test_uninstall_missing_manifest() {
     let dir = std::env::temp_dir().join("outto_test_uninstall_nodir");
     let _ = std::fs::remove_dir_all(&dir);
 
-    let result = uninstall_from_dir(&dir, &NoOpCallbacks);
+    let result = uninstall_package(&dir, "com.outto.nonexistent", &NoOpCallbacks);
     assert!(result.is_err());
 }

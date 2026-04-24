@@ -57,6 +57,16 @@ pub fn install(
         ),
     );
 
+    // Enforce [package] min_macos_version before touching anything.
+    if let Some(ref min) = config.package.min_macos_version {
+        if !actions::macos_version_at_least(min)? {
+            return Err(InstallerError::Validation(format!(
+                "{} requires macOS {min} or later",
+                config.package.name
+            )));
+        }
+    }
+
     // Resolve install dir (from options, else from default_dir in config).
     let install_dir = if let Some(ref dir) = options.install_dir {
         dir.clone()

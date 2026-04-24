@@ -8,7 +8,9 @@ use iced::{Element, Fill, Subscription, Task};
 use outto_core::LogLevel;
 
 /// Return the display names of packages that will be cascade-uninstalled.
-/// On Windows, walks the Add/Remove Programs registry. On macOS (stub), empty.
+/// On Windows, walks the Add/Remove Programs registry. On macOS, walks the
+/// receipt-file layout under `~/Library/no.divvun.install/packages/` and
+/// `/Library/no.divvun.install/packages/`.
 #[cfg(windows)]
 fn collect_cascade_names(package_id: &str) -> Vec<String> {
     let cascade = outto_windows::uninstall::collect_cascade_order(package_id);
@@ -24,7 +26,22 @@ fn collect_cascade_names(package_id: &str) -> Vec<String> {
         .collect()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn collect_cascade_names(package_id: &str) -> Vec<String> {
+    let cascade = outto_macos::uninstall::collect_cascade_order(package_id);
+    cascade
+        .iter()
+        .map(|p| {
+            outto_macos::detect::detect_existing_install(&p.package_id)
+                .ok()
+                .flatten()
+                .and_then(|e| e.display_name)
+                .unwrap_or_else(|| p.package_id.clone())
+        })
+        .collect()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn collect_cascade_names(_package_id: &str) -> Vec<String> {
     Vec::new()
 }
@@ -80,7 +97,6 @@ pub struct AppState {
     pub progress: ProgressState,
     pub result: Option<Result<(), String>>,
     pub bridge_queue: BridgeQueue,
-    pub silent: bool,
     pub no_cancel: bool,
 }
 
@@ -111,7 +127,6 @@ impl AppState {
             progress: ProgressState::default(),
             result: None,
             bridge_queue: std::sync::Arc::new(Mutex::new(VecDeque::new())),
-            silent,
             no_cancel,
         }
     }

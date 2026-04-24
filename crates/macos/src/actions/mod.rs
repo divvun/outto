@@ -378,7 +378,7 @@ pub fn check_prerequisites(
     prerequisites::check_prerequisites(&core_entries, callbacks)
 }
 
-fn macos_version_at_least(min: &str) -> InstallerResult<bool> {
+pub(crate) fn macos_version_at_least(min: &str) -> InstallerResult<bool> {
     let Ok(min_sem) = semver::Version::parse(&ensure_semver(min)) else {
         return Ok(true);
     };

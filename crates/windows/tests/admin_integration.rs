@@ -14,16 +14,21 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 
-// NOTE: this test file has pre-existing API drift — `PathResolver::new(path, name, version)`
-// has been replaced by `VariableResolver`'s builder pattern. Needs a separate update pass
-// before these tests compile. Tech debt that predates the workspace split.
-
 use outto_core::config::types::*;
 use outto_core::config::VariableResolver as PathResolver;
-use outto_core::manifest::{ActionRecord, InstallManifest};
+use outto_core::manifest::InstallManifest;
 use outto_core::NoOpCallbacks;
 use outto_windows::actions::{associations, com, dirs, fonts, services};
 use outto_windows::elevation;
+use outto_windows::manifest::Action as ActionRecord;
+
+/// Test-only shim for the old `PathResolver::new(path, name, version)`
+/// constructor, wired to the current `VariableResolver` builder.
+fn path_resolver_new(install_dir: &std::path::Path, name: &str, version: &str) -> PathResolver {
+    PathResolver::new()
+        .with_package(name, version)
+        .with_install_dir(install_dir)
+}
 
 /// Panics with a clear message if not running elevated.
 fn assert_admin() {
@@ -246,9 +251,9 @@ fn test_admin_association_create_and_remove() {
     // Pre-clean
     let _ = associations::remove_association(ext, prog_id);
 
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"), vec![]);
     let callbacks = NoOpCallbacks;
 
     let entry = AssociationEntry {
@@ -301,9 +306,9 @@ fn test_admin_service_install_and_delete() {
     let _ = services::stop_service(svc_name);
     let _ = services::delete_service(svc_name);
 
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"), vec![]);
     let callbacks = NoOpCallbacks;
 
     let entry = ServiceEntry {
@@ -352,7 +357,7 @@ fn test_admin_font_install_and_uninstall() {
     std::fs::write(&font_file, &ttf_header).unwrap();
 
     let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"), vec![]);
     let callbacks = NoOpCallbacks;
 
     let entry = FontEntry {
@@ -409,8 +414,8 @@ fn test_admin_create_directory_with_permissions() {
     cleanup.dirs.push(base.clone());
 
     let target = base.join("secured");
-    let resolver = PathResolver::new(&base, "Test", "1.0.0");
-    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &base);
+    let resolver = path_resolver_new(&base, "Test", "1.0.0");
+    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &base, vec![]);
     let callbacks = NoOpCallbacks;
 
     let entry = DirEntry {
@@ -448,9 +453,9 @@ fn test_admin_create_directory_with_permissions() {
 #[ignore]
 fn test_admin_com_register_nonexistent_dll() {
     assert_admin();
-    let resolver = PathResolver::new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
     let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"));
+        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"), vec![]);
     let callbacks = NoOpCallbacks;
 
     let entry = ComEntry {

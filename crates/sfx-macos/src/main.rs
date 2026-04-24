@@ -1,8 +1,13 @@
 //! Mach-O self-extractor for `outto` macOS installers.
 //!
-//! Parallel to `outto-sfx` (Windows PE): find the `__OUTTO` segment in our own
-//! Mach-O, zstd-decompress the tarball it contains to `$TMPDIR/outto-installer-<pid>.app/`,
-//! exec the inner installer's `Contents/MacOS/<name>` binary, wait, clean up.
+//! Reads `Contents/Resources/payload.tar.zst` relative to our own Mach-O
+//! (`Contents/MacOS/sfx`), zstd-decompresses the tarball to
+//! `$TMPDIR/outto-installer-<pid>.app/`, execs the inner installer's
+//! `Contents/MacOS/<name>` binary, waits, and cleans up.
+//!
+//! The payload lives in Resources rather than a custom Mach-O segment so
+//! that `codesign --deep` can cover it without any Mach-O surgery. See the
+//! CLI (`crates/cli/src/main.rs` macOS branch) for the packing side.
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
@@ -20,31 +25,34 @@ fn main() {
 #[cfg(target_os = "macos")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::fs;
-    use std::io::{Read, Seek, SeekFrom};
 
     let exe = std::env::current_exe()?;
-    let (offset, size) = outto_macos::macho::find_segment(&exe, "__OUTTO")?
-        .ok_or("No embedded installer found in __OUTTO segment")?;
+    // Contents/MacOS/sfx → Contents/Resources/payload.tar.zst
+    let payload_path = exe
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|contents| contents.join("Resources/payload.tar.zst"))
+        .ok_or("Could not derive Resources path from current exe")?;
 
-    // Read compressed tarball.
-    let mut f = fs::File::open(&exe)?;
-    f.seek(SeekFrom::Start(offset))?;
-    let mut compressed = vec![0u8; size as usize];
-    f.read_exact(&mut compressed)?;
-    drop(f);
+    if !payload_path.exists() {
+        return Err(format!(
+            "No embedded payload: expected {}",
+            payload_path.display()
+        )
+        .into());
+    }
 
-    // Decompress + extract tarball to $TMPDIR/outto-installer-<pid>.app
     let pid = std::process::id();
     let tmp = std::env::temp_dir().join(format!("outto-installer-{pid}.app"));
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp)?;
 
     eprintln!("Decompressing installer...");
-    let mut decoder = zstd::Decoder::new(&compressed[..])?;
+    let compressed = fs::File::open(&payload_path)?;
+    let mut decoder = zstd::Decoder::new(compressed)?;
     let mut archive = tar::Archive::new(&mut decoder);
     archive.unpack(&tmp)?;
 
-    // Locate the inner binary: Contents/MacOS/<first file in MacOS dir>.
     let macos_dir = tmp.join("Contents/MacOS");
     let inner_exe = fs::read_dir(&macos_dir)?
         .filter_map(|e| e.ok())
@@ -52,23 +60,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map(|e| e.path())
         .ok_or("No executable found in extracted Contents/MacOS")?;
 
-    // Make sure it's executable.
     use std::os::unix::fs::PermissionsExt;
     let mut perms = fs::metadata(&inner_exe)?.permissions();
     perms.set_mode(perms.mode() | 0o111);
     fs::set_permissions(&inner_exe, perms)?;
 
-    // Forward argv.
     let args: Vec<String> = std::env::args().skip(1).collect();
     eprintln!("Launching installer at {}", inner_exe.display());
 
-    let status = std::process::Command::new(&inner_exe)
-        .args(&args)
-        .status()?;
+    let status = std::process::Command::new(&inner_exe).args(&args).status()?;
 
-    // Clean up the extracted bundle best-effort.
     let _ = fs::remove_dir_all(&tmp);
-
     std::process::exit(status.code().unwrap_or(1));
 }
 
