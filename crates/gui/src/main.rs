@@ -3,11 +3,19 @@
 mod app;
 mod bridge;
 mod cli;
+#[cfg(target_os = "macos")]
+mod glass;
+#[cfg(target_os = "macos")]
+mod layout;
+#[cfg(target_os = "macos")]
+mod native_buttons;
 #[cfg(any(windows, target_os = "macos"))]
 mod payload;
 #[cfg(windows)]
 mod pe;
 mod screens;
+#[cfg(target_os = "macos")]
+mod sidebar;
 mod theme;
 
 use std::collections::HashSet;

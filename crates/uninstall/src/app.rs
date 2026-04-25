@@ -179,7 +179,7 @@ pub fn run(state: AppState) -> iced::Result {
     let auto_start = state.step == Step::Uninstalling;
     let state_cell = Mutex::new(Some(state));
 
-    iced::application(
+    let mut app = iced::application(
         move || {
             let state = state_cell
                 .lock()
@@ -198,11 +198,16 @@ pub fn run(state: AppState) -> iced::Result {
     )
     .subscription(subscription)
     .title(|state: &AppState| format!("{} Uninstall", state.app_name))
-    .theme(theme::windows11_theme())
-    .default_font(iced::Font::DEFAULT)
+    .theme(|_state: &AppState| theme::make_theme())
+    .default_font(theme::default_font())
     .window_size(iced::Size::new(theme::WINDOW_WIDTH, theme::WINDOW_HEIGHT))
-    .resizable(false)
-    .run()
+    .resizable(false);
+
+    if let Some(bytes) = theme::default_font_bytes() {
+        app = app.font(bytes);
+    }
+
+    app.run()
 }
 
 fn update(state: &mut AppState, message: Message) -> Task<Message> {
@@ -232,6 +237,23 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
 }
 
 fn view(state: &AppState) -> Element<'_, Message> {
+    let content: Element<'_, Message> = match state.step {
+        Step::Confirm => view_confirm(state),
+        Step::Uninstalling => view_progress(state),
+        Step::Complete => view_complete(state),
+    };
+
+    let button_bar = view_button_bar(state);
+
+    build_shell(state, content, button_bar)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn build_shell<'a>(
+    state: &'a AppState,
+    content: Element<'a, Message>,
+    button_bar: Element<'a, Message>,
+) -> Element<'a, Message> {
     let header = container(
         text(format!("{} Uninstall", state.app_name))
             .size(theme::FONT_HEADER)
@@ -242,16 +264,16 @@ fn view(state: &AppState) -> Element<'_, Message> {
     .padding([0.0, theme::PADDING])
     .center_y(theme::HEADER_HEIGHT)
     .style(theme::header_style);
-
-    let content: Element<'_, Message> = match state.step {
-        Step::Confirm => view_confirm(state),
-        Step::Uninstalling => view_progress(state),
-        Step::Complete => view_complete(state),
-    };
-
-    let button_bar = view_button_bar(state);
-
     column![header, content, button_bar].into()
+}
+
+#[cfg(target_os = "macos")]
+fn build_shell<'a>(
+    _state: &'a AppState,
+    content: Element<'a, Message>,
+    button_bar: Element<'a, Message>,
+) -> Element<'a, Message> {
+    column![content, button_bar].into()
 }
 
 fn view_confirm(state: &AppState) -> Element<'_, Message> {
@@ -342,11 +364,33 @@ fn view_complete(state: &AppState) -> Element<'_, Message> {
     container(col).width(Fill).height(Fill).into()
 }
 
-fn nav_button(label: &str) -> iced::widget::Button<'_, Message> {
+fn primary_nav_button(label: &str) -> iced::widget::Button<'_, Message> {
+    let text_color = {
+        #[cfg(target_os = "macos")]
+        {
+            Some(iced::Color::WHITE)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None::<iced::Color>
+        }
+    };
+    let label_widget = if let Some(c) = text_color {
+        text(label).size(theme::FONT_SECONDARY).center().color(c)
+    } else {
+        text(label).size(theme::FONT_SECONDARY).center()
+    };
+    button(label_widget)
+        .width(100)
+        .padding([8, 16])
+        .style(theme::primary_button)
+}
+
+fn secondary_nav_button(label: &str) -> iced::widget::Button<'_, Message> {
     button(text(label).size(theme::FONT_SECONDARY).center())
         .width(100)
         .padding([8, 16])
-        .style(theme::win11_button)
+        .style(theme::secondary_button)
 }
 
 fn view_button_bar(state: &AppState) -> Element<'_, Message> {
@@ -355,18 +399,18 @@ fn view_button_bar(state: &AppState) -> Element<'_, Message> {
 
     match state.step {
         Step::Confirm => {
-            bar = bar.push(nav_button("Uninstall").on_press(Message::StartUninstall));
+            bar = bar.push(primary_nav_button("Uninstall").on_press(Message::StartUninstall));
             if !state.no_cancel {
-                bar = bar.push(nav_button("Cancel").on_press(Message::Cancel));
+                bar = bar.push(secondary_nav_button("Cancel").on_press(Message::Cancel));
             }
         }
         Step::Uninstalling => {
             if !state.no_cancel {
-                bar = bar.push(nav_button("Cancel").on_press(Message::Cancel));
+                bar = bar.push(secondary_nav_button("Cancel").on_press(Message::Cancel));
             }
         }
         Step::Complete => {
-            bar = bar.push(nav_button("Finish").on_press(Message::Finish));
+            bar = bar.push(primary_nav_button("Finish").on_press(Message::Finish));
         }
     }
 

@@ -35,11 +35,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("Could not derive Resources path from current exe")?;
 
     if !payload_path.exists() {
-        return Err(format!(
-            "No embedded payload: expected {}",
-            payload_path.display()
-        )
-        .into());
+        return Err(format!("No embedded payload: expected {}", payload_path.display()).into());
     }
 
     let pid = std::process::id();
@@ -68,7 +64,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     eprintln!("Launching installer at {}", inner_exe.display());
 
-    let status = std::process::Command::new(&inner_exe).args(&args).status()?;
+    let status = std::process::Command::new(&inner_exe)
+        .args(&args)
+        .status()?;
 
     let _ = fs::remove_dir_all(&tmp);
     std::process::exit(status.code().unwrap_or(1));

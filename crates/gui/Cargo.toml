@@ -20,6 +20,21 @@ windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_UI_
 [target.'cfg(target_os = "macos")'.dependencies]
 outto-macos = { path = "../macos" }
 # Keep box-format available on macOS too for payload extraction in the GUI.
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSThread", "NSString", "NSGeometry"] }
+objc2-app-kit = { version = "0.2", features = [
+    "NSView",
+    "NSWindow",
+    "NSVisualEffectView",
+    "NSResponder",
+    "NSColor",
+    "NSControl",
+    "NSButton",
+    "NSButtonCell",
+    "NSCell",
+    "NSBezierPath",
+] }
+raw-window-handle = "0.6"
 
 [build-dependencies]
 winres = "0.1"

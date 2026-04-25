@@ -194,6 +194,12 @@ pub enum Message {
     FocusNext,
     FocusPrev,
     ActivateFocused,
+
+    // Native glass
+    #[cfg(target_os = "macos")]
+    InstallGlass(iced::window::Id),
+    #[cfg(target_os = "macos")]
+    NativeButtonsTick,
 }
 
 // --- App state ---
@@ -226,7 +232,7 @@ pub struct AppState {
     pub uninstall_dir: Option<PathBuf>,
     pub uninstall_exe: Option<PathBuf>,
 
-    step_config: StepConfig,
+    pub step_config: StepConfig,
 
     // Keyboard focus
     pub focused_index: usize,
@@ -450,7 +456,7 @@ pub fn run(state: AppState) -> iced::Result {
     // iced 0.14 boot must be Fn (not FnOnce). Use a Mutex to allow moving state out.
     let state_cell = Mutex::new(Some((state, auto_start, auto_mode)));
 
-    iced::application(
+    let mut app = iced::application(
         move || {
             let (state, auto_start, auto_mode) = state_cell
                 .lock()
@@ -472,14 +478,35 @@ pub fn run(state: AppState) -> iced::Result {
     )
     .subscription(subscription)
     .title(|state: &AppState| format!("{} Setup", state.config.package.name))
-    .theme(theme::windows11_theme())
-    .default_font(iced::Font::DEFAULT)
+    .theme(|_state: &AppState| theme::make_theme())
+    .default_font(theme::default_font())
     .window_size(iced::Size::new(theme::WINDOW_WIDTH, theme::WINDOW_HEIGHT))
-    .resizable(false)
-    .run()
+    .resizable(false);
+
+    // On macOS we paint onto an NSVisualEffectView installed behind the iced
+    // surface (see `glass.rs`); the iced canvas itself needs to be transparent
+    // so the OS material actually shows through. Windows keeps its opaque
+    // canvas.
+    #[cfg(target_os = "macos")]
+    {
+        app = app.transparent(true);
+    }
+
+    if let Some(bytes) = theme::default_font_bytes() {
+        app = app.font(bytes);
+    }
+
+    app.run()
 }
 
 fn update(state: &mut AppState, message: Message) -> Task<Message> {
+    let task = update_inner(state, message);
+    #[cfg(target_os = "macos")]
+    crate::native_buttons::apply(compute_button_layout(state));
+    task
+}
+
+fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
     match message {
         Message::NextStep => {
             if let Some(next) = state.step.next(&state.step_config) {
@@ -593,6 +620,38 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ActivateFocused => activate_focused(state),
+
+        #[cfg(target_os = "macos")]
+        Message::InstallGlass(id) => {
+            use iced::window::raw_window_handle::HasWindowHandle;
+            let task = iced::window::run(id, |window| {
+                if let Ok(handle) = window.window_handle() {
+                    let _ = crate::glass::install(&handle);
+                    let _ = crate::native_buttons::install(&handle);
+                }
+            })
+            .discard();
+            crate::native_buttons::apply(compute_button_layout(state));
+            task
+        }
+        #[cfg(target_os = "macos")]
+        Message::NativeButtonsTick => {
+            // Reapply the traffic-light nudge on every tick — AppKit's own
+            // layout passes can reset their frames, so we force them back.
+            crate::glass::tick_nudge_traffic_lights();
+
+            let mut tasks: Vec<Task<Message>> = Vec::new();
+            for action in crate::native_buttons::drain_clicks() {
+                if let Some(msg) = map_native_button(state, action) {
+                    tasks.push(Task::done(msg));
+                }
+            }
+            if tasks.is_empty() {
+                Task::none()
+            } else {
+                Task::batch(tasks)
+            }
+        }
     }
 }
 
@@ -807,17 +866,6 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
 }
 
 fn view(state: &AppState) -> Element<'_, Message> {
-    let header = container(
-        text(format!("{} Setup", state.config.package.name))
-            .size(theme::FONT_HEADER)
-            .color(theme::HEADER_TEXT),
-    )
-    .width(Fill)
-    .height(theme::HEADER_HEIGHT)
-    .padding([0.0, theme::PADDING])
-    .center_y(theme::HEADER_HEIGHT)
-    .style(theme::header_style);
-
     let content: Element<Message> = match state.step {
         WizardStep::Welcome => screens::welcome::view(state),
         WizardStep::License => screens::license::view(state),
@@ -833,83 +881,205 @@ fn view(state: &AppState) -> Element<'_, Message> {
 
     let button_bar = view_button_bar(state);
 
+    build_shell(state, content, button_bar)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn build_shell<'a>(
+    state: &'a AppState,
+    content: Element<'a, Message>,
+    button_bar: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let header = container(
+        text(format!("{} Setup", state.config.package.name))
+            .size(theme::FONT_HEADER)
+            .color(theme::HEADER_TEXT),
+    )
+    .width(Fill)
+    .height(theme::HEADER_HEIGHT)
+    .padding([0.0, theme::PADDING])
+    .center_y(theme::HEADER_HEIGHT)
+    .style(theme::header_style);
     column![header, content, button_bar].into()
 }
 
-fn nav_button(label: &str, focused: bool) -> iced::widget::Button<'_, Message> {
+#[cfg(target_os = "macos")]
+fn build_shell<'a>(
+    state: &'a AppState,
+    content: Element<'a, Message>,
+    button_bar: Element<'a, Message>,
+) -> Element<'a, Message> {
+    use crate::layout;
+    // macOS layout: a rounded sidebar inset panel anchored to the top-left
+    // (subsumes the traffic-light area) and a content region on the right
+    // that paints directly onto the outer window glass — no inset panel.
+    //
+    // iced positions:
+    //   - Sidebar column reserves SIDEBAR_WIDTH + PANEL_MARGIN so its
+    //     contents float above the NSVisualEffectView panel rect.
+    //   - Content column gets its own internal padding instead of relying
+    //     on a wrapping container's padding (since there's no card to
+    //     align with on the right side).
+    let sidebar_column = container(crate::sidebar::view(state))
+        .width(layout::SIDEBAR_WIDTH + layout::PANEL_MARGIN)
+        .height(Fill);
+    let content_pane = container(content)
+        .width(Fill)
+        .height(Fill)
+        .padding([layout::CONTENT_INSET_Y, layout::CONTENT_INSET_X])
+        .style(theme::content_pane_style);
+    let content_column = column![content_pane, button_bar].width(Fill).height(Fill);
+
+    row![sidebar_column, content_column].into()
+}
+
+#[cfg(target_os = "macos")]
+const NAV_BUTTON_WIDTH: f32 = 108.0;
+#[cfg(target_os = "macos")]
+const NAV_BUTTON_PADDING: [f32; 2] = [10.0, 22.0];
+#[cfg(not(target_os = "macos"))]
+const NAV_BUTTON_WIDTH: f32 = 100.0;
+#[cfg(not(target_os = "macos"))]
+const NAV_BUTTON_PADDING: [f32; 2] = [8.0, 16.0];
+
+fn nav_label_font() -> iced::Font {
+    // Semibold reads more like a Tahoe capsule button label than Regular.
+    #[cfg(target_os = "macos")]
+    {
+        theme::semibold_font()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        theme::default_font()
+    }
+}
+
+fn primary_nav_button(label: &str, focused: bool) -> iced::widget::Button<'_, Message> {
     let style = if focused {
-        theme::win11_button_focused as fn(&_, _) -> _
+        theme::primary_button_focused as fn(&_, _) -> _
     } else {
-        theme::win11_button as fn(&_, _) -> _
+        theme::primary_button as fn(&_, _) -> _
     };
-    button(text(label).size(theme::FONT_SECONDARY).center())
-        .width(100)
-        .padding([8, 16])
+    let text_color = {
+        #[cfg(target_os = "macos")]
+        {
+            Some(iced::Color::WHITE)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None::<iced::Color>
+        }
+    };
+    let label_widget = if let Some(c) = text_color {
+        text(label)
+            .size(theme::FONT_SECONDARY)
+            .font(nav_label_font())
+            .center()
+            .color(c)
+    } else {
+        text(label)
+            .size(theme::FONT_SECONDARY)
+            .font(nav_label_font())
+            .center()
+    };
+    button(label_widget)
+        .width(NAV_BUTTON_WIDTH)
+        .padding(NAV_BUTTON_PADDING)
         .style(style)
 }
 
+fn secondary_nav_button(label: &str, focused: bool) -> iced::widget::Button<'_, Message> {
+    let style = if focused {
+        theme::secondary_button_focused as fn(&_, _) -> _
+    } else {
+        theme::secondary_button as fn(&_, _) -> _
+    };
+    button(
+        text(label)
+            .size(theme::FONT_SECONDARY)
+            .font(nav_label_font())
+            .center(),
+    )
+    .width(NAV_BUTTON_WIDTH)
+    .padding(NAV_BUTTON_PADDING)
+    .style(style)
+}
+
+#[cfg(target_os = "macos")]
+fn view_button_bar(_state: &AppState) -> Element<'_, Message> {
+    // Buttons are real NSButtons installed via `native_buttons::install`, so
+    // iced just reserves the 50 px strip at the bottom that AppKit draws
+    // into. Keeping the container empty avoids any iced-rendered widgets
+    // fighting with the overlaid NSButtons.
+    container(space::vertical()).width(Fill).height(50).into()
+}
+
+#[cfg(not(target_os = "macos"))]
 fn view_button_bar(state: &AppState) -> Element<'_, Message> {
     let mut bar = row![].spacing(10).padding([12.0, theme::PADDING]);
     bar = bar.push(space::horizontal());
 
     let focus = current_focus_target(state);
     let bf = |idx: usize| focus == Some(FocusTarget::Button(idx));
+    let next = theme::next_label();
+    let back = theme::back_label();
 
     match state.step {
         WizardStep::Welcome => {
-            bar = bar.push(nav_button("Next >", bf(0)).on_press(Message::NextStep));
+            bar = bar.push(primary_nav_button(next, bf(0)).on_press(Message::NextStep));
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel", bf(1)).on_press(Message::Cancel));
+                bar = bar.push(secondary_nav_button("Cancel", bf(1)).on_press(Message::Cancel));
             }
         }
         WizardStep::License => {
-            bar = bar.push(nav_button("< Back", bf(0)).on_press(Message::PrevStep));
+            bar = bar.push(secondary_nav_button(back, bf(0)).on_press(Message::PrevStep));
             if state.license_accepted {
-                bar = bar.push(nav_button("Next >", bf(1)).on_press(Message::NextStep));
+                bar = bar.push(primary_nav_button(next, bf(1)).on_press(Message::NextStep));
             } else {
-                bar = bar.push(nav_button("Next >", false));
+                bar = bar.push(primary_nav_button(next, false));
             }
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel", bf(2)).on_press(Message::Cancel));
+                bar = bar.push(secondary_nav_button("Cancel", bf(2)).on_press(Message::Cancel));
             }
         }
         WizardStep::Directory => {
-            bar = bar.push(nav_button("< Back", bf(0)).on_press(Message::PrevStep));
+            bar = bar.push(secondary_nav_button(back, bf(0)).on_press(Message::PrevStep));
             if !state.install_dir.is_empty() {
-                bar = bar.push(nav_button("Next >", bf(1)).on_press(Message::NextStep));
+                bar = bar.push(primary_nav_button(next, bf(1)).on_press(Message::NextStep));
             } else {
-                bar = bar.push(nav_button("Next >", false));
+                bar = bar.push(primary_nav_button(next, false));
             }
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel", bf(2)).on_press(Message::Cancel));
+                bar = bar.push(secondary_nav_button("Cancel", bf(2)).on_press(Message::Cancel));
             }
         }
         WizardStep::Components => {
-            bar = bar.push(nav_button("< Back", bf(0)).on_press(Message::PrevStep));
-            bar = bar.push(nav_button("Next >", bf(1)).on_press(Message::NextStep));
+            bar = bar.push(secondary_nav_button(back, bf(0)).on_press(Message::PrevStep));
+            bar = bar.push(primary_nav_button(next, bf(1)).on_press(Message::NextStep));
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel", bf(2)).on_press(Message::Cancel));
+                bar = bar.push(secondary_nav_button("Cancel", bf(2)).on_press(Message::Cancel));
             }
         }
         WizardStep::Summary => {
-            bar = bar.push(nav_button("< Back", bf(0)).on_press(Message::PrevStep));
-            bar = bar.push(nav_button("Install", bf(1)).on_press(Message::StartInstall));
+            bar = bar.push(secondary_nav_button(back, bf(0)).on_press(Message::PrevStep));
+            bar = bar.push(primary_nav_button("Install", bf(1)).on_press(Message::StartInstall));
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel", bf(2)).on_press(Message::Cancel));
+                bar = bar.push(secondary_nav_button("Cancel", bf(2)).on_press(Message::Cancel));
             }
         }
         WizardStep::Installing | WizardStep::Uninstalling => {
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel", bf(0)).on_press(Message::Cancel));
+                bar = bar.push(secondary_nav_button("Cancel", bf(0)).on_press(Message::Cancel));
             }
         }
         WizardStep::Complete | WizardStep::UninstallComplete => {
-            bar = bar.push(nav_button("Finish", bf(0)).on_press(Message::Finish));
+            bar = bar.push(primary_nav_button("Finish", bf(0)).on_press(Message::Finish));
         }
         WizardStep::UninstallConfirm => {
-            bar = bar.push(nav_button("Uninstall", bf(0)).on_press(Message::StartUninstall));
+            bar =
+                bar.push(primary_nav_button("Uninstall", bf(0)).on_press(Message::StartUninstall));
             if !state.flags.no_cancel {
-                bar = bar.push(nav_button("Cancel", bf(1)).on_press(Message::Cancel));
+                bar = bar.push(secondary_nav_button("Cancel", bf(1)).on_press(Message::Cancel));
             }
         }
     }
@@ -917,10 +1087,129 @@ fn view_button_bar(state: &AppState) -> Element<'_, Message> {
     container(bar).width(Fill).height(50).center_y(50).into()
 }
 
+// ---- macOS native button glue ----------------------------------------
+
+#[cfg(target_os = "macos")]
+fn compute_button_layout(state: &AppState) -> crate::native_buttons::Layout {
+    use crate::native_buttons::{ButtonAction, ButtonSpec, Layout};
+    let mut buttons: Vec<ButtonSpec> = Vec::new();
+    let no_cancel = state.flags.no_cancel;
+
+    let back = ButtonSpec {
+        label: "Go Back".into(),
+        primary: false,
+        enabled: true,
+        action: ButtonAction::Prev,
+    };
+    let cancel = ButtonSpec {
+        label: "Cancel".into(),
+        primary: false,
+        enabled: true,
+        action: ButtonAction::Cancel,
+    };
+    let continue_button = |primary_label: &str, enabled: bool, action: ButtonAction| ButtonSpec {
+        label: primary_label.into(),
+        primary: true,
+        enabled,
+        action,
+    };
+
+    match state.step {
+        WizardStep::Welcome => {
+            if !no_cancel {
+                buttons.push(cancel);
+            }
+            buttons.push(continue_button("Continue", true, ButtonAction::Next));
+        }
+        WizardStep::License => {
+            if !no_cancel {
+                buttons.push(cancel);
+            }
+            buttons.push(back);
+            buttons.push(continue_button(
+                "Continue",
+                state.license_accepted,
+                ButtonAction::Next,
+            ));
+        }
+        WizardStep::Directory => {
+            if !no_cancel {
+                buttons.push(cancel);
+            }
+            buttons.push(back);
+            buttons.push(continue_button(
+                "Continue",
+                !state.install_dir.is_empty(),
+                ButtonAction::Next,
+            ));
+        }
+        WizardStep::Components => {
+            if !no_cancel {
+                buttons.push(cancel);
+            }
+            buttons.push(back);
+            buttons.push(continue_button("Continue", true, ButtonAction::Next));
+        }
+        WizardStep::Summary => {
+            if !no_cancel {
+                buttons.push(cancel);
+            }
+            buttons.push(back);
+            buttons.push(continue_button("Install", true, ButtonAction::StartInstall));
+        }
+        WizardStep::Installing | WizardStep::Uninstalling => {
+            if !no_cancel {
+                buttons.push(cancel);
+            }
+        }
+        WizardStep::Complete | WizardStep::UninstallComplete => {
+            buttons.push(continue_button("Finish", true, ButtonAction::Finish));
+        }
+        WizardStep::UninstallConfirm => {
+            if !no_cancel {
+                buttons.push(cancel);
+            }
+            buttons.push(continue_button(
+                "Uninstall",
+                true,
+                ButtonAction::StartUninstall,
+            ));
+        }
+    }
+
+    Layout { buttons }
+}
+
+#[cfg(target_os = "macos")]
+fn map_native_button(
+    _state: &AppState,
+    action: crate::native_buttons::ButtonAction,
+) -> Option<Message> {
+    use crate::native_buttons::ButtonAction;
+    Some(match action {
+        ButtonAction::Next => Message::NextStep,
+        ButtonAction::Prev => Message::PrevStep,
+        ButtonAction::Cancel => Message::Cancel,
+        ButtonAction::StartInstall => Message::StartInstall,
+        ButtonAction::StartUninstall => Message::StartUninstall,
+        ButtonAction::Finish => Message::Finish,
+    })
+}
+
 fn subscription(state: &AppState) -> Subscription<Message> {
     use std::time::Duration;
 
     let mut subs = vec![];
+
+    // On macOS, hook every window-open event to install the NSVisualEffectView
+    // behind the iced surface — this is what gives us real Liquid Glass.
+    #[cfg(target_os = "macos")]
+    subs.push(iced::window::open_events().map(Message::InstallGlass));
+
+    // Drain clicks from the native NSButton overlay every frame. Cheap;
+    // just a Mutex lock + empty Vec check when idle.
+    #[cfg(target_os = "macos")]
+    subs.push(iced::time::every(Duration::from_millis(16)).map(|_| Message::NativeButtonsTick));
 
     // Keyboard events
     subs.push(keyboard::listen().map(|event| {

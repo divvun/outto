@@ -41,17 +41,19 @@ pub fn pack_payload(
         // Prefix the archive entry with the on-disk filename so Windows gets
         // `uninstall.exe` and macOS gets `uninstall.app/` — consumers key off
         // that name to decide how to extract.
-        let name = p
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "uninstaller path has no filename"))?;
+        let name = p.file_name().and_then(|s| s.to_str()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "uninstaller path has no filename",
+            )
+        })?;
 
         if p.is_dir() {
             // Recursively add the bundle's contents.
             pack_directory_tree(&mut writer, &compression, p, name)?;
         } else {
-            let box_path = BoxPath::new(name)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            let box_path =
+                BoxPath::new(name).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
             writer.insert_file(&compression, p, box_path, HashMap::new())?;
         }
     }

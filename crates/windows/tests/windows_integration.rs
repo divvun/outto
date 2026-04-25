@@ -9,7 +9,6 @@ use outto_core::actions::run;
 use outto_core::config::types::*;
 use outto_core::config::{Config, VariableResolver as PathResolver};
 use outto_core::manifest::InstallManifest;
-use outto_windows::manifest::Action as ActionRecord;
 use outto_core::{InstallOptions, NoOpCallbacks};
 use outto_windows::actions::{dirs, registry, shortcuts};
 use outto_windows::detect::{
@@ -17,6 +16,7 @@ use outto_windows::detect::{
     UninstallRegistryInfo,
 };
 use outto_windows::elevation;
+use outto_windows::manifest::Action as ActionRecord;
 use outto_windows::{install, uninstall_package};
 
 use windows_sys::Win32::System::Registry::*;

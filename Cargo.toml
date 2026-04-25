@@ -19,3 +19,20 @@ codegen-units = 1
 opt-level = "z"
 strip = true
 panic = "immediate-abort"
+
+# We vendor iced and cosmic-text so we can fix the variable-font bold
+# rendering bug that affects SFNS.ttf on macOS. See plan file + vendor/*.
+[patch.crates-io]
+cosmic-text = { path = "vendor/cosmic-text" }
+iced = { path = "vendor/iced" }
+iced_core = { path = "vendor/iced/core" }
+iced_debug = { path = "vendor/iced/debug" }
+iced_futures = { path = "vendor/iced/futures" }
+iced_graphics = { path = "vendor/iced/graphics" }
+iced_program = { path = "vendor/iced/program" }
+iced_renderer = { path = "vendor/iced/renderer" }
+iced_runtime = { path = "vendor/iced/runtime" }
+iced_tiny_skia = { path = "vendor/iced/tiny_skia" }
+iced_widget = { path = "vendor/iced/widget" }
+iced_winit = { path = "vendor/iced/winit" }
+softbuffer = { path = "vendor/softbuffer" }

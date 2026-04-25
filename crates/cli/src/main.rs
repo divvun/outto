@@ -371,7 +371,10 @@ fn build_installer(
     // Stash the compressed tarball in the SFX's Resources/ — see the
     // inner installer payload for the rationale (codesign strict layout).
     let outer_payload = output.join("Contents/Resources/payload.tar.zst");
-    eprintln!("Staging compressed payload at {}...", outer_payload.display());
+    eprintln!(
+        "Staging compressed payload at {}...",
+        outer_payload.display()
+    );
     std::fs::write(&outer_payload, &compressed)?;
 
     if let Some(cmd) = sign_command {

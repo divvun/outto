@@ -252,8 +252,13 @@ fn test_admin_association_create_and_remove() {
     let _ = associations::remove_association(ext, prog_id);
 
     let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"), vec![]);
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
     let callbacks = NoOpCallbacks;
 
     let entry = AssociationEntry {
@@ -307,8 +312,13 @@ fn test_admin_service_install_and_delete() {
     let _ = services::delete_service(svc_name);
 
     let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"), vec![]);
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
     let callbacks = NoOpCallbacks;
 
     let entry = ServiceEntry {
@@ -356,8 +366,13 @@ fn test_admin_font_install_and_uninstall() {
     let ttf_header = [0u8; 64]; // Zeroed header — will fail AddFontResourceW
     std::fs::write(&font_file, &ttf_header).unwrap();
 
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"), vec![]);
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
     let callbacks = NoOpCallbacks;
 
     let entry = FontEntry {
@@ -454,8 +469,13 @@ fn test_admin_create_directory_with_permissions() {
 fn test_admin_com_register_nonexistent_dll() {
     assert_admin();
     let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest =
-        InstallManifest::new("test", "Test", "1.0.0", std::path::Path::new("C:\\test"), vec![]);
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
     let callbacks = NoOpCallbacks;
 
     let entry = ComEntry {

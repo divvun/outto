@@ -1,0 +1,9 @@
+[submodule "vendor/cosmic-text"]
+	path = vendor/cosmic-text
+	url = https://github.com/pop-os/cosmic-text.git
+[submodule "vendor/iced"]
+	path = vendor/iced
+	url = https://github.com/iced-rs/iced.git
+[submodule "vendor/softbuffer"]
+	path = vendor/softbuffer
+	url = https://github.com/rust-windowing/softbuffer.git

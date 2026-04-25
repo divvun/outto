@@ -150,11 +150,10 @@ fn infer_target(cli_install_dir: Option<PathBuf>) -> (PathBuf, String) {
     };
     // Expected: .../packages/<pkg-id>/uninstall.app/Contents/MacOS/Uninstall
     // Walk up: Uninstall → MacOS → Contents → uninstall.app → <pkg-id>
-    let pkg_dir = exe
-        .ancestors()
-        .nth(4)
-        .ok_or("")
-        .unwrap_or_else(|_| fatal_error("Could not locate enclosing package receipt directory."));
+    let pkg_dir =
+        exe.ancestors().nth(4).ok_or("").unwrap_or_else(|_| {
+            fatal_error("Could not locate enclosing package receipt directory.")
+        });
     let package_id = pkg_dir
         .file_name()
         .and_then(|n| n.to_str())
@@ -284,7 +283,9 @@ fn load_manifest_info(_install_dir: &std::path::Path, package_id: &str) -> (Stri
     // it if we ever want the full action list.
     if let Ok(Some(existing)) = outto_macos::detect::detect_existing_install(package_id) {
         return (
-            existing.display_name.unwrap_or_else(|| "Application".into()),
+            existing
+                .display_name
+                .unwrap_or_else(|| "Application".into()),
             existing.version.unwrap_or_default(),
         );
     }
