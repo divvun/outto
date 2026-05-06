@@ -20,7 +20,7 @@ pub mod uninstall;
 use std::path::PathBuf;
 
 use outto_core::callbacks::{InstallOptions, InstallerCallbacks, LogLevel};
-use outto_core::config::{Config, UpgradePolicy, VariableResolver};
+use outto_core::config::{UpgradePolicy, VariableResolver};
 use outto_core::error::{InstallerError, InstallerResult};
 use outto_core::manifest::{rollback, CoreAction, InstallManifest};
 
@@ -174,7 +174,7 @@ pub fn install(
                 }
 
                 if let Some(ref old_dir) = old_install_dir {
-                    let old_pkg_dir = InstallManifest::package_dir(old_dir, &config.package.id);
+                    let old_pkg_dir = InstallManifest::<WindowsAction>::package_dir(old_dir, &config.package.id);
                     if old_pkg_dir.exists() {
                         callbacks.on_log(
                             LogLevel::Info,
@@ -192,7 +192,7 @@ pub fn install(
             }
 
             let uninstall_string = if let Some(ref uninstall_exe_src) = options.uninstall_exe {
-                let pkg_dir = InstallManifest::package_dir(&install_dir, &config.package.id);
+                let pkg_dir = InstallManifest::<WindowsAction>::package_dir(&install_dir, &config.package.id);
                 let uninstall_dest = pkg_dir.join("uninstall.exe");
                 std::fs::copy(uninstall_exe_src, &uninstall_dest).map_err(|e| {
                     InstallerError::FileOp {
