@@ -6,4 +6,4 @@
 	url = https://github.com/iced-rs/iced.git
 [submodule "vendor/softbuffer"]
 	path = vendor/softbuffer
-	url = https://github.com/rust-windowing/softbuffer.git
+	url = https://github.com/divvun/softbuffer.git
