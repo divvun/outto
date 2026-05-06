@@ -10,7 +10,7 @@ outto-core = { path = "../core" }
 iced = { version = "0.14", default-features = false, features = ["tokio", "tiny-skia"] }
 serde_json = "1"
 rfd = "0.15"
-box-format = { path = "../../../box", default-features = false, features = ["std", "zstd", "reader"] }
+box-format = { git = "https://github.com/bbqsrc/box", rev = "c098064f982be8a02f986a119b2b052709f1cd56", default-features = false, features = ["std", "zstd", "reader"] }
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]

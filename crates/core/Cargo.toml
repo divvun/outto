@@ -14,7 +14,7 @@ semver = { version = "1", features = ["serde"] }
 glob = "0.3"
 blake3 = "1.8.3"
 dunce = "1"
-box-format = { path = "../../../box", default-features = false, features = ["std", "zstd", "xz", "reader", "writer"] }
+box-format = { git = "https://github.com/bbqsrc/box", rev = "c098064f982be8a02f986a119b2b052709f1cd56", default-features = false, features = ["std", "zstd", "xz", "reader", "writer"] }
 walkdir = "2"
 
 [target.'cfg(windows)'.dependencies]

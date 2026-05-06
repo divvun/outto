@@ -327,6 +327,7 @@ dependencies = [
 [[package]]
 name = "box-format"
 version = "0.4.0"
+source = "git+https://github.com/bbqsrc/box?rev=c098064f982be8a02f986a119b2b052709f1cd56#c098064f982be8a02f986a119b2b052709f1cd56"
 dependencies = [
  "async-walkdir",
  "blake3",
@@ -359,6 +360,7 @@ dependencies = [
 [[package]]
 name = "box-fst"
 version = "0.1.0"
+source = "git+https://github.com/bbqsrc/box?rev=c098064f982be8a02f986a119b2b052709f1cd56#c098064f982be8a02f986a119b2b052709f1cd56"
 dependencies = [
  "fastvint",
  "hashbrown 0.15.5",

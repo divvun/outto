@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 outto-core = { path = "../core" }
-box-format = { path = "../../../box", default-features = false, features = ["std", "zstd", "reader", "writer"] }
+box-format = { git = "https://github.com/bbqsrc/box", rev = "c098064f982be8a02f986a119b2b052709f1cd56", default-features = false, features = ["std", "zstd", "reader", "writer"] }
 tempfile = "3"
 walkdir = "2"
 zstd = { version = "0.13", default-features = false }
