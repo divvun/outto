@@ -72,6 +72,7 @@ mod tests {
     fn test_install_font_to_user_dir_mock() {
         // We don't touch the real ~/Library/Fonts in tests; we just verify the
         // code path up to the copy step by pointing HOME at a temp dir.
+        let _home_guard = crate::test_util::lock_home();
         let dir = std::env::temp_dir().join(format!("outto-font-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let source_dir = dir.join("src");
@@ -83,7 +84,6 @@ mod tests {
         std::fs::write(source_dir.join("TestFont.ttf"), b"fake-ttf").unwrap();
 
         let old_home = std::env::var_os("HOME");
-        // SAFETY: test process, sequential test runner assumed.
         unsafe { std::env::set_var("HOME", &fake_home) };
 
         let entry = FontEntry {

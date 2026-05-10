@@ -22,6 +22,9 @@ pub mod manifest;
 pub mod paths;
 pub mod uninstall;
 
+#[cfg(test)]
+pub(crate) mod test_util;
+
 use std::path::PathBuf;
 
 use outto_core::callbacks::{InstallOptions, InstallerCallbacks, LogLevel};

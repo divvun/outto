@@ -4,13 +4,15 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 
+use outto_core::actions::dirs;
 use outto_core::actions::prerequisites;
 use outto_core::actions::run;
 use outto_core::config::types::*;
 use outto_core::config::{Config, VariableResolver as PathResolver};
+use outto_core::manifest::rollback;
 use outto_core::manifest::InstallManifest;
 use outto_core::{InstallOptions, NoOpCallbacks};
-use outto_windows::actions::{dirs, registry, shortcuts};
+use outto_windows::actions::{environment, registry, shortcuts};
 use outto_windows::detect::{
     detect_existing_install, remove_uninstall_registry, write_uninstall_registry,
     UninstallRegistryInfo,
@@ -522,7 +524,7 @@ fn test_env_set_new_user_variable() {
         component: None,
     };
 
-    outto::actions::environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks)
+    environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks)
         .unwrap();
 
     // Read it back from the registry
@@ -563,7 +565,7 @@ fn test_env_append_user_variable() {
         component: None,
     };
 
-    outto::actions::environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks)
+    environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks)
         .unwrap();
 
     let val = read_hkcu_string("Environment", var_name);
@@ -596,7 +598,7 @@ fn test_env_prepend_user_variable() {
         component: None,
     };
 
-    outto::actions::environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks)
+    environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks)
         .unwrap();
 
     let val = read_hkcu_string("Environment", var_name);
@@ -629,7 +631,7 @@ fn test_env_remove_from_user_variable() {
         component: None,
     };
 
-    outto::actions::environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks)
+    environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks)
         .unwrap();
 
     let val = read_hkcu_string("Environment", var_name);
@@ -927,7 +929,7 @@ fn test_shortcut_rollback_deletes_file() {
         path: lnk_path.clone(),
     }];
     let callbacks = NoOpCallbacks;
-    outto::manifest::rollback::rollback_actions(&actions, &callbacks, true).unwrap();
+    rollback::rollback_actions(&actions, &callbacks, true).unwrap();
     assert!(!lnk_path.exists());
 }
 
@@ -1075,7 +1077,7 @@ fn test_execute_phase_before_install() {
 #[test]
 fn test_execute_phase_filtering() {
     let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest = InstallManifest::new(
+    let mut manifest = InstallManifest::<ActionRecord>::new(
         "test",
         "Test",
         "1.0.0",
@@ -1115,7 +1117,7 @@ fn test_execute_phase_filtering() {
 #[test]
 fn test_execute_command_nonzero_exit() {
     let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
-    let mut manifest = InstallManifest::new(
+    let mut manifest = InstallManifest::<ActionRecord>::new(
         "test",
         "Test",
         "1.0.0",
@@ -1846,7 +1848,7 @@ fn test_shortcut_startmenu_location() {
 
 #[test]
 fn test_manifest_load_missing_file() {
-    let result = InstallManifest::load(
+    let result = InstallManifest::<ActionRecord>::load(
         std::path::Path::new("C:\\nonexistent_outto_dir_12345"),
         "com.test",
     );
@@ -1864,7 +1866,7 @@ fn test_manifest_load_corrupted_json() {
 
     std::fs::write(manifest_dir.join("manifest.json"), "NOT VALID JSON {{{").unwrap();
 
-    let result = InstallManifest::load(&dir, "com.test");
+    let result = InstallManifest::<ActionRecord>::load(&dir, "com.test");
     assert!(result.is_err());
 }
 

@@ -251,6 +251,7 @@ mod tests {
 
     #[test]
     fn test_apply_and_remove_roundtrip() {
+        let _home_guard = crate::test_util::lock_home();
         let dir = std::env::temp_dir().join(format!("outto-env-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
