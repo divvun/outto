@@ -14,11 +14,11 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 
+use outto_core::actions::dirs;
 use outto_core::config::types::*;
 use outto_core::config::VariableResolver as PathResolver;
 use outto_core::manifest::InstallManifest;
 use outto_core::NoOpCallbacks;
-use outto_core::actions::dirs;
 use outto_windows::actions::{associations, com, fonts, services};
 use outto_windows::elevation;
 use outto_windows::manifest::Action as ActionRecord;

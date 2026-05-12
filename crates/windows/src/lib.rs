@@ -174,7 +174,8 @@ pub fn install(
                 }
 
                 if let Some(ref old_dir) = old_install_dir {
-                    let old_pkg_dir = InstallManifest::<WindowsAction>::package_dir(old_dir, &config.package.id);
+                    let old_pkg_dir =
+                        InstallManifest::<WindowsAction>::package_dir(old_dir, &config.package.id);
                     if old_pkg_dir.exists() {
                         callbacks.on_log(
                             LogLevel::Info,
@@ -192,7 +193,8 @@ pub fn install(
             }
 
             let uninstall_string = if let Some(ref uninstall_exe_src) = options.uninstall_exe {
-                let pkg_dir = InstallManifest::<WindowsAction>::package_dir(&install_dir, &config.package.id);
+                let pkg_dir =
+                    InstallManifest::<WindowsAction>::package_dir(&install_dir, &config.package.id);
                 let uninstall_dest = pkg_dir.join("uninstall.exe");
                 std::fs::copy(uninstall_exe_src, &uninstall_dest).map_err(|e| {
                     InstallerError::FileOp {
@@ -263,8 +265,9 @@ pub fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use outto_core::callbacks::{ErrorAction, NoOpCallbacks, Prompt, PromptResponse};
+    use outto_core::callbacks::{NoOpCallbacks, Prompt, PromptResponse};
     use outto_core::config::Config;
+    use outto_core::error::ErrorAction;
     use std::collections::HashSet;
     use std::fs;
     use std::sync::{Arc, Mutex};
@@ -326,7 +329,10 @@ overwrite = "always"
         assert!(install_dir.join("app.exe").exists());
         assert!(install_dir.join("readme.txt").exists());
 
-        assert!(InstallManifest::manifest_path(&install_dir, "com.test.basic").exists());
+        assert!(
+            InstallManifest::<WindowsAction>::manifest_path(&install_dir, "com.test.basic")
+                .exists()
+        );
 
         let result = uninstall_package(&install_dir, "com.test.basic", &callbacks);
         assert!(result.is_ok(), "Uninstall failed: {result:?}");

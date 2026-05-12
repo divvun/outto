@@ -524,8 +524,7 @@ fn test_env_set_new_user_variable() {
         component: None,
     };
 
-    environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks)
-        .unwrap();
+    environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks).unwrap();
 
     // Read it back from the registry
     let val = read_hkcu_string("Environment", var_name);
@@ -565,8 +564,7 @@ fn test_env_append_user_variable() {
         component: None,
     };
 
-    environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks)
-        .unwrap();
+    environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks).unwrap();
 
     let val = read_hkcu_string("Environment", var_name);
     assert_eq!(val, Some("A;B;C".to_string()));
@@ -598,8 +596,7 @@ fn test_env_prepend_user_variable() {
         component: None,
     };
 
-    environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks)
-        .unwrap();
+    environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks).unwrap();
 
     let val = read_hkcu_string("Environment", var_name);
     assert_eq!(val, Some("Z;A;B".to_string()));
@@ -631,8 +628,7 @@ fn test_env_remove_from_user_variable() {
         component: None,
     };
 
-    environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks)
-        .unwrap();
+    environment::apply_env_entry(&entry, &resolver, &mut manifest, &callbacks).unwrap();
 
     let val = read_hkcu_string("Environment", var_name);
     assert_eq!(val, Some("A;C".to_string()));
