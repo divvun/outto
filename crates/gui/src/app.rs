@@ -341,7 +341,7 @@ impl AppState {
         let selected: HashSet<String> = self
             .selected_components
             .iter()
-            .filter(|(_, &v)| v)
+            .filter(|&(_, &v)| v)
             .map(|(k, _)| k.clone())
             .collect();
 
@@ -1223,10 +1223,10 @@ fn subscription(state: &AppState) -> Subscription<Message> {
                     }
                 }
                 keyboard::Key::Named(keyboard::key::Named::Enter) => {
-                    return Message::ActivateFocused
+                    return Message::ActivateFocused;
                 }
                 keyboard::Key::Named(keyboard::key::Named::Space) => {
-                    return Message::ActivateFocused
+                    return Message::ActivateFocused;
                 }
                 keyboard::Key::Named(keyboard::key::Named::Escape) => return Message::Cancel,
                 _ => {}

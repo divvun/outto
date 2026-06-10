@@ -9,13 +9,13 @@ use outto_core::actions::prerequisites;
 use outto_core::actions::run;
 use outto_core::config::types::*;
 use outto_core::config::{Config, VariableResolver as PathResolver};
-use outto_core::manifest::rollback;
 use outto_core::manifest::InstallManifest;
+use outto_core::manifest::rollback;
 use outto_core::{InstallOptions, NoOpCallbacks};
 use outto_windows::actions::{environment, registry, shortcuts};
 use outto_windows::detect::{
-    detect_existing_install, remove_uninstall_registry, write_uninstall_registry,
-    UninstallRegistryInfo,
+    UninstallRegistryInfo, detect_existing_install, remove_uninstall_registry,
+    write_uninstall_registry,
 };
 use outto_windows::elevation;
 use outto_windows::manifest::Action as ActionRecord;
@@ -467,10 +467,12 @@ fn test_registry_key_created_and_deleted() {
     assert!(hkcu_key_exists(key));
 
     // Verify RegistryKeyCreated was recorded
-    assert!(manifest
-        .actions
-        .iter()
-        .any(|a| matches!(a, ActionRecord::RegistryKeyCreated { .. })));
+    assert!(
+        manifest
+            .actions
+            .iter()
+            .any(|a| matches!(a, ActionRecord::RegistryKeyCreated { .. }))
+    );
 
     // Delete
     registry::delete_key("HKCU", key).unwrap();
@@ -984,10 +986,12 @@ fn test_create_directory_already_exists() {
 
     // Should succeed without error, but NOT record a DirectoryCreated action
     dirs::create_directory(&entry, &resolver, &mut manifest, &callbacks).unwrap();
-    assert!(!manifest
-        .actions
-        .iter()
-        .any(|a| matches!(a, ActionRecord::DirectoryCreated { .. })));
+    assert!(
+        !manifest
+            .actions
+            .iter()
+            .any(|a| matches!(a, ActionRecord::DirectoryCreated { .. }))
+    );
 }
 
 // ---------------------------------------------------------------------------

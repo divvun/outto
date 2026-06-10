@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use outto_core::callbacks::{InstallOptions, InstallerCallbacks, LogLevel};
 use outto_core::config::{UpgradePolicy, VariableResolver};
 use outto_core::error::{InstallerError, InstallerResult};
-use outto_core::manifest::{rollback, CoreAction, InstallManifest};
+use outto_core::manifest::{CoreAction, InstallManifest, rollback};
 
 pub use manifest::Action as WindowsAction;
 pub use outto_core::Config;

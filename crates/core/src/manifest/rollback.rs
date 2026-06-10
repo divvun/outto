@@ -1,8 +1,8 @@
 use std::fmt::Debug;
 use std::fs;
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::callbacks::{InstallerCallbacks, LogLevel};
 use crate::error::{InstallerError, InstallerResult};

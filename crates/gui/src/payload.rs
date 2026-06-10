@@ -102,20 +102,12 @@ pub fn extract_embedded_payload() -> Result<Option<ExtractedPayload>, Box<dyn st
         #[cfg(windows)]
         {
             let p = extract_dir.join("uninstall.exe");
-            if p.exists() {
-                Some(p)
-            } else {
-                None
-            }
+            if p.exists() { Some(p) } else { None }
         }
         #[cfg(target_os = "macos")]
         {
             let p = extract_dir.join("uninstall.app");
-            if p.exists() {
-                Some(p)
-            } else {
-                None
-            }
+            if p.exists() { Some(p) } else { None }
         }
         #[cfg(not(any(windows, target_os = "macos")))]
         {

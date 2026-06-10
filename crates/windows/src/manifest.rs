@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 use outto_core::callbacks::{InstallerCallbacks, LogLevel};
 use outto_core::config::types::UninstallBehavior;
 use outto_core::error::{InstallerError, InstallerResult};
-use outto_core::manifest::rollback::{
-    rollback_directory_created, rollback_file_copied, RollbackAction,
-};
 use outto_core::manifest::CoreAction;
+use outto_core::manifest::rollback::{
+    RollbackAction, rollback_directory_created, rollback_file_copied,
+};
 
 use crate::actions::{associations, com, environment, fonts, registry, services};
 

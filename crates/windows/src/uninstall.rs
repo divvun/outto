@@ -3,7 +3,7 @@ use std::path::Path;
 
 use outto_core::callbacks::{InstallerCallbacks, LogLevel};
 use outto_core::error::{InstallerError, InstallerResult};
-use outto_core::manifest::{rollback::rollback_actions, InstallManifest};
+use outto_core::manifest::{InstallManifest, rollback::rollback_actions};
 
 use crate::detect;
 use crate::manifest::Action as WindowsAction;

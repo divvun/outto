@@ -1,40 +1,29 @@
 [package]
 name = "outto-gui"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Iced-based installer GUI for outto"
-license = "MIT"
 
 [dependencies]
-outto-core = { path = "../core" }
-iced = { version = "0.14", default-features = false, features = ["tokio", "tiny-skia"] }
-serde_json = "1"
-rfd = "0.15"
-box-format = { git = "https://github.com/bbqsrc/box", rev = "c098064f982be8a02f986a119b2b052709f1cd56", default-features = false, features = ["std", "zstd", "reader"] }
-tempfile = "3"
+outto-core.workspace = true
+iced.workspace = true
+serde_json.workspace = true
+rfd.workspace = true
+box-format.workspace = true
+tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-outto-windows = { path = "../windows" }
-windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
+outto-windows.workspace = true
+windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-outto-macos = { path = "../macos" }
+outto-macos.workspace = true
 # Keep box-format available on macOS too for payload extraction in the GUI.
-objc2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSThread", "NSString", "NSGeometry"] }
-objc2-app-kit = { version = "0.2", features = [
-    "NSView",
-    "NSWindow",
-    "NSVisualEffectView",
-    "NSResponder",
-    "NSColor",
-    "NSControl",
-    "NSButton",
-    "NSButtonCell",
-    "NSCell",
-    "NSBezierPath",
-] }
-raw-window-handle = "0.6"
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+raw-window-handle.workspace = true
 
 [build-dependencies]
-winres = "0.1"
+winres.workspace = true

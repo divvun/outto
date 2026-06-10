@@ -1,16 +1,16 @@
 [package]
 name = "outto-windows"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Windows backend for the outto installer framework"
-license = "MIT"
 
 [target.'cfg(windows)'.dependencies]
-outto-core = { path = "../core" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
-windows-sys = { version = "0.61", features = [
+outto-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_Registry",

@@ -50,7 +50,7 @@ fn validate_components(config: &Config) -> InstallerResult<()> {
     }
 
     let check_component = |comp: &Option<String>, context: &str| -> InstallerResult<()> {
-        if let Some(ref name) = comp {
+        if let Some(name) = comp {
             if !component_names.contains(&name.as_str()) && !component_names.is_empty() {
                 return Err(InstallerError::Validation(format!(
                     "{context} references unknown component '{name}'"

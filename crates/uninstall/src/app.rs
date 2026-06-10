@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{atomic::AtomicBool, Mutex};
+use std::sync::{Mutex, atomic::AtomicBool};
 
 use iced::widget::{button, column, container, progress_bar, row, scrollable, space, text};
 use iced::{Element, Fill, Subscription, Task};

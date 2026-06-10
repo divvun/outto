@@ -17,7 +17,7 @@ use objc2::declare_class;
 use objc2::mutability::MainThreadOnly;
 use objc2::rc::{Allocated, Id};
 use objc2::runtime::{NSObject, Sel};
-use objc2::{msg_send, msg_send_id, sel, ClassType, DeclaredClass};
+use objc2::{ClassType, DeclaredClass, msg_send, msg_send_id, sel};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSBezelStyle, NSButton, NSColor, NSControl, NSControlSize, NSView,
 };

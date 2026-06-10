@@ -82,7 +82,9 @@ fn detect_windows(package_id: &str) -> InstallerResult<Option<ExistingInstall>> 
         ),
         (
             HKEY_LOCAL_MACHINE,
-            format!("SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{package_id}"),
+            format!(
+                "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{package_id}"
+            ),
         ),
         (
             HKEY_CURRENT_USER,

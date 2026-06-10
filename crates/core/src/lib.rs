@@ -23,5 +23,5 @@ pub use callbacks::{
 pub use config::Config;
 pub use config::{Architecture, ComponentEntry, OverwritePolicy, Privileges, UpgradePolicy};
 pub use error::{ErrorAction, InstallerError, InstallerResult};
-pub use manifest::rollback::{rollback_actions, RollbackAction};
+pub use manifest::rollback::{RollbackAction, rollback_actions};
 pub use manifest::{CoreAction, InstallManifest};

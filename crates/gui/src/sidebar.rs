@@ -3,7 +3,7 @@
 //! Steps come from the existing `WizardStep` + `StepConfig` state machine — this
 //! module only builds the visual list, it doesn't duplicate navigation logic.
 
-use iced::widget::{column, container, text, Space};
+use iced::widget::{Space, column, container, text};
 use iced::{Element, Fill, Font, Length};
 
 use crate::app::{AppMode, AppState, Message, StepConfig, WizardStep};

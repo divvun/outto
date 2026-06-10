@@ -14,10 +14,10 @@ use serde::{Deserialize, Serialize};
 
 use outto_core::callbacks::InstallerCallbacks;
 use outto_core::error::{InstallerError, InstallerResult};
-use outto_core::manifest::rollback::{
-    rollback_directory_created, rollback_file_copied, RollbackAction,
-};
 use outto_core::manifest::CoreAction;
+use outto_core::manifest::rollback::{
+    RollbackAction, rollback_directory_created, rollback_file_copied,
+};
 
 /// Serde-compatible mirror of a plist::Value, used to capture the previous
 /// value when overwriting a plist key so uninstall can restore it.

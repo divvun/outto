@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use outto_core::callbacks::{InstallerCallbacks, LogLevel};
 use outto_core::error::{InstallerError, InstallerResult};
-use outto_core::manifest::{rollback::rollback_actions, InstallManifest};
+use outto_core::manifest::{InstallManifest, rollback::rollback_actions};
 
 use crate::detect::{self, InstalledPackageInfo};
 use crate::manifest::Action;

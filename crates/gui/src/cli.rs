@@ -99,7 +99,7 @@ pub fn parse_args() -> Result<Args, String> {
             _ => {
                 return Err(
                     "Either provide both --config and --source, or neither (embedded mode)".into(),
-                )
+                );
             }
         },
         "uninstall" => {

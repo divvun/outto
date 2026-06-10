@@ -289,4 +289,4 @@ pub use platform::{
 };
 
 #[cfg(not(target_os = "macos"))]
-pub use platform::{header_style, HEADER_BG, HEADER_TEXT};
+pub use platform::{HEADER_BG, HEADER_TEXT, header_style};

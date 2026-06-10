@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use outto_core::callbacks::{InstallOptions, InstallerCallbacks, LogLevel};
 use outto_core::config::VariableResolver;
 use outto_core::error::{InstallerError, InstallerResult};
-use outto_core::manifest::{rollback::rollback_actions, CoreAction, InstallManifest};
+use outto_core::manifest::{CoreAction, InstallManifest, rollback::rollback_actions};
 
 pub use config::Config;
 pub use manifest::Action as MacosAction;

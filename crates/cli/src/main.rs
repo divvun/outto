@@ -14,7 +14,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 || args[1] != "build" {
-        eprintln!("Usage: outto build --config <file> --source <dir> --output <exe> [--compress] [--compression-level <0-22>] [-S|--sign <command>]");
+        eprintln!(
+            "Usage: outto build --config <file> --source <dir> --output <exe> [--compress] [--compression-level <0-22>] [-S|--sign <command>]"
+        );
         std::process::exit(2);
     }
 
@@ -101,8 +103,8 @@ fn build_installer(
     compression_level: i32,
     sign_command: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use outto_core::actions::signing;
     use outto_core::NoOpCallbacks;
+    use outto_core::actions::signing;
     use outto_windows::pe;
 
     if !config_path.exists() {
@@ -237,9 +239,9 @@ fn build_installer(
     compression_level: i32,
     sign_command: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use outto_core::NoOpCallbacks;
     use outto_core::actions::signing;
     use outto_core::archive::pack_payload;
-    use outto_core::NoOpCallbacks;
 
     if !config_path.exists() {
         return Err(format!("Config file not found: {}", config_path.display()).into());

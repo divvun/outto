@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{InstallerError, InstallerResult};
 
-pub use rollback::{rollback_actions, RollbackAction};
+pub use rollback::{RollbackAction, rollback_actions};
 
 /// Platform-neutral action variants that every platform backend must be able to
 /// construct and record. Each platform defines its own top-level `Action` enum

@@ -1,16 +1,16 @@
 [package]
 name = "outto-macos"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "macOS backend for the outto installer framework (stub — not yet implemented)"
-license = "MIT"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-outto-core = { path = "../core" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
-semver = { version = "1", features = ["serde"] }
-plist = "1"
-libc = "0.2"
+outto-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+semver.workspace = true
+plist.workspace = true
+libc.workspace = true
 # Reads and writes Mach-O headers at the byte level (no runtime dep; we hand-parse).

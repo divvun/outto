@@ -1,7 +1,7 @@
 use iced::widget::{checkbox, column, container, space, text};
 use iced::{Element, Fill};
 
-use crate::app::{current_focus_target, AppState, FocusTarget, Message};
+use crate::app::{AppState, FocusTarget, Message, current_focus_target};
 use crate::theme;
 
 pub fn view(state: &AppState) -> Element<'_, Message> {

@@ -620,7 +620,7 @@ pub use platform::{
 pub use platform::bold_font;
 
 #[cfg(not(target_os = "macos"))]
-pub use platform::{header_style, HEADER_BG, HEADER_TEXT};
+pub use platform::{HEADER_BG, HEADER_TEXT, header_style};
 
 #[cfg(target_os = "macos")]
 pub use platform::{

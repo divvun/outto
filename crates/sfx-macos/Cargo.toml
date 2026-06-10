@@ -1,12 +1,12 @@
 [package]
 name = "outto-sfx-macos"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Mach-O self-extractor stub for compressed outto .app installers"
-license = "MIT"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-outto-macos = { path = "../macos" }
-zstd = { version = "0.13", default-features = false }
-tar = "0.4"
-libc = "0.2"
+outto-macos.workspace = true
+zstd.workspace = true
+tar.workspace = true
+libc.workspace = true

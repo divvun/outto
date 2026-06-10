@@ -17,11 +17,11 @@
 
 use std::sync::{Mutex, OnceLock};
 
+use objc2::ClassType;
 use objc2::encode::{Encode, Encoding, RefEncode};
 use objc2::msg_send;
 use objc2::rc::Id;
 use objc2::runtime::AnyObject;
-use objc2::ClassType;
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameVibrantDark, NSAutoresizingMaskOptions, NSBezierPath, NSColor,
     NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
