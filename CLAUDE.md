@@ -94,7 +94,7 @@ For actions that touch `/Library`, `/usr/local`, `/Library/LaunchDaemons`, etc. 
 
 ## Conventions / gotchas
 
-- Edition 2021 on all crates.
+- Edition 2024 on all crates, inherited via `[workspace.package]`. Dependency versions live in `[workspace.dependencies]` in the root `Cargo.toml`; member crates use `dep.workspace = true` and add per-crate features on top (e.g. `windows-sys`, `box-format`).
 - `.cargo/config.toml` forces `+crt-static` on `x86_64-pc-windows-msvc`.
 - Windows API calls go through `windows-sys` (not `windows`).
 - macOS .app bundles copied via `ditto` — never `fs::copy` / `cp -r`, which lose xattrs and resource forks.

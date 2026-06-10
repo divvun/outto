@@ -22,24 +22,28 @@ mod imp {
     /// TLS callback: runs before main() to hide and free the auto-allocated console,
     /// preventing any visible flash when the exe is double-clicked.
     #[used]
-    #[link_section = ".CRT$XLB"]
+    #[unsafe(link_section = ".CRT$XLB")]
     static TLS_CALLBACK: unsafe extern "system" fn(*mut c_void, u32, *mut c_void) = on_tls;
 
     unsafe extern "system" fn on_tls(_: *mut c_void, reason: u32, _: *mut c_void) {
         if reason == DLL_PROCESS_ATTACH {
-            let mut pids = [0u32; 2];
-            let count =
-                windows_sys::Win32::System::Console::GetConsoleProcessList(pids.as_mut_ptr(), 2);
-            if count <= 1 {
-                let hwnd = windows_sys::Win32::System::Console::GetConsoleWindow();
-                if !hwnd.is_null() {
-                    windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
-                        hwnd,
-                        windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
-                    );
+            unsafe {
+                let mut pids = [0u32; 2];
+                let count = windows_sys::Win32::System::Console::GetConsoleProcessList(
+                    pids.as_mut_ptr(),
+                    2,
+                );
+                if count <= 1 {
+                    let hwnd = windows_sys::Win32::System::Console::GetConsoleWindow();
+                    if !hwnd.is_null() {
+                        windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
+                            hwnd,
+                            windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
+                        );
+                    }
                 }
+                windows_sys::Win32::System::Console::FreeConsole();
             }
-            windows_sys::Win32::System::Console::FreeConsole();
         }
     }
 
