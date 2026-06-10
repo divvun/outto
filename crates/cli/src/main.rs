@@ -143,10 +143,10 @@ fn build_installer(
         );
     }
 
-    if let (Some(cmd), Some(ref uninstall_path)) = (sign_command, &uninstall_exe) {
+    if let (Some(cmd), Some(uninstall_path)) = (sign_command, &uninstall_exe) {
         let callbacks = NoOpCallbacks;
 
-        let temp_uninstall = tempfile::tempdir()?.into_path().join("outto-uninstall.exe");
+        let temp_uninstall = tempfile::tempdir()?.keep().join("outto-uninstall.exe");
         fs::copy(uninstall_path, &temp_uninstall)?;
 
         eprintln!("Signing uninstaller...");
