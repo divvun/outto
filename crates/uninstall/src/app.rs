@@ -98,6 +98,9 @@ pub struct AppState {
     pub result: Option<Result<(), String>>,
     pub bridge_queue: BridgeQueue,
     pub no_cancel: bool,
+    /// True while an elevated child is doing the work — the unprivileged
+    /// parent can't signal a root process, so Cancel would be a lie.
+    pub cancel_locked: bool,
 }
 
 impl AppState {
@@ -128,11 +131,27 @@ impl AppState {
             result: None,
             bridge_queue: std::sync::Arc::new(Mutex::new(VecDeque::new())),
             no_cancel,
+            cancel_locked: false,
         }
+    }
+
+    fn cancel_disabled(&self) -> bool {
+        self.no_cancel || self.cancel_locked
     }
 
     fn start_uninstall(&mut self) {
         BRIDGE_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // System-scope receipts need root to roll back; keep this process as
+        // the (unprivileged) UI and hand the work to an elevated headless
+        // child that streams progress back to us.
+        #[cfg(target_os = "macos")]
+        if bridge::uninstall_needs_elevation(&self.package_id) {
+            self.cancel_locked = true;
+            bridge::spawn_elevated_uninstall(self.install_dir.clone(), self.bridge_queue.clone());
+            return;
+        }
+
         bridge::spawn_uninstall(
             self.install_dir.clone(),
             self.package_id.clone(),
@@ -167,8 +186,15 @@ impl AppState {
                     });
                 }
                 BridgeEvent::Finished(result) => {
+                    self.cancel_locked = false;
                     self.result = Some(result);
                     self.step = Step::Complete;
+                }
+                BridgeEvent::ElevationCancelled => {
+                    // The user dismissed the password prompt; nothing ran.
+                    self.cancel_locked = false;
+                    self.progress = ProgressState::default();
+                    self.step = Step::Confirm;
                 }
             }
         }
@@ -219,6 +245,11 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::Cancel => {
+            // While an elevated child runs there is nothing we can do to stop
+            // it (it's root, we're not), so refuse to silently walk away.
+            if state.cancel_locked {
+                return Task::none();
+            }
             std::process::exit(0);
         }
         Message::BridgeUpdate => {
@@ -400,12 +431,12 @@ fn view_button_bar(state: &AppState) -> Element<'_, Message> {
     match state.step {
         Step::Confirm => {
             bar = bar.push(primary_nav_button("Uninstall").on_press(Message::StartUninstall));
-            if !state.no_cancel {
+            if !state.cancel_disabled() {
                 bar = bar.push(secondary_nav_button("Cancel").on_press(Message::Cancel));
             }
         }
         Step::Uninstalling => {
-            if !state.no_cancel {
+            if !state.cancel_disabled() {
                 bar = bar.push(secondary_nav_button("Cancel").on_press(Message::Cancel));
             }
         }

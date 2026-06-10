@@ -21,6 +21,12 @@ pub struct CliFlags {
     pub no_restart: bool,
     /// /NOCANCEL — disable cancel button
     pub no_cancel: bool,
+    /// --progress-file <path> — internal: stream JSON-line progress events to
+    /// this file (set by the parent GUI when spawning an elevated child)
+    pub progress_file: Option<PathBuf>,
+    /// --uninstall-app <path> — internal: pre-extracted uninstaller to copy
+    /// into the receipt (set by the parent GUI when spawning an elevated child)
+    pub uninstall_app: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -145,7 +151,12 @@ fn parse_flags(
             flags.dir = Some(strip_value(arg, "/DIR="));
         } else if upper.starts_with("/COMPONENTS=") {
             let val = strip_value(arg, "/COMPONENTS=");
-            flags.components = Some(val.split(',').map(|s| s.trim().to_string()).collect());
+            flags.components = Some(
+                val.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            );
         } else if upper == "/LOG" || arg == "--log" {
             flags.log = Some(None);
         } else if upper.starts_with("/LOG=") {
@@ -164,6 +175,12 @@ fn parse_flags(
         } else if arg == "--output" {
             i += 1;
             *output = rest.get(i).map(PathBuf::from);
+        } else if arg == "--progress-file" {
+            i += 1;
+            flags.progress_file = rest.get(i).map(PathBuf::from);
+        } else if arg == "--uninstall-app" {
+            i += 1;
+            flags.uninstall_app = rest.get(i).map(PathBuf::from);
         } else {
             return Err(format!("Unknown argument: {arg}\n{}", usage()));
         }
@@ -176,6 +193,50 @@ fn parse_flags(
 fn strip_value(arg: &str, prefix: &str) -> String {
     let val = &arg[prefix.len()..];
     val.trim_matches('"').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> CliFlags {
+        let rest: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let mut flags = CliFlags::default();
+        parse_flags(
+            &rest,
+            &mut flags,
+            &mut None,
+            &mut None,
+            &mut None,
+            &mut None,
+        )
+        .unwrap();
+        flags
+    }
+
+    #[test]
+    fn test_components_empty_value_is_empty_vec() {
+        assert_eq!(parse(&["/COMPONENTS="]).components, Some(vec![]));
+        assert_eq!(
+            parse(&["/COMPONENTS=a, b,"]).components,
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_internal_elevation_flags() {
+        let flags = parse(&[
+            "--progress-file",
+            "/tmp/p.jsonl",
+            "--uninstall-app",
+            "/tmp/uninstall.app",
+        ]);
+        assert_eq!(flags.progress_file, Some(PathBuf::from("/tmp/p.jsonl")));
+        assert_eq!(
+            flags.uninstall_app,
+            Some(PathBuf::from("/tmp/uninstall.app"))
+        );
+    }
 }
 
 fn usage() -> String {

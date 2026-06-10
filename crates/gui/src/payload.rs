@@ -15,6 +15,9 @@ use crate::bridge::Config;
 
 pub struct ExtractedPayload {
     pub config: Config,
+    /// On-disk path of the extracted `outto.toml`, kept alive by `_temp_dir`
+    /// for the life of the GUI session — an elevated child re-reads it.
+    pub config_path: PathBuf,
     pub source_dir: PathBuf,
     pub license_text: Option<String>,
     pub uninstall_exe: Option<PathBuf>,
@@ -117,6 +120,7 @@ pub fn extract_embedded_payload() -> Result<Option<ExtractedPayload>, Box<dyn st
 
     Ok(Some(ExtractedPayload {
         config,
+        config_path,
         source_dir,
         license_text,
         uninstall_exe,

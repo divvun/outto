@@ -74,6 +74,7 @@ fn run_embedded_install(flags: cli::CliFlags) {
     run_install_inner(
         flags,
         payload.config,
+        payload.config_path,
         payload.source_dir,
         payload.license_text,
         payload.uninstall_exe,
@@ -108,12 +109,42 @@ fn run_install(flags: cli::CliFlags, config_path: PathBuf, source_dir: PathBuf) 
         }
     });
 
-    run_install_inner(flags, config, source_dir, license_text, find_uninstaller());
+    let uninstall_exe = flags.uninstall_app.clone().or_else(find_uninstaller);
+    run_install_inner(
+        flags,
+        config,
+        config_path,
+        source_dir,
+        license_text,
+        uninstall_exe,
+    );
+}
+
+/// Run a headless (`/VERYSILENT`) operation with the right callbacks: when
+/// `--progress-file` is set we're the elevated child of a GUI parent and
+/// stream JSON events to it; otherwise plain console output.
+fn run_headless(
+    progress_file: Option<&std::path::Path>,
+    op: impl FnOnce(&dyn outto_core::InstallerCallbacks) -> Result<(), outto_core::InstallerError>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if let Some(path) = progress_file {
+        let cb = match platform::elevation::FileProgressCallbacks::create(path) {
+            Ok(cb) => cb,
+            Err(e) => return Err(format!("can't open progress file {}: {e}", path.display())),
+        };
+        let result = op(&cb).map_err(|e| e.to_string());
+        cb.write_finished(result.as_ref().map(|_| ()).map_err(|e| e.as_str()));
+        return result;
+    }
+    let _ = progress_file;
+    op(&SilentCallbacks).map_err(|e| e.to_string())
 }
 
 fn run_install_inner(
     flags: cli::CliFlags,
     config: Config,
+    config_path: PathBuf,
     source_dir: PathBuf,
     license_text: Option<String>,
     uninstall_exe: Option<PathBuf>,
@@ -141,7 +172,6 @@ fn run_install_inner(
             .as_ref()
             .map(|list| list.iter().cloned().collect::<HashSet<String>>());
 
-        let callbacks = SilentCallbacks;
         let options = outto_core::InstallOptions {
             source_dir,
             install_dir,
@@ -149,7 +179,9 @@ fn run_install_inner(
             uninstall_exe,
         };
 
-        match platform::install(&config, &options, &callbacks) {
+        match run_headless(flags.progress_file.as_deref(), |cb| {
+            platform::install(&config, &options, cb)
+        }) {
             Ok(()) => {
                 println!("Installation complete.");
                 std::process::exit(0);
@@ -169,6 +201,7 @@ fn run_install_inner(
     let state = AppState::new(
         AppMode::Install,
         config,
+        config_path,
         flags,
         license_text,
         source_dir,
@@ -186,8 +219,9 @@ fn run_uninstall(flags: cli::CliFlags, install_dir: PathBuf) {
     let config = load_config_for_uninstall(&install_dir);
 
     if flags.very_silent {
-        let callbacks = SilentCallbacks;
-        match platform::uninstall_package(&install_dir, &config.package.id, &callbacks) {
+        match run_headless(flags.progress_file.as_deref(), |cb| {
+            platform::uninstall_package(&install_dir, &config.package.id, cb)
+        }) {
             Ok(()) => {
                 println!("Uninstall complete.");
                 std::process::exit(0);
@@ -202,6 +236,7 @@ fn run_uninstall(flags: cli::CliFlags, install_dir: PathBuf) {
     let state = AppState::new(
         AppMode::Uninstall,
         config,
+        PathBuf::new(),
         flags,
         None,
         PathBuf::new(),

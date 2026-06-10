@@ -28,6 +28,7 @@ fn main() {
     let mut silent = false;
     let mut very_silent = false;
     let mut no_cancel = false;
+    let mut progress_file: Option<PathBuf> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -39,6 +40,9 @@ fn main() {
         } else if upper == "/VERYSILENT" {
             very_silent = true;
             silent = true;
+        } else if upper == "/SUPPRESSMSGBOXES" {
+            // accepted for parity with the installer; prompts are always
+            // auto-answered in this binary
         } else if upper == "/NOCANCEL" {
             no_cancel = true;
         } else if arg == "--dir" {
@@ -46,6 +50,9 @@ fn main() {
             install_dir = args.get(i).map(PathBuf::from);
         } else if upper.starts_with("/DIR=") {
             install_dir = Some(PathBuf::from(arg["/DIR=".len()..].trim_matches('"')));
+        } else if arg == "--progress-file" {
+            i += 1;
+            progress_file = args.get(i).map(PathBuf::from);
         } else {
             fatal_error(&format!(
                 "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT]"
@@ -62,8 +69,7 @@ fn main() {
     // /VERYSILENT: no GUI
     if very_silent {
         relocate_self();
-        let callbacks = SilentCallbacks;
-        match platform::uninstall_package(&install_dir, &package_id, &callbacks) {
+        match run_headless(progress_file.as_deref(), &install_dir, &package_id) {
             Ok(()) => {
                 cleanup_after_uninstall(&install_dir);
                 println!("Uninstall complete.");
@@ -88,6 +94,29 @@ fn main() {
     if let Err(e) = app::run(state) {
         fatal_error(&format!("Failed to start uninstaller: {e}"));
     }
+}
+
+/// Run the headless uninstall with the right callbacks: when `--progress-file`
+/// is set we're the elevated child of a GUI parent and stream JSON events to
+/// it; otherwise plain console output.
+fn run_headless(
+    progress_file: Option<&std::path::Path>,
+    install_dir: &std::path::Path,
+    package_id: &str,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if let Some(path) = progress_file {
+        let cb = match outto_macos::elevation::FileProgressCallbacks::create(path) {
+            Ok(cb) => cb,
+            Err(e) => return Err(format!("can't open progress file {}: {e}", path.display())),
+        };
+        let result =
+            platform::uninstall_package(install_dir, package_id, &cb).map_err(|e| e.to_string());
+        cb.write_finished(result.as_ref().map(|_| ()).map_err(|e| e.as_str()));
+        return result;
+    }
+    let _ = progress_file;
+    platform::uninstall_package(install_dir, package_id, &SilentCallbacks).map_err(|e| e.to_string())
 }
 
 /// Derive `(install_dir, package_id)` from either the `--dir` flag or the

@@ -208,6 +208,7 @@ pub struct AppState {
     pub mode: AppMode,
     pub step: WizardStep,
     pub config: Config,
+    pub config_path: PathBuf,
     pub flags: CliFlags,
 
     // User choices
@@ -240,12 +241,17 @@ pub struct AppState {
     // Minimum install time
     pub install_started_at: Option<Instant>,
     pub pending_finish: bool,
+
+    /// True while an elevated child is doing the work — the unprivileged
+    /// parent can't signal a root process, so Cancel would be a lie.
+    pub cancel_locked: bool,
 }
 
 impl AppState {
     pub fn new(
         mode: AppMode,
         config: Config,
+        config_path: PathBuf,
         flags: CliFlags,
         license_text: Option<String>,
         source_dir: PathBuf,
@@ -316,6 +322,7 @@ impl AppState {
             mode,
             step: start_step,
             config,
+            config_path,
             flags,
             license_text,
             license_accepted: false,
@@ -333,7 +340,12 @@ impl AppState {
             focused_index: 0,
             install_started_at: None,
             pending_finish: false,
+            cancel_locked: false,
         }
+    }
+
+    pub fn cancel_disabled(&self) -> bool {
+        self.flags.no_cancel || self.cancel_locked
     }
 
     fn start_install(&mut self) {
@@ -352,6 +364,26 @@ impl AppState {
         };
 
         BRIDGE_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // Installing into a root-owned location would make the in-process
+        // pipeline relaunch the whole installer via osascript and abandon
+        // this GUI. Instead, keep this process as the (unprivileged) UI and
+        // hand the actual work to an elevated headless child.
+        #[cfg(target_os = "macos")]
+        if bridge::install_needs_elevation(&self.config, &install_dir) {
+            self.cancel_locked = true;
+            bridge::spawn_elevated_install(
+                self.config_path.clone(),
+                self.source_dir.clone(),
+                install_dir,
+                Some(selected),
+                self.uninstall_exe.clone(),
+                self.flags.clone(),
+                self.bridge_queue.clone(),
+            );
+            return;
+        }
+
         bridge::spawn_install(
             self.config.clone(),
             self.source_dir.clone(),
@@ -371,6 +403,14 @@ impl AppState {
         let package_id = self.config.package.id.clone();
 
         BRIDGE_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        #[cfg(target_os = "macos")]
+        if bridge::uninstall_needs_elevation(&package_id) {
+            self.cancel_locked = true;
+            bridge::spawn_elevated_uninstall(dir, self.bridge_queue.clone());
+            return;
+        }
+
         bridge::spawn_uninstall(
             dir,
             package_id,
@@ -425,7 +465,20 @@ impl AppState {
                         response_tx,
                     });
                 }
+                BridgeEvent::ElevationCancelled => {
+                    // The user dismissed the password prompt; nothing ran.
+                    // Put them back where they were so they can retry.
+                    self.cancel_locked = false;
+                    self.install_started_at = None;
+                    self.pending_finish = false;
+                    self.progress = ProgressState::default();
+                    self.step = match self.mode {
+                        AppMode::Install => WizardStep::Summary,
+                        AppMode::Uninstall => WizardStep::UninstallConfirm,
+                    };
+                }
                 BridgeEvent::Finished(result) => {
+                    self.cancel_locked = false;
                     self.result = Some(result);
                     // Check minimum display time (1 second)
                     let elapsed = self
@@ -523,6 +576,11 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::Cancel => {
+            // While an elevated child runs there is nothing we can do to stop
+            // it (it's root, we're not), so refuse to silently walk away.
+            if state.cancel_locked {
+                return Task::none();
+            }
             std::process::exit(0);
         }
         Message::LicenseAccepted(accepted) => {
@@ -657,7 +715,7 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
 
 fn focusable_items(state: &AppState) -> Vec<FocusTarget> {
     let mut items = vec![];
-    let no_cancel = state.flags.no_cancel;
+    let no_cancel = state.cancel_disabled();
 
     // Content widgets first
     match state.step {
@@ -1027,7 +1085,7 @@ fn view_button_bar(state: &AppState) -> Element<'_, Message> {
     match state.step {
         WizardStep::Welcome => {
             bar = bar.push(primary_nav_button(next, bf(0)).on_press(Message::NextStep));
-            if !state.flags.no_cancel {
+            if !state.cancel_disabled() {
                 bar = bar.push(secondary_nav_button("Cancel", bf(1)).on_press(Message::Cancel));
             }
         }
@@ -1038,7 +1096,7 @@ fn view_button_bar(state: &AppState) -> Element<'_, Message> {
             } else {
                 bar = bar.push(primary_nav_button(next, false));
             }
-            if !state.flags.no_cancel {
+            if !state.cancel_disabled() {
                 bar = bar.push(secondary_nav_button("Cancel", bf(2)).on_press(Message::Cancel));
             }
         }
@@ -1049,26 +1107,26 @@ fn view_button_bar(state: &AppState) -> Element<'_, Message> {
             } else {
                 bar = bar.push(primary_nav_button(next, false));
             }
-            if !state.flags.no_cancel {
+            if !state.cancel_disabled() {
                 bar = bar.push(secondary_nav_button("Cancel", bf(2)).on_press(Message::Cancel));
             }
         }
         WizardStep::Components => {
             bar = bar.push(secondary_nav_button(back, bf(0)).on_press(Message::PrevStep));
             bar = bar.push(primary_nav_button(next, bf(1)).on_press(Message::NextStep));
-            if !state.flags.no_cancel {
+            if !state.cancel_disabled() {
                 bar = bar.push(secondary_nav_button("Cancel", bf(2)).on_press(Message::Cancel));
             }
         }
         WizardStep::Summary => {
             bar = bar.push(secondary_nav_button(back, bf(0)).on_press(Message::PrevStep));
             bar = bar.push(primary_nav_button("Install", bf(1)).on_press(Message::StartInstall));
-            if !state.flags.no_cancel {
+            if !state.cancel_disabled() {
                 bar = bar.push(secondary_nav_button("Cancel", bf(2)).on_press(Message::Cancel));
             }
         }
         WizardStep::Installing | WizardStep::Uninstalling => {
-            if !state.flags.no_cancel {
+            if !state.cancel_disabled() {
                 bar = bar.push(secondary_nav_button("Cancel", bf(0)).on_press(Message::Cancel));
             }
         }
@@ -1078,7 +1136,7 @@ fn view_button_bar(state: &AppState) -> Element<'_, Message> {
         WizardStep::UninstallConfirm => {
             bar =
                 bar.push(primary_nav_button("Uninstall", bf(0)).on_press(Message::StartUninstall));
-            if !state.flags.no_cancel {
+            if !state.cancel_disabled() {
                 bar = bar.push(secondary_nav_button("Cancel", bf(1)).on_press(Message::Cancel));
             }
         }
@@ -1093,7 +1151,7 @@ fn view_button_bar(state: &AppState) -> Element<'_, Message> {
 fn compute_button_layout(state: &AppState) -> crate::native_buttons::Layout {
     use crate::native_buttons::{ButtonAction, ButtonSpec, Layout};
     let mut buttons: Vec<ButtonSpec> = Vec::new();
-    let no_cancel = state.flags.no_cancel;
+    let no_cancel = state.cancel_disabled();
 
     let back = ButtonSpec {
         label: "Go Back".into(),

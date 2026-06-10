@@ -66,6 +66,14 @@ pub fn uninstall(package_id: &str, callbacks: &dyn InstallerCallbacks) -> Instal
     Ok(())
 }
 
+/// True if uninstalling `package_id` needs root: the receipt lives in the
+/// system base, meaning it was written by an elevated install and its actions
+/// touch root-owned paths.
+pub fn uninstall_needs_elevation(package_id: &str) -> bool {
+    !crate::elevation::is_root()
+        && matches!(find_receipt_base(package_id), Some((_, "system")))
+}
+
 fn find_receipt_base(package_id: &str) -> Option<(PathBuf, &'static str)> {
     if let Some(user) = detect::user_receipt_base() {
         if user.join(package_id).join("receipt.json").exists() {
