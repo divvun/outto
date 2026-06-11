@@ -318,7 +318,7 @@ impl AppState {
             }
         };
 
-        Self {
+        let mut state = Self {
             mode,
             step: start_step,
             config,
@@ -341,7 +341,9 @@ impl AppState {
             install_started_at: None,
             pending_finish: false,
             cancel_locked: false,
-        }
+        };
+        state.focused_index = default_focus_index(&state);
+        state
     }
 
     pub fn cancel_disabled(&self) -> bool {
@@ -476,6 +478,7 @@ impl AppState {
                         AppMode::Install => WizardStep::Summary,
                         AppMode::Uninstall => WizardStep::UninstallConfirm,
                     };
+                    self.focused_index = default_focus_index(self);
                 }
                 BridgeEvent::Finished(result) => {
                     self.cancel_locked = false;
@@ -491,6 +494,7 @@ impl AppState {
                             WizardStep::Uninstalling => self.step = WizardStep::UninstallComplete,
                             _ => {}
                         }
+                        self.focused_index = default_focus_index(self);
                     } else {
                         self.pending_finish = true;
                     }
@@ -564,14 +568,14 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
         Message::NextStep => {
             if let Some(next) = state.step.next(&state.step_config) {
                 state.step = next;
-                state.focused_index = 0;
+                state.focused_index = default_focus_index(state);
             }
             Task::none()
         }
         Message::PrevStep => {
             if let Some(prev) = state.step.prev(&state.step_config) {
                 state.step = prev;
-                state.focused_index = 0;
+                state.focused_index = default_focus_index(state);
             }
             Task::none()
         }
@@ -585,10 +589,13 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
         }
         Message::LicenseAccepted(accepted) => {
             state.license_accepted = accepted;
+            // Accepting enables Continue — move focus there so Enter proceeds.
+            state.focused_index = default_focus_index(state);
             Task::none()
         }
         Message::InstallDirChanged(dir) => {
             state.install_dir = dir;
+            state.focused_index = default_focus_index(state);
             Task::none()
         }
         Message::BrowseDirectory => Task::perform(
@@ -604,6 +611,7 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
         Message::DirectoryPicked(path) => {
             if let Some(p) = path {
                 state.install_dir = p.to_string_lossy().into_owned();
+                state.focused_index = default_focus_index(state);
             }
             Task::none()
         }
@@ -614,11 +622,13 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
         Message::StartInstall => {
             state.step = WizardStep::Installing;
             state.start_install();
+            state.focused_index = default_focus_index(state);
             Task::none()
         }
         Message::StartUninstall => {
             state.step = WizardStep::Uninstalling;
             state.start_uninstall();
+            state.focused_index = default_focus_index(state);
             Task::none()
         }
         Message::BridgeUpdate => {
@@ -636,6 +646,7 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
                         WizardStep::Uninstalling => state.step = WizardStep::UninstallComplete,
                         _ => {}
                     }
+                    state.focused_index = default_focus_index(state);
                 }
             }
             Task::none()
@@ -799,6 +810,32 @@ pub fn current_focus_target(state: &AppState) -> Option<FocusTarget> {
     items.get(state.focused_index).copied()
 }
 
+/// Which `FocusTarget::Button(i)` is the step's primary action, if it's
+/// currently enabled. Indices mirror `focusable_items`/`activate_button`.
+fn primary_button_index(state: &AppState) -> Option<usize> {
+    match state.step {
+        WizardStep::Welcome => Some(0),
+        WizardStep::License => state.license_accepted.then_some(1),
+        WizardStep::Directory => (!state.install_dir.is_empty()).then_some(1),
+        WizardStep::Components => Some(1),
+        WizardStep::Summary => Some(1),
+        WizardStep::Complete | WizardStep::UninstallComplete => Some(0),
+        WizardStep::UninstallConfirm => Some(0),
+        // Enter must not implicitly hit Cancel mid-operation.
+        WizardStep::Installing | WizardStep::Uninstalling => None,
+    }
+}
+
+/// Default keyboard focus for the current step: the primary button, so Enter
+/// confirms rather than going back; falls back to the first focusable item
+/// (e.g. the license checkbox while the license is unaccepted).
+fn default_focus_index(state: &AppState) -> usize {
+    let items = focusable_items(state);
+    primary_button_index(state)
+        .and_then(|pb| items.iter().position(|t| *t == FocusTarget::Button(pb)))
+        .unwrap_or(0)
+}
+
 fn activate_focused(state: &mut AppState) -> Task<Message> {
     let Some(target) = current_focus_target(state) else {
         return Task::none();
@@ -807,6 +844,9 @@ fn activate_focused(state: &mut AppState) -> Task<Message> {
     match target {
         FocusTarget::LicenseCheckbox => {
             state.license_accepted = !state.license_accepted;
+            // Accepting enables Continue — move focus there so the next
+            // Enter proceeds. Unaccepting falls back to the checkbox.
+            state.focused_index = default_focus_index(state);
         }
         FocusTarget::ComponentCheckbox(i) => {
             if let Some(comp) = state.config.components.get(i) {
@@ -835,7 +875,7 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
             0 => {
                 if let Some(next) = state.step.next(&state.step_config) {
                     state.step = next;
-                    state.focused_index = 0;
+                    state.focused_index = default_focus_index(state);
                 }
             }
             _ => std::process::exit(0),
@@ -844,14 +884,14 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
             0 => {
                 if let Some(prev) = state.step.prev(&state.step_config) {
                     state.step = prev;
-                    state.focused_index = 0;
+                    state.focused_index = default_focus_index(state);
                 }
             }
             1 => {
                 if state.license_accepted {
                     if let Some(next) = state.step.next(&state.step_config) {
                         state.step = next;
-                        state.focused_index = 0;
+                        state.focused_index = default_focus_index(state);
                     }
                 }
             }
@@ -861,14 +901,14 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
             0 => {
                 if let Some(prev) = state.step.prev(&state.step_config) {
                     state.step = prev;
-                    state.focused_index = 0;
+                    state.focused_index = default_focus_index(state);
                 }
             }
             1 => {
                 if !state.install_dir.is_empty() {
                     if let Some(next) = state.step.next(&state.step_config) {
                         state.step = next;
-                        state.focused_index = 0;
+                        state.focused_index = default_focus_index(state);
                     }
                 }
             }
@@ -878,13 +918,13 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
             0 => {
                 if let Some(prev) = state.step.prev(&state.step_config) {
                     state.step = prev;
-                    state.focused_index = 0;
+                    state.focused_index = default_focus_index(state);
                 }
             }
             1 => {
                 if let Some(next) = state.step.next(&state.step_config) {
                     state.step = next;
-                    state.focused_index = 0;
+                    state.focused_index = default_focus_index(state);
                 }
             }
             _ => std::process::exit(0),
@@ -893,13 +933,13 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
             0 => {
                 if let Some(prev) = state.step.prev(&state.step_config) {
                     state.step = prev;
-                    state.focused_index = 0;
+                    state.focused_index = default_focus_index(state);
                 }
             }
             1 => {
                 state.step = WizardStep::Installing;
                 state.start_install();
-                state.focused_index = 0;
+                state.focused_index = default_focus_index(state);
             }
             _ => std::process::exit(0),
         },
@@ -914,7 +954,7 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
             0 => {
                 state.step = WizardStep::Uninstalling;
                 state.start_uninstall();
-                state.focused_index = 0;
+                state.focused_index = default_focus_index(state);
             }
             _ => std::process::exit(0),
         },
@@ -1252,6 +1292,63 @@ fn map_native_button(
         ButtonAction::StartUninstall => Message::StartUninstall,
         ButtonAction::Finish => Message::Finish,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_state(license: bool) -> AppState {
+        let config =
+            Config::from_toml(
+                "[package]\nid = \"no.divvun.test\"\nname = \"Test\"\nversion = \"1.0.0\"\n",
+            )
+            .unwrap();
+        AppState::new(
+            AppMode::Install,
+            config,
+            PathBuf::new(),
+            CliFlags::default(),
+            license.then(|| "license".to_string()),
+            PathBuf::new(),
+            None,
+            "/tmp/test".to_string(),
+            None,
+        )
+    }
+
+    #[test]
+    fn test_enter_targets_primary_button() {
+        let mut state = test_state(false);
+        // Welcome: primary is Next at index 0.
+        assert_eq!(current_focus_target(&state), Some(FocusTarget::Button(0)));
+
+        // Summary: buttons are [Back, Install, Cancel] — focus must default
+        // to Install, not Back.
+        state.step = WizardStep::Summary;
+        state.focused_index = default_focus_index(&state);
+        assert_eq!(current_focus_target(&state), Some(FocusTarget::Button(1)));
+
+        // Installing: Enter must not implicitly hit anything.
+        state.step = WizardStep::Installing;
+        assert_eq!(primary_button_index(&state), None);
+    }
+
+    #[test]
+    fn test_license_focus_follows_acceptance() {
+        let mut state = test_state(true);
+        state.step = WizardStep::License;
+        state.focused_index = default_focus_index(&state);
+        // Unaccepted: Continue is disabled; fall back to the checkbox.
+        assert_eq!(
+            current_focus_target(&state),
+            Some(FocusTarget::LicenseCheckbox)
+        );
+
+        state.license_accepted = true;
+        state.focused_index = default_focus_index(&state);
+        assert_eq!(current_focus_target(&state), Some(FocusTarget::Button(1)));
+    }
 }
 
 fn subscription(state: &AppState) -> Subscription<Message> {
