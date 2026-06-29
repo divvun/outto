@@ -10,12 +10,26 @@ use outto_core::archive::pack_payload;
 #[cfg(windows)]
 use std::fs;
 
+/// macOS-only: wrap the installer `.app` in a bootstrap `.pkg`.
+#[derive(Default)]
+struct PkgOptions {
+    /// Produce a `.pkg` at `--output` instead of an `.app`/SFX.
+    enabled: bool,
+    /// pkg identifier; defaults to `config.package.id`.
+    identifier: Option<String>,
+    /// pkg version; defaults to `config.package.version`.
+    version: Option<String>,
+    /// "Developer ID Installer" identity passed to `productbuild --sign`.
+    sign: Option<String>,
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 || args[1] != "build" {
         eprintln!(
-            "Usage: outto build --config <file> --source <dir> --output <exe> [--compress] [--compression-level <0-22>] [-S|--sign <command>]"
+            "Usage: outto build --config <file> --source <dir> --output <exe> [--compress] [--compression-level <0-22>] [-S|--sign <command>]\n\
+             macOS .pkg: [--pkg] [--pkg-identifier <id>] [--pkg-version <v>] [--pkg-sign <Developer ID Installer identity>]"
         );
         std::process::exit(2);
     }
@@ -26,6 +40,7 @@ fn main() {
     let mut compress = false;
     let mut compression_level: i32 = 3;
     let mut sign_command: Option<String> = None;
+    let mut pkg = PkgOptions::default();
 
     let mut i = 2;
     while i < args.len() {
@@ -57,6 +72,21 @@ fn main() {
                 i += 1;
                 sign_command = args.get(i).cloned();
             }
+            "--pkg" => {
+                pkg.enabled = true;
+            }
+            "--pkg-identifier" => {
+                i += 1;
+                pkg.identifier = args.get(i).cloned();
+            }
+            "--pkg-version" => {
+                i += 1;
+                pkg.version = args.get(i).cloned();
+            }
+            "--pkg-sign" => {
+                i += 1;
+                pkg.sign = args.get(i).cloned();
+            }
             other => {
                 eprintln!("Unknown argument: {other}");
                 std::process::exit(2);
@@ -78,6 +108,11 @@ fn main() {
         std::process::exit(2);
     });
 
+    if pkg.enabled && !cfg!(target_os = "macos") {
+        eprintln!("--pkg is only supported on macOS");
+        std::process::exit(2);
+    }
+
     match build_installer(
         &config_path,
         &source_dir,
@@ -85,6 +120,7 @@ fn main() {
         compress,
         compression_level,
         sign_command.as_deref(),
+        &pkg,
     ) {
         Ok(()) => {}
         Err(e) => {
@@ -102,6 +138,7 @@ fn build_installer(
     compress: bool,
     compression_level: i32,
     sign_command: Option<&str>,
+    _pkg: &PkgOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use outto_core::NoOpCallbacks;
     use outto_core::actions::signing;
@@ -238,6 +275,7 @@ fn build_installer(
     compress: bool,
     compression_level: i32,
     sign_command: Option<&str>,
+    pkg: &PkgOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use outto_core::NoOpCallbacks;
     use outto_core::actions::signing;
@@ -332,64 +370,80 @@ fn build_installer(
             .map_err(|e| format!("sign inner app: {e}"))?;
     }
 
+    // 4. Emit the standalone .app at --output: the inner installer.app directly
+    // when uncompressed, or an SFX wrapper when --compress.
     if !compress {
-        // Emit the inner installer.app directly.
         eprintln!("Copying to {}...", output.display());
         if output.exists() {
             std::fs::remove_dir_all(output).ok();
         }
         ditto(&inner_app, output)?;
-        return Ok(());
+    } else {
+        // Tar+zstd the inner .app, then build the outer SFX .app.
+        let sfx_bin =
+            sfx_bin.ok_or("outto-sfx-macos not found (needed when --compress is set)")?;
+        eprintln!("Tarring inner installer.app...");
+        let tarball_path = scratch.path().join("inner.tar");
+        tar_directory(&inner_app, &tarball_path)?;
+        eprintln!("Compressing tarball with zstd level {compression_level}...");
+        let tarball = std::fs::read(&tarball_path)?;
+        let compressed = zstd::encode_all(&tarball[..], compression_level)?;
+        eprintln!(
+            "Compressed: {:.1} MB -> {:.1} MB ({:.0}% reduction)",
+            tarball.len() as f64 / 1_048_576.0,
+            compressed.len() as f64 / 1_048_576.0,
+            (1.0 - compressed.len() as f64 / tarball.len() as f64) * 100.0,
+        );
+
+        if output.exists() {
+            std::fs::remove_dir_all(output).ok();
+        }
+        build_app_bundle(
+            output,
+            &sfx_bin,
+            &config.package.name,
+            &format!("{}.sfx", config.package.id),
+            &format!("Install {}", config.package.name),
+            "sfx",
+        )?;
+
+        // Stash the compressed tarball in the SFX's Resources/ — see the
+        // inner installer payload for the rationale (codesign strict layout).
+        let outer_payload = output.join("Contents/Resources/payload.tar.zst");
+        eprintln!(
+            "Staging compressed payload at {}...",
+            outer_payload.display()
+        );
+        std::fs::write(&outer_payload, &compressed)?;
+
+        if let Some(cmd) = sign_command {
+            eprintln!("Signing SFX .app...");
+            signing::sign_file(cmd, output, &callbacks)
+                .map_err(|e| format!("sign SFX app: {e}"))?;
+        }
     }
 
-    // 4. Tar+zstd the inner .app.
-    let sfx_bin = sfx_bin.ok_or("outto-sfx-macos not found (needed when --compress is set)")?;
-    eprintln!("Tarring inner installer.app...");
-    let tarball_path = scratch.path().join("inner.tar");
-    tar_directory(&inner_app, &tarball_path)?;
-    eprintln!("Compressing tarball with zstd level {compression_level}...");
-    let tarball = std::fs::read(&tarball_path)?;
-    let compressed = zstd::encode_all(&tarball[..], compression_level)?;
-    eprintln!(
-        "Compressed: {:.1} MB -> {:.1} MB ({:.0}% reduction)",
-        tarball.len() as f64 / 1_048_576.0,
-        compressed.len() as f64 / 1_048_576.0,
-        (1.0 - compressed.len() as f64 / tarball.len() as f64) * 100.0,
-    );
-
-    // 5. Build outer SFX .app.
-    if output.exists() {
-        std::fs::remove_dir_all(output).ok();
-    }
-    build_app_bundle(
-        output,
-        &sfx_bin,
-        &config.package.name,
-        &format!("{}.sfx", config.package.id),
-        &format!("Install {}", config.package.name),
-        "sfx",
-    )?;
-
-    // Stash the compressed tarball in the SFX's Resources/ — see the
-    // inner installer payload for the rationale (codesign strict layout).
-    let outer_payload = output.join("Contents/Resources/payload.tar.zst");
-    eprintln!(
-        "Staging compressed payload at {}...",
-        outer_payload.display()
-    );
-    std::fs::write(&outer_payload, &compressed)?;
-
-    if let Some(cmd) = sign_command {
-        eprintln!("Signing SFX .app...");
-        signing::sign_file(cmd, output, &callbacks).map_err(|e| format!("sign SFX app: {e}"))?;
-    }
-
-    let final_size = walk_dir_size(output)?;
+    let app_size = walk_dir_size(output)?;
     eprintln!(
         "Done! {} ({:.1} MB)",
         output.display(),
-        final_size as f64 / 1_048_576.0
+        app_size as f64 / 1_048_576.0
     );
+
+    // 5. Additionally wrap the embedded inner installer.app in a bootstrap
+    // .pkg, written alongside the .app (same stem, .pkg extension).
+    if pkg.enabled {
+        let pkg_output = output.with_extension("pkg");
+        let identifier = pkg
+            .identifier
+            .clone()
+            .unwrap_or_else(|| config.package.id.clone());
+        let version = pkg
+            .version
+            .clone()
+            .unwrap_or_else(|| config.package.version.clone());
+        build_pkg(&inner_app, &pkg_output, &identifier, &version, pkg.sign.as_deref())?;
+    }
 
     Ok(())
 }
@@ -467,6 +521,102 @@ fn build_app_bundle(
     Ok(())
 }
 
+/// Wrap a self-contained installer `.app` in a bootstrap `.pkg`.
+///
+/// The pkg stages the `.app` under `/private/tmp/outto-bootstrap-<id>` on the
+/// target volume and runs a `postinstall` script that executes the installer
+/// headlessly (`--very-silent --suppress-msgboxes`). A pkg postinstall runs as
+/// root, so the installer skips elevation and writes a system-scope receipt —
+/// this is for system-scope installs (MDM / `installer -pkg`).
+#[cfg(target_os = "macos")]
+fn build_pkg(
+    inner_app: &Path,
+    output: &Path,
+    identifier: &str,
+    version: &str,
+    sign_identity: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = tempfile::tempdir()?;
+    let pkgroot = scratch.path().join("root");
+    let scripts = scratch.path().join("scripts");
+    std::fs::create_dir_all(&pkgroot)?;
+    std::fs::create_dir_all(&scripts)?;
+
+    // Stage the inner installer.app into the payload root (preserve signature).
+    let staged_app = pkgroot.join("installer.app");
+    eprintln!("Staging installer.app into pkg payload...");
+    ditto(inner_app, &staged_app)?;
+
+    // Where the payload is laid down on the target volume.
+    let stage_path = format!("/private/tmp/outto-bootstrap-{identifier}");
+
+    // postinstall runs the installer headlessly as root, then cleans up. No
+    // `set -e`: capture the installer's status, remove the staging dir, then
+    // propagate the status so a failed install surfaces to installer/MDM.
+    let postinstall = format!(
+        "#!/bin/sh\n\
+         TARGET=\"${{3%/}}\"\n\
+         STAGE=\"$TARGET{stage_path}\"\n\
+         \"$STAGE/installer.app/Contents/MacOS/installer\" --very-silent --suppress-msgboxes\n\
+         status=$?\n\
+         rm -rf \"$STAGE\"\n\
+         exit $status\n"
+    );
+    let postinstall_path = scripts.join("postinstall");
+    std::fs::write(&postinstall_path, postinstall)?;
+    std::fs::set_permissions(&postinstall_path, std::fs::Permissions::from_mode(0o755))?;
+
+    // Build the component pkg.
+    let component = scratch.path().join("component.pkg");
+    eprintln!("Running pkgbuild...");
+    let status = std::process::Command::new("pkgbuild")
+        .arg("--root")
+        .arg(&pkgroot)
+        .arg("--install-location")
+        .arg(&stage_path)
+        .arg("--scripts")
+        .arg(&scripts)
+        .arg("--identifier")
+        .arg(identifier)
+        .arg("--version")
+        .arg(version)
+        .arg(&component)
+        .status()?;
+    if !status.success() {
+        return Err(format!("pkgbuild failed ({status})").into());
+    }
+
+    // Wrap into a distribution pkg, signing with the Developer ID Installer
+    // identity if one was given. productbuild refuses to overwrite, so clear
+    // any stale output first (file or a leftover .app directory).
+    if output.is_dir() {
+        std::fs::remove_dir_all(output).ok();
+    } else if output.exists() {
+        std::fs::remove_file(output).ok();
+    }
+    eprintln!("Running productbuild...");
+    let mut cmd = std::process::Command::new("productbuild");
+    cmd.arg("--package").arg(&component);
+    if let Some(identity) = sign_identity {
+        cmd.arg("--sign").arg(identity);
+    }
+    cmd.arg(output);
+    let status = cmd.status()?;
+    if !status.success() {
+        return Err(format!("productbuild failed ({status})").into());
+    }
+
+    let final_size = std::fs::metadata(output)?.len();
+    eprintln!(
+        "Done! {} ({:.1} MB)",
+        output.display(),
+        final_size as f64 / 1_048_576.0
+    );
+    Ok(())
+}
+
 /// Copy a directory tree with `ditto` to preserve xattrs/symlinks/signatures.
 #[cfg(target_os = "macos")]
 fn ditto(src: &Path, dst: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -523,6 +673,7 @@ fn build_installer(
     _compress: bool,
     _compression_level: i32,
     _sign_command: Option<&str>,
+    _pkg: &PkgOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     Err("outto only supports Windows and macOS".into())
 }

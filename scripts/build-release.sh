@@ -12,6 +12,13 @@
 #   scripts/build-release.sh                        # unsigned, no notarization
 #   scripts/build-release.sh --sign "<codesign cmd>"
 #   scripts/build-release.sh --sign "..." --notarize --keychain-profile <profile-name>
+#
+# Bootstrap .pkg (system-scope installs / MDM) instead of an .app:
+#   scripts/build-release.sh --pkg --pkg-sign "Developer ID Installer: XYZ (TEAMID)" \
+#       --sign "codesign --sign 'Developer ID Application: XYZ (TEAMID)' --options runtime #{file}"
+#   (a notarizable .pkg needs BOTH: --sign signs the inner app's Mach-O with the
+#    Developer ID Application cert + hardened runtime, --pkg-sign signs the .pkg
+#    with the Developer ID Installer cert.)
 
 set -euo pipefail
 
@@ -22,6 +29,8 @@ SIGN_CMD=""
 NOTARIZE=false
 KEYCHAIN_PROFILE=""
 COMPRESSION_LEVEL=19
+PKG=false
+PKG_SIGN=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -29,6 +38,8 @@ while [[ $# -gt 0 ]]; do
         --notarize) NOTARIZE=true; shift ;;
         --keychain-profile) KEYCHAIN_PROFILE="$2"; shift 2 ;;
         --compression-level) COMPRESSION_LEVEL="$2"; shift 2 ;;
+        --pkg) PKG=true; shift ;;
+        --pkg-sign) PKG_SIGN="$2"; shift 2 ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -57,8 +68,12 @@ cp "$RELEASE/outto-sfx-macos" "$STAGE/libexec/outto-sfx-macos"
 echo "==> Staged layout:"
 (cd "$STAGE" && find . -type f -exec ls -la {} \;)
 
+# --pkg is additive: the .app is always produced; the .pkg (which embeds the
+# same inner installer app) is written alongside it at outto-setup.pkg.
 OUTPUT="$RELEASE/outto-setup.app"
+PKG_OUTPUT="$RELEASE/outto-setup.pkg"
 rm -rf "$OUTPUT"
+$PKG && rm -f "$PKG_OUTPUT"
 
 BUILD_ARGS=(
     build
@@ -68,6 +83,12 @@ BUILD_ARGS=(
     --compress
     --compression-level "$COMPRESSION_LEVEL"
 )
+if $PKG; then
+    BUILD_ARGS+=(--pkg)
+    if [[ -n "$PKG_SIGN" ]]; then
+        BUILD_ARGS+=(--pkg-sign "$PKG_SIGN")
+    fi
+fi
 if [[ -n "$SIGN_CMD" ]]; then
     BUILD_ARGS+=(--sign "$SIGN_CMD")
 fi
@@ -76,7 +97,7 @@ echo "==> Packaging installer..."
 "$STAGE/bin/outto" "${BUILD_ARGS[@]}"
 
 if $NOTARIZE; then
-    echo "==> Submitting to Apple notarytool..."
+    echo "==> Submitting .app to Apple notarytool..."
     # notarytool requires a .zip or .dmg, not a raw .app. Zip it.
     ZIP="$RELEASE/outto-setup.zip"
     rm -f "$ZIP"
@@ -86,13 +107,32 @@ if $NOTARIZE; then
         --keychain-profile "$KEYCHAIN_PROFILE" \
         --wait
 
-    echo "==> Stapling..."
+    echo "==> Stapling .app..."
     xcrun stapler staple "$OUTPUT"
 
-    echo "==> Verifying..."
+    echo "==> Verifying .app..."
     codesign --verify --deep --strict "$OUTPUT"
     spctl --assess --type exec --verbose "$OUTPUT" || true
+
+    if $PKG; then
+        echo "==> Submitting .pkg to Apple notarytool..."
+        # A .pkg is itself a valid notarization container — submit directly.
+        xcrun notarytool submit "$PKG_OUTPUT" \
+            --keychain-profile "$KEYCHAIN_PROFILE" \
+            --wait
+
+        echo "==> Stapling .pkg..."
+        xcrun stapler staple "$PKG_OUTPUT"
+
+        echo "==> Verifying .pkg..."
+        pkgutil --check-signature "$PKG_OUTPUT"
+        spctl --assess --type install --verbose "$PKG_OUTPUT" || true
+    fi
 fi
 
 echo "==> Done: $OUTPUT"
 du -sh "$OUTPUT"
+if $PKG; then
+    echo "==> Done: $PKG_OUTPUT"
+    du -sh "$PKG_OUTPUT"
+fi
