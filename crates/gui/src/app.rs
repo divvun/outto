@@ -189,6 +189,7 @@ pub enum Message {
 
     // Completion
     Finish,
+    RestartNow,
 
     // Keyboard
     FocusNext,
@@ -245,6 +246,10 @@ pub struct AppState {
     /// True while an elevated child is doing the work — the unprivileged
     /// parent can't signal a root process, so Cancel would be a lie.
     pub cancel_locked: bool,
+
+    /// The install's reboot policy decided a restart is wanted. The
+    /// completion screen offers it (unless `/NORESTART`).
+    pub reboot_required: bool,
 }
 
 impl AppState {
@@ -341,6 +346,7 @@ impl AppState {
             install_started_at: None,
             pending_finish: false,
             cancel_locked: false,
+            reboot_required: false,
         };
         state.focused_index = default_focus_index(&state);
         state
@@ -348,6 +354,11 @@ impl AppState {
 
     pub fn cancel_disabled(&self) -> bool {
         self.flags.no_cancel || self.cancel_locked
+    }
+
+    /// Whether the completion screen should offer an interactive restart.
+    pub fn offer_restart(&self) -> bool {
+        self.reboot_required && !self.flags.no_restart
     }
 
     fn start_install(&mut self) {
@@ -480,6 +491,9 @@ impl AppState {
                     };
                     self.focused_index = default_focus_index(self);
                 }
+                BridgeEvent::RebootRequired => {
+                    self.reboot_required = true;
+                }
                 BridgeEvent::Finished(result) => {
                     self.cancel_locked = false;
                     self.result = Some(result);
@@ -489,17 +503,34 @@ impl AppState {
                         .map(|t| t.elapsed().as_millis() >= 1000)
                         .unwrap_or(true);
                     if elapsed {
-                        match self.step {
-                            WizardStep::Installing => self.step = WizardStep::Complete,
-                            WizardStep::Uninstalling => self.step = WizardStep::UninstallComplete,
-                            _ => {}
-                        }
-                        self.focused_index = default_focus_index(self);
+                        self.advance_to_complete();
                     } else {
                         self.pending_finish = true;
                     }
                 }
             }
+        }
+    }
+
+    /// Move from the in-progress step to the matching completion step, then
+    /// auto-restart if this was a silent run that needs a reboot (Inno
+    /// behaviour). Interactive runs offer the restart on the screen instead.
+    fn advance_to_complete(&mut self) {
+        match self.step {
+            WizardStep::Installing => self.step = WizardStep::Complete,
+            WizardStep::Uninstalling => self.step = WizardStep::UninstallComplete,
+            _ => {}
+        }
+        self.focused_index = default_focus_index(self);
+
+        if self.flags.silent
+            && self.step == WizardStep::Complete
+            && self.offer_restart()
+            && self.result.as_ref().is_some_and(|r| r.is_ok())
+        {
+            // Best effort: if the restart can't be initiated, leave the
+            // completion screen up rather than wedging.
+            let _ = bridge::reboot_system();
         }
     }
 }
@@ -641,12 +672,7 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
                     .unwrap_or(true);
                 if elapsed {
                     state.pending_finish = false;
-                    match state.step {
-                        WizardStep::Installing => state.step = WizardStep::Complete,
-                        WizardStep::Uninstalling => state.step = WizardStep::UninstallComplete,
-                        _ => {}
-                    }
-                    state.focused_index = default_focus_index(state);
+                    state.advance_to_complete();
                 }
             }
             Task::none()
@@ -669,6 +695,20 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
             } else {
                 1
             });
+        }
+        Message::RestartNow => {
+            // If the reboot is initiated the OS tears us down; if it fails we
+            // surface the error and stay on the completion screen.
+            match bridge::reboot_system() {
+                Ok(()) => std::process::exit(0),
+                Err(e) => {
+                    state.progress.log_lines.push(LogLine {
+                        level: LogLevel::Error,
+                        message: format!("Could not restart: {e}"),
+                    });
+                    Task::none()
+                }
+            }
         }
         Message::FocusNext => {
             let count = focusable_items(state).len();
@@ -792,7 +832,10 @@ fn focusable_items(state: &AppState) -> Vec<FocusTarget> {
             }
         }
         WizardStep::Complete | WizardStep::UninstallComplete => {
-            items.push(FocusTarget::Button(0)); // Finish
+            items.push(FocusTarget::Button(0)); // Restart Now / Finish
+            if state.step == WizardStep::Complete && state.offer_restart() {
+                items.push(FocusTarget::Button(1)); // Restart Later
+            }
         }
         WizardStep::UninstallConfirm => {
             items.push(FocusTarget::Button(0)); // Uninstall
@@ -944,6 +987,11 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
             _ => std::process::exit(0),
         },
         WizardStep::Complete | WizardStep::UninstallComplete => {
+            // Button 0 is "Restart Now" when a restart is on offer; everything
+            // else just exits.
+            if state.step == WizardStep::Complete && state.offer_restart() && button_idx == 0 {
+                return Task::done(Message::RestartNow);
+            }
             std::process::exit(if state.result.as_ref().is_some_and(|r| r.is_ok()) {
                 0
             } else {
@@ -1171,7 +1219,14 @@ fn view_button_bar(state: &AppState) -> Element<'_, Message> {
             }
         }
         WizardStep::Complete | WizardStep::UninstallComplete => {
-            bar = bar.push(primary_nav_button("Finish", bf(0)).on_press(Message::Finish));
+            if state.step == WizardStep::Complete && state.offer_restart() {
+                bar = bar
+                    .push(primary_nav_button("Restart Now", bf(0)).on_press(Message::RestartNow));
+                bar = bar
+                    .push(secondary_nav_button("Restart Later", bf(1)).on_press(Message::Finish));
+            } else {
+                bar = bar.push(primary_nav_button("Finish", bf(0)).on_press(Message::Finish));
+            }
         }
         WizardStep::UninstallConfirm => {
             bar =

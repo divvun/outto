@@ -10,6 +10,7 @@ pub mod shortcuts;
 use std::collections::HashSet;
 use std::path::Path;
 
+use outto_core::actions::files::FileUnlocker;
 use outto_core::actions::{dirs as core_dirs, files, prerequisites, run};
 use outto_core::callbacks::{InstallerCallbacks, LogLevel};
 use outto_core::config::{Architecture, Config, InstallCleanup, RunPhase, VariableResolver};
@@ -17,6 +18,7 @@ use outto_core::error::InstallerResult;
 use outto_core::manifest::InstallManifest;
 
 use crate::manifest::Action;
+use crate::restart_manager::RestartManager;
 
 use crate::detect;
 
@@ -26,6 +28,11 @@ use crate::detect;
 /// registry → shortcuts → environment → services → associations → com → fonts →
 /// after_install. Callers typically invoke [`crate::install`] rather than this
 /// directly; it exists as a seam for tests.
+///
+/// When `[reboot] restart_manager` is enabled (the default), files that are
+/// locked by running processes are handled via the Windows Restart Manager:
+/// the holders are closed for the duration of the install and relaunched at the
+/// end. The session is always torn down, whether the install succeeds or fails.
 pub fn execute_install(
     config: &Config,
     source_dir: &Path,
@@ -33,6 +40,40 @@ pub fn execute_install(
     resolver: &VariableResolver,
     manifest: &mut InstallManifest<Action>,
     callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()> {
+    let rm = if config.reboot.restart_manager {
+        Some(RestartManager::new())
+    } else {
+        None
+    };
+    let unlocker = rm.as_ref().map(|r| r as &dyn FileUnlocker);
+
+    let result = execute_install_inner(
+        config,
+        source_dir,
+        selected_components,
+        resolver,
+        manifest,
+        callbacks,
+        unlocker,
+    );
+
+    // Relaunch any apps we closed and end the RM session, on success or failure.
+    if let Some(rm) = &rm {
+        rm.finish(callbacks);
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_install_inner(
+    config: &Config,
+    source_dir: &Path,
+    selected_components: &Option<HashSet<String>>,
+    resolver: &VariableResolver,
+    manifest: &mut InstallManifest<Action>,
+    callbacks: &dyn InstallerCallbacks,
+    unlocker: Option<&dyn FileUnlocker>,
 ) -> InstallerResult<()> {
     execute_install_cleanup(&config.install_cleanup, resolver, callbacks)?;
 
@@ -66,7 +107,7 @@ pub fn execute_install(
         if !arch_matches_entry(file.arch.as_ref()) {
             continue;
         }
-        files::install_files(file, source_dir, resolver, manifest, callbacks)?;
+        files::install_files(file, source_dir, resolver, manifest, callbacks, unlocker)?;
         callbacks.on_progress("files", (i + 1) as u64, total_files as u64);
     }
 

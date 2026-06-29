@@ -13,6 +13,12 @@ use outto_windows as platform;
 
 pub type Config = platform::Config;
 
+/// Restart the machine via the platform backend (Windows `ExitWindowsEx`,
+/// macOS `osascript`). Returns a display string on failure.
+pub fn reboot_system() -> Result<(), String> {
+    platform::reboot_system().map_err(|e| e.to_string())
+}
+
 /// Events sent from the install/uninstall thread to the GUI.
 pub enum BridgeEvent {
     Progress {
@@ -36,6 +42,9 @@ pub enum BridgeEvent {
     /// The user dismissed the macOS password prompt before anything ran;
     /// the GUI should return to the step it came from.
     ElevationCancelled,
+    /// The reboot policy decided a restart is wanted; the GUI offers it on
+    /// the completion screen (or auto-restarts in silent mode).
+    RebootRequired,
 }
 
 /// Shared queue between the background thread and the GUI.
@@ -111,10 +120,19 @@ impl InstallerCallbacks for GuiCallbacks {
         }
         rx.recv().unwrap_or(ErrorAction::Abort)
     }
+
+    fn on_reboot_required(&self) {
+        let mut q = self.queue.lock().unwrap();
+        q.push_back(BridgeEvent::RebootRequired);
+    }
 }
 
-/// InstallerCallbacks for /VERYSILENT mode. No GUI, console only.
-pub struct SilentCallbacks;
+/// InstallerCallbacks for /VERYSILENT mode. No GUI, console only. Captures a
+/// reboot request so the caller can act on it after the install returns.
+#[derive(Default)]
+pub struct SilentCallbacks {
+    pub reboot_required: Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl InstallerCallbacks for SilentCallbacks {
     fn on_progress(&self, phase: &str, current: u64, total: u64) {
@@ -132,6 +150,11 @@ impl InstallerCallbacks for SilentCallbacks {
     fn on_error(&self, error: &InstallerError) -> ErrorAction {
         eprintln!("[ERROR] {error}");
         ErrorAction::Abort
+    }
+
+    fn on_reboot_required(&self) {
+        self.reboot_required
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

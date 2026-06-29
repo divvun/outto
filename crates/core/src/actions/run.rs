@@ -82,12 +82,22 @@ where
             message: format!("failed to execute: {e}"),
         })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            callbacks.on_log(
-                LogLevel::Warn,
-                &format!("Run: command exited with {}: {stderr}", output.status),
-            );
+        match output.status.code() {
+            Some(code) if is_reboot_exit_code(code) => {
+                callbacks.on_log(
+                    LogLevel::Info,
+                    &format!("Run: command requests a system restart (exit {code})"),
+                );
+                manifest.reboot_needed = true;
+            }
+            _ if !output.status.success() => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                callbacks.on_log(
+                    LogLevel::Warn,
+                    &format!("Run: command exited with {}: {stderr}", output.status),
+                );
+            }
+            _ => {}
         }
     } else {
         cmd.spawn().map_err(|e| InstallerError::CommandExec {
@@ -102,6 +112,14 @@ where
     });
 
     Ok(())
+}
+
+/// Windows convention (MSI / many redistributables): 3010 =
+/// `ERROR_SUCCESS_REBOOT_REQUIRED`, 1641 = `ERROR_SUCCESS_REBOOT_INITIATED`.
+/// Both mean the command succeeded but a restart is needed to finish. (On
+/// Unix, exit codes are 0–255, so these never occur there.)
+fn is_reboot_exit_code(code: i32) -> bool {
+    code == 3010 || code == 1641
 }
 
 pub fn split_args(input: &str) -> Vec<String> {
@@ -143,5 +161,14 @@ mod tests {
             vec!["hello world", "test"]
         );
         assert_eq!(split_args(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_is_reboot_exit_code() {
+        assert!(is_reboot_exit_code(3010));
+        assert!(is_reboot_exit_code(1641));
+        assert!(!is_reboot_exit_code(0));
+        assert!(!is_reboot_exit_code(1));
+        assert!(!is_reboot_exit_code(3));
     }
 }

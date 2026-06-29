@@ -15,6 +15,10 @@ pub enum LogLevel {
 pub enum Prompt {
     OverwriteFile { path: PathBuf },
     ExistingInstallDetected { existing: ExistingInstall },
+    /// One or more running applications are holding files we need to replace.
+    /// `Yes` closes them (and they're relaunched afterwards); `No` defers the
+    /// replacement to the next restart.
+    CloseApplications { apps: Vec<String> },
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +41,12 @@ pub trait InstallerCallbacks {
     fn on_prompt(&self, prompt: Prompt) -> PromptResponse;
     fn on_log(&self, level: LogLevel, message: &str);
     fn on_error(&self, error: &InstallerError) -> ErrorAction;
+
+    /// Signalled once, near the end of a successful install, when the
+    /// configured reboot policy has decided a system restart is wanted.
+    /// Front-ends record this and decide whether/when to actually reboot
+    /// (honouring `/NORESTART`, silent mode, etc.). Default: ignore.
+    fn on_reboot_required(&self) {}
 }
 
 pub struct NoOpCallbacks;

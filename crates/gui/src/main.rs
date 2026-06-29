@@ -122,11 +122,12 @@ fn run_install(flags: cli::CliFlags, config_path: PathBuf, source_dir: PathBuf) 
 
 /// Run a headless (`/VERYSILENT`) operation with the right callbacks: when
 /// `--progress-file` is set we're the elevated child of a GUI parent and
-/// stream JSON events to it; otherwise plain console output.
+/// stream JSON events to it; otherwise plain console output. Returns whether
+/// the operation requested a system restart.
 fn run_headless(
     progress_file: Option<&std::path::Path>,
     op: impl FnOnce(&dyn outto_core::InstallerCallbacks) -> Result<(), outto_core::InstallerError>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     if let Some(path) = progress_file {
         let cb = match platform::elevation::FileProgressCallbacks::create(path) {
@@ -135,10 +136,14 @@ fn run_headless(
         };
         let result = op(&cb).map_err(|e| e.to_string());
         cb.write_finished(result.as_ref().map(|_| ()).map_err(|e| e.as_str()));
-        return result;
+        // The macOS config has no reboot policy, so the elevated child never
+        // requests one through this path.
+        return result.map(|()| false);
     }
     let _ = progress_file;
-    op(&SilentCallbacks).map_err(|e| e.to_string())
+    let cb = SilentCallbacks::default();
+    op(&cb).map_err(|e| e.to_string())?;
+    Ok(cb.reboot_required.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 fn run_install_inner(
@@ -182,8 +187,17 @@ fn run_install_inner(
         match run_headless(flags.progress_file.as_deref(), |cb| {
             platform::install(&config, &options, cb)
         }) {
-            Ok(()) => {
+            Ok(reboot) => {
                 println!("Installation complete.");
+                // Inno semantics: a silent install restarts automatically when
+                // needed, unless /NORESTART was passed.
+                if reboot && !flags.no_restart {
+                    println!("Restarting system...");
+                    if let Err(e) = platform::reboot_system() {
+                        eprintln!("Could not restart automatically: {e}");
+                        std::process::exit(1);
+                    }
+                }
                 std::process::exit(0);
             }
             Err(e) => {
@@ -222,7 +236,7 @@ fn run_uninstall(flags: cli::CliFlags, install_dir: PathBuf) {
         match run_headless(flags.progress_file.as_deref(), |cb| {
             platform::uninstall_package(&install_dir, &config.package.id, cb)
         }) {
-            Ok(()) => {
+            Ok(_) => {
                 println!("Uninstall complete.");
                 std::process::exit(0);
             }

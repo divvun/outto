@@ -55,6 +55,12 @@ pub struct InstallManifest<A> {
     #[serde(default)]
     pub depends_on: Vec<String>,
     pub actions: Vec<A>,
+
+    /// Transient: set during install when an action signals that a reboot is
+    /// needed (e.g. a `[[run]]` command exits 3010). Not part of the persisted
+    /// receipt.
+    #[serde(skip)]
+    pub reboot_needed: bool,
 }
 
 impl<A> InstallManifest<A> {
@@ -72,6 +78,7 @@ impl<A> InstallManifest<A> {
             install_dir: install_dir.to_path_buf(),
             depends_on,
             actions: Vec::new(),
+            reboot_needed: false,
         }
     }
 

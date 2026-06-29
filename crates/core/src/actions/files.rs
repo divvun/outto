@@ -7,6 +7,17 @@ use crate::config::{FileEntry, OverwritePolicy, VariableResolver};
 use crate::error::{InstallerError, InstallerResult};
 use crate::manifest::{CoreAction, InstallManifest};
 
+/// A platform hook for freeing a destination file that's currently locked by a
+/// running process, so a copy can be retried. On Windows this is backed by the
+/// Restart Manager (close the holding apps, then relaunch them later); other
+/// platforms don't supply one.
+pub trait FileUnlocker {
+    /// Attempt to free `dest` (e.g. close the processes holding it, after
+    /// confirming with the user via `callbacks`). Returns `true` if the caller
+    /// should retry the file operation.
+    fn unlock(&self, dest: &Path, callbacks: &dyn InstallerCallbacks) -> bool;
+}
+
 /// Normalize path separators for the native OS. On Windows this rewrites `/` to `\`;
 /// on other platforms it's a no-op.
 fn normalize_path(path: &Path) -> PathBuf {
@@ -26,6 +37,7 @@ pub fn install_files<A>(
     resolver: &VariableResolver,
     manifest: &mut InstallManifest<A>,
     callbacks: &dyn InstallerCallbacks,
+    unlocker: Option<&dyn FileUnlocker>,
 ) -> InstallerResult<()>
 where
     A: From<CoreAction>,
@@ -87,7 +99,7 @@ where
             continue;
         }
 
-        copy_file_with_policy(&source_path, &dest_path, entry, manifest, callbacks)?;
+        copy_file_with_policy(&source_path, &dest_path, entry, manifest, callbacks, unlocker)?;
     }
 
     if !matched_any && !entry.skip_if_missing {
@@ -135,6 +147,7 @@ fn copy_file_with_policy<A>(
     entry: &FileEntry,
     manifest: &mut InstallManifest<A>,
     callbacks: &dyn InstallerCallbacks,
+    unlocker: Option<&dyn FileUnlocker>,
 ) -> InstallerResult<()>
 where
     A: From<CoreAction>,
@@ -211,10 +224,25 @@ where
         ),
     );
 
-    fs::copy(source, dest).map_err(|e| InstallerError::FileOp {
-        path: dest.to_path_buf(),
-        source: e,
-    })?;
+    // If the destination is locked by a running process, try to free it (close
+    // the holders via the platform unlocker), then fall back to a
+    // replace-on-restart if it's still locked. A deferred file isn't present
+    // yet, so its post-copy steps (attributes/hash/touch) are skipped.
+    if matches!(
+        copy_or_defer(source, dest, unlocker, callbacks)?,
+        CopyOutcome::DeferredToReboot
+    ) {
+        manifest.reboot_needed = true;
+        manifest.record(CoreAction::FileCopied {
+            dest: normalize_path(dest),
+            backup,
+            preserve_on_uninstall: entry.preserve_on_uninstall,
+            uninst_remove_readonly: entry.uninst_remove_readonly,
+            uninst_restart_delete: entry.uninst_restart_delete,
+            restart_replace: true,
+        });
+        return Ok(());
+    }
 
     #[cfg(windows)]
     if let Some(ref attribs) = entry.attribs {
@@ -264,6 +292,118 @@ where
     }
 
     Ok(())
+}
+
+enum CopyOutcome {
+    /// The file was copied into place.
+    Done,
+    /// The file is locked and was staged for replacement on the next restart.
+    /// Only produced on Windows (the only platform with locked-file semantics).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    DeferredToReboot,
+}
+
+/// Copy `source` over `dest`. If the copy fails because `dest` is held open by
+/// a running process (Windows only), ask `unlocker` to free it and retry; if
+/// it's still locked, stage a replace-on-restart and report
+/// [`CopyOutcome::DeferredToReboot`].
+fn copy_or_defer(
+    source: &Path,
+    dest: &Path,
+    unlocker: Option<&dyn FileUnlocker>,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<CopyOutcome> {
+    let err = match fs::copy(source, dest) {
+        Ok(_) => return Ok(CopyOutcome::Done),
+        Err(e) => e,
+    };
+
+    #[cfg(windows)]
+    if is_sharing_error(&err) {
+        if let Some(unlocker) = unlocker {
+            if unlocker.unlock(dest, callbacks) && fs::copy(source, dest).is_ok() {
+                return Ok(CopyOutcome::Done);
+            }
+        }
+        schedule_replace_on_reboot(source, dest)?;
+        callbacks.on_log(
+            LogLevel::Warn,
+            &format!(
+                "Files: {} is in use; it will be replaced after the next restart",
+                normalize_path(dest).display()
+            ),
+        );
+        return Ok(CopyOutcome::DeferredToReboot);
+    }
+
+    let _ = (unlocker, callbacks);
+    Err(InstallerError::FileOp {
+        path: dest.to_path_buf(),
+        source: err,
+    })
+}
+
+/// Windows sharing/lock violations that mean "the file is in use", as opposed
+/// to a genuine permissions or path error. `ERROR_ACCESS_DENIED` is left out
+/// deliberately — it's too ambiguous to treat as "locked".
+#[cfg(windows)]
+fn is_sharing_error(e: &std::io::Error) -> bool {
+    // ERROR_SHARING_VIOLATION (32), ERROR_LOCK_VIOLATION (33)
+    matches!(e.raw_os_error(), Some(32) | Some(33))
+}
+
+/// Stage `source` next to `dest` (same volume, so it survives the reboot) and
+/// queue an atomic replace for the next restart via `MoveFileEx`.
+#[cfg(windows)]
+fn schedule_replace_on_reboot(source: &Path, dest: &Path) -> InstallerResult<()> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_DELAY_UNTIL_REBOOT, MOVEFILE_REPLACE_EXISTING, MoveFileExW,
+    };
+
+    let staged = staged_path(dest);
+    fs::copy(source, &staged).map_err(|e| InstallerError::FileOp {
+        path: staged.clone(),
+        source: e,
+    })?;
+
+    let wide = |p: &Path| -> Vec<u16> {
+        OsStr::new(p).encode_wide().chain(std::iter::once(0)).collect()
+    };
+    let from = wide(&staged);
+    let to = wide(dest);
+    let ok = unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT,
+        )
+    };
+    if ok == 0 {
+        let err = std::io::Error::last_os_error();
+        let _ = fs::remove_file(&staged);
+        return Err(InstallerError::Other(format!(
+            "could not schedule replace-on-restart for {}: {err}",
+            dest.display()
+        )));
+    }
+    Ok(())
+}
+
+/// A sibling path for staging the pending replacement: `<dir>/.<name>.outto-pending`.
+#[cfg(windows)]
+fn staged_path(dest: &Path) -> PathBuf {
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    let staged_name = format!(".{name}.outto-pending");
+    match dest.parent() {
+        Some(parent) => parent.join(staged_name),
+        None => PathBuf::from(staged_name),
+    }
 }
 
 fn is_newer(source: &Path, dest: &Path) -> InstallerResult<bool> {

@@ -15,12 +15,13 @@ pub mod elevation;
 pub mod manifest;
 pub mod paths;
 pub mod pe;
+pub mod restart_manager;
 pub mod uninstall;
 
 use std::path::PathBuf;
 
 use outto_core::callbacks::{InstallOptions, InstallerCallbacks, LogLevel};
-use outto_core::config::{UpgradePolicy, VariableResolver};
+use outto_core::config::{RebootPolicy, UpgradePolicy, VariableResolver};
 use outto_core::error::{InstallerError, InstallerResult};
 use outto_core::manifest::{CoreAction, InstallManifest, rollback};
 
@@ -237,6 +238,23 @@ pub fn install(
 
             callbacks.on_log(LogLevel::Info, "Installation complete");
             callbacks.on_progress("complete", 1, 1);
+
+            // Apply the reboot policy. `Never` suppresses even a requested
+            // restart; `IfNeeded` honours a 3010/1641 from a [[run]] command;
+            // `Always` forces one. The front-end decides whether/when to act,
+            // respecting /NORESTART and silent mode.
+            let want_reboot = match config.reboot.policy {
+                RebootPolicy::Never => false,
+                RebootPolicy::Always => true,
+                RebootPolicy::IfNeeded => install_manifest.reboot_needed,
+            };
+            if want_reboot {
+                callbacks.on_log(
+                    LogLevel::Info,
+                    "A system restart is required to complete installation",
+                );
+                callbacks.on_reboot_required();
+            }
             Ok(())
         }
         Err(e) => {
@@ -260,6 +278,90 @@ pub fn install(
             }
         }
     }
+}
+
+/// Reboot the machine now. Enables `SeShutdownPrivilege` on the current
+/// process token (present-but-disabled by default on an elevated token), then
+/// calls `ExitWindowsEx(EWX_REBOOT)`. Returns once the restart is *initiated*;
+/// Windows then tears down processes, so callers should treat success as
+/// "we're going down".
+pub fn reboot_system() -> InstallerResult<()> {
+    use windows_sys::Win32::Foundation::*;
+    use windows_sys::Win32::Security::*;
+    use windows_sys::Win32::System::Shutdown::*;
+    use windows_sys::Win32::System::Threading::*;
+
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        ) == 0
+        {
+            return Err(InstallerError::Other(format!(
+                "OpenProcessToken failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+
+        let mut luid = LUID {
+            LowPart: 0,
+            HighPart: 0,
+        };
+        // SE_SHUTDOWN_NAME, looked up by name to avoid a UTF-16 literal const.
+        let priv_name: Vec<u16> = "SeShutdownPrivilege"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        if LookupPrivilegeValueW(std::ptr::null(), priv_name.as_ptr(), &mut luid) == 0 {
+            let err = std::io::Error::last_os_error();
+            CloseHandle(token);
+            return Err(InstallerError::Other(format!(
+                "LookupPrivilegeValueW failed: {err}"
+            )));
+        }
+
+        let tp = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+        let adjusted = AdjustTokenPrivileges(
+            token,
+            0,
+            &tp,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+        let adjust_err = std::io::Error::last_os_error();
+        CloseHandle(token);
+        // AdjustTokenPrivileges can return success but leave the privilege
+        // unassigned (GetLastError == ERROR_NOT_ALL_ASSIGNED); surface that.
+        if adjusted == 0 || adjust_err.raw_os_error() == Some(ERROR_NOT_ALL_ASSIGNED as i32) {
+            return Err(InstallerError::Other(format!(
+                "could not acquire shutdown privilege (are we elevated?): {adjust_err}"
+            )));
+        }
+
+        // EWX_FORCEIFHUNG lets the reboot proceed past unresponsive apps.
+        let ok = ExitWindowsEx(
+            EWX_REBOOT | EWX_FORCEIFHUNG,
+            SHTDN_REASON_MAJOR_APPLICATION
+                | SHTDN_REASON_MINOR_INSTALLATION
+                | SHTDN_REASON_FLAG_PLANNED,
+        );
+        if ok == 0 {
+            return Err(InstallerError::Other(format!(
+                "ExitWindowsEx failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

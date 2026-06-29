@@ -53,6 +53,17 @@ fn prompt_view(pending: &PendingPrompt) -> Element<'_, Message> {
                 existing.version.as_deref().unwrap_or("unknown"),
             )
         }
+        outto_core::Prompt::CloseApplications { apps } => {
+            let list = apps
+                .iter()
+                .map(|a| format!("  • {a}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "These applications are using files that need to be updated:\n{list}\n\n\
+                 Close them to continue? Choosing No will finish the update after the next restart."
+            )
+        }
     };
 
     let buttons = row![

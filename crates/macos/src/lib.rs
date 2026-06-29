@@ -302,3 +302,22 @@ fn receipt_base_for(scope: &str) -> PathBuf {
         _ => detect::user_receipt_base().unwrap_or_else(|| detect::system_receipt_base()),
     }
 }
+
+/// Restart the machine via `osascript` (System Events), which asks the logged-in
+/// session to restart without needing root. Provided for cross-platform parity
+/// with the Windows backend; the macOS config schema has no reboot policy, so
+/// in practice this is only reachable if a front-end calls it directly.
+pub fn reboot_system() -> InstallerResult<()> {
+    let status = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg("tell application \"System Events\" to restart")
+        .status()
+        .map_err(|e| InstallerError::Other(format!("osascript failed to launch: {e}")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(InstallerError::Other(format!(
+            "osascript restart exited with {status}"
+        )))
+    }
+}

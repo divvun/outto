@@ -253,7 +253,9 @@ fn install_file_entry(
         set_ntfs_compression: None,
         codesign: entry.codesign,
     };
-    core_files::install_files(&core_entry, source_dir, resolver, manifest, callbacks)
+    // macOS has no Restart-Manager equivalent; locked-file handling is
+    // Windows-only.
+    core_files::install_files(&core_entry, source_dir, resolver, manifest, callbacks, None)
 }
 
 fn map_overwrite(p: &crate::config::OverwritePolicy) -> outto_core::config::OverwritePolicy {
