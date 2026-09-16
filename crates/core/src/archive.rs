@@ -17,6 +17,25 @@ use std::path::Path;
 use box_format::sync::BoxWriter;
 use box_format::{BoxPath, Compression, CompressionConfig, HashMap};
 
+/// Attributes to record for a packed file or directory.
+///
+/// Without this every entry was inserted with an empty attribute map, so no
+/// `unix.mode` was stored and everything extracted as 0644 — silently stripping
+/// the executable bit off anything the payload ships. That broke two things at
+/// once on macOS: a payload binary invoked by a `[[run]]` hook (the hook fails,
+/// usually invisibly, because it runs in the elevated child) and the extracted
+/// uninstaller, which could never be launched.
+///
+/// Ownership is deliberately not recorded: the build agent's uid/gid mean
+/// nothing on the target machine. box only stores a mode when it differs from
+/// the default, so this adds bytes only for entries that actually need it.
+fn attrs_for(path: &Path) -> HashMap<String, Vec<u8>> {
+    match std::fs::metadata(path) {
+        Ok(meta) => box_format::fs::metadata_to_attrs(&meta, true, false),
+        Err(_) => HashMap::new(),
+    }
+}
+
 /// Pack the config + staged source dir + optional uninstaller into a
 /// zstd-compressed `.box` archive at `output_box`.
 ///
@@ -35,7 +54,12 @@ pub fn pack_payload(
 
     let config_box_path =
         BoxPath::new("outto.toml").map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    writer.insert_file(&compression, config_path, config_box_path, HashMap::new())?;
+    writer.insert_file(
+        &compression,
+        config_path,
+        config_box_path,
+        attrs_for(config_path),
+    )?;
 
     if let Some(p) = uninstall_path {
         // Prefix the archive entry with the on-disk filename so Windows gets
@@ -54,7 +78,7 @@ pub fn pack_payload(
         } else {
             let box_path =
                 BoxPath::new(name).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-            writer.insert_file(&compression, p, box_path, HashMap::new())?;
+            writer.insert_file(&compression, p, box_path, attrs_for(p))?;
         }
     }
 
@@ -90,7 +114,7 @@ fn pack_directory_tree(
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
         if entry.file_type().is_dir() {
-            writer.mkdir_all(box_path, HashMap::new())?;
+            writer.mkdir_all(box_path, attrs_for(abs_path))?;
         } else if entry.file_type().is_file() {
             if let Some(parent) = BoxPath::new(&*box_path_str)
                 .ok()
@@ -98,7 +122,7 @@ fn pack_directory_tree(
             {
                 writer.mkdir_all(parent, HashMap::new())?;
             }
-            writer.insert_file(compression, abs_path, box_path, HashMap::new())?;
+            writer.insert_file(compression, abs_path, box_path, attrs_for(abs_path))?;
         }
     }
     Ok(())
