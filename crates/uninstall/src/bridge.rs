@@ -22,7 +22,7 @@ pub enum BridgeEvent {
         message: String,
     },
     Finished(Result<(), String>),
-    /// The user dismissed the macOS password prompt before anything ran;
+    /// The user dismissed the macOS authorization prompt before anything ran;
     /// the GUI should return to the confirm screen.
     ElevationCancelled,
 }
@@ -111,7 +111,11 @@ pub fn uninstall_needs_elevation(_package_id: &str) -> bool {
 /// progress file the child streams JSON events into), keeping this
 /// unprivileged process alive as the UI.
 #[cfg(target_os = "macos")]
-pub fn spawn_elevated_uninstall(install_dir: PathBuf, queue: BridgeQueue) {
+pub fn spawn_elevated_uninstall(
+    install_dir: PathBuf,
+    prompt: platform::elevation::AuthPrompt,
+    queue: BridgeQueue,
+) {
     use std::ffi::OsString;
 
     use platform::elevation::{ElevatedOutcome, StreamEvent, run_elevated_with_progress};
@@ -133,7 +137,7 @@ pub fn spawn_elevated_uninstall(install_dir: PathBuf, queue: BridgeQueue) {
             argv.push("--progress-file".into());
             argv.push(progress_path.clone().into());
 
-            run_elevated_with_progress(&exe, &argv, &progress_path, |ev| {
+            run_elevated_with_progress(&exe, &argv, &progress_path, &prompt, |ev| {
                 let mut q = queue.lock().unwrap();
                 q.push_back(match ev {
                     StreamEvent::Progress {

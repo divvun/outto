@@ -204,8 +204,8 @@ pub fn spawn_uninstall(
     });
 }
 
-/// True if running the install in-process would trigger the osascript
-/// self-relaunch (which would abandon this GUI). Mirrors the elevation
+/// True if running the install in-process would trigger the elevated
+/// self-relaunch (which would run headless and leave this GUI with no progress). Mirrors the elevation
 /// decision in `outto_macos::install()`: resolve the install dir the same way,
 /// then apply `needs_elevation` + `auto_elevate`.
 #[cfg(target_os = "macos")]
@@ -257,6 +257,7 @@ pub fn spawn_elevated_install(
     selected_components: Option<std::collections::HashSet<String>>,
     uninstall_exe: Option<PathBuf>,
     flags: crate::cli::CliFlags,
+    prompt: platform::elevation::AuthPrompt,
     queue: BridgeQueue,
 ) {
     use std::ffi::OsString;
@@ -291,13 +292,17 @@ pub fn spawn_elevated_install(
         None => {}
     }
 
-    spawn_elevated_with_args(argv, queue);
+    spawn_elevated_with_args(argv, prompt, queue);
 }
 
 /// Run the uninstall in an elevated headless child, same mechanism as
 /// `spawn_elevated_install`.
 #[cfg(target_os = "macos")]
-pub fn spawn_elevated_uninstall(install_dir: PathBuf, queue: BridgeQueue) {
+pub fn spawn_elevated_uninstall(
+    install_dir: PathBuf,
+    prompt: platform::elevation::AuthPrompt,
+    queue: BridgeQueue,
+) {
     use std::ffi::OsString;
 
     let argv: Vec<OsString> = vec![
@@ -307,11 +312,15 @@ pub fn spawn_elevated_uninstall(install_dir: PathBuf, queue: BridgeQueue) {
         "/VERYSILENT".into(),
         "/SUPPRESSMSGBOXES".into(),
     ];
-    spawn_elevated_with_args(argv, queue);
+    spawn_elevated_with_args(argv, prompt, queue);
 }
 
 #[cfg(target_os = "macos")]
-fn spawn_elevated_with_args(mut argv: Vec<std::ffi::OsString>, queue: BridgeQueue) {
+fn spawn_elevated_with_args(
+    mut argv: Vec<std::ffi::OsString>,
+    prompt: platform::elevation::AuthPrompt,
+    queue: BridgeQueue,
+) {
     use platform::elevation::{ElevatedOutcome, StreamEvent, run_elevated_with_progress};
 
     std::thread::spawn(move || {
@@ -325,7 +334,7 @@ fn spawn_elevated_with_args(mut argv: Vec<std::ffi::OsString>, queue: BridgeQueu
             argv.push("--progress-file".into());
             argv.push(progress_path.clone().into());
 
-            run_elevated_with_progress(&exe, &argv, &progress_path, |ev| {
+            run_elevated_with_progress(&exe, &argv, &progress_path, &prompt, |ev| {
                 let mut q = queue.lock().unwrap();
                 q.push_back(match ev {
                     StreamEvent::Progress {

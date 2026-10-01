@@ -2058,12 +2058,14 @@ dependencies = [
 name = "outto-macos"
 version = "0.1.0"
 dependencies = [
+ "core-foundation",
  "libc",
  "outto-core",
  "plist",
  "semver",
  "serde",
  "serde_json",
+ "tempfile",
  "toml 0.8.23",
 ]
 

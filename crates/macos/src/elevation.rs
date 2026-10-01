@@ -1,16 +1,29 @@
-//! Privilege detection and `osascript`-based self-elevation.
+//! Privilege detection and self-elevation through Authorization Services.
 //!
-//! macOS doesn't have an in-process "please elevate me" API (`AuthorizationExecuteWithPrivileges`
-//! is deprecated; `SMJobBless` requires a pre-shipped helper tool). The pragmatic
-//! option is `osascript -e 'do shell script ... with administrator privileges'`,
-//! which shows the standard macOS password prompt and relaunches the installer
-//! as root.
+//! The privileged work runs in a one-shot launchd job submitted to the system
+//! domain with `SMJobSubmit`, authorized by an app-specific right backed by the
+//! `authenticate-admin` rule. This is the path Sparkle 2 uses for privileged
+//! installs; unlike `osascript ... with administrator privileges` (which asks
+//! for `system.privilege.admin`), authd allows Touch ID for it.
+//!
+//! The job isn't our child, so it can't inherit pipes: it streams progress by
+//! appending JSON lines to a file the unprivileged process tails, and its exit
+//! is observed through launchd's job dictionary.
 
-use std::ffi::OsString;
+use std::ffi::{CStr, CString, OsString};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::ptr;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
+use core_foundation::array::CFArray;
+use core_foundation::base::{CFType, TCFType};
+use core_foundation::boolean::CFBoolean;
+use core_foundation::dictionary::CFDictionary;
+use core_foundation::error::{CFError, CFErrorRef};
+use core_foundation::number::CFNumber;
+use core_foundation::string::{CFString, CFStringRef};
 use outto_core::callbacks::{InstallerCallbacks, LogLevel, Prompt, PromptResponse};
 use outto_core::error::{ErrorAction, InstallerError, InstallerResult};
 
@@ -54,74 +67,444 @@ pub const DEFAULT_SYSTEM_ROOTS: &[&str] = &[
     "/private",
 ];
 
-/// Build the `osascript` invocation that runs `exe argv...` with admin rights.
+/// Wording of the admin prompt, and the authorization-database right that
+/// carries it.
 ///
-/// Composes a POSIX shell command `'<exe>' '<arg1>' ...` (single-quoted, with
-/// embedded single quotes escaped as `'\''`), then wraps it in
-/// `do shell script "..." with administrator privileges` with AppleScript's
-/// double-quote/backslash escaping.
-fn build_elevated_command(exe: &Path, argv: &[OsString]) -> std::process::Command {
-    let mut shell_cmd = quote_posix(&exe.to_string_lossy());
-    for a in argv {
-        shell_cmd.push(' ');
-        shell_cmd.push_str(&quote_posix(&a.to_string_lossy()));
-    }
-
-    let script = format!(
-        "do shell script \"{}\" with administrator privileges",
-        escape_applescript(&shell_cmd)
-    );
-
-    let mut cmd = std::process::Command::new("osascript");
-    cmd.arg("-e").arg(script);
-    cmd
+/// authd stores the prompt text the first time a right is registered and
+/// keeps serving that cached text afterwards, so the right name has to change
+/// whenever the wording does (bump `RIGHT_VERSION`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthPrompt {
+    right_name: String,
+    message: String,
 }
 
-/// Spawn `exe argv...` with admin rights via `osascript` and return the child
-/// without waiting. stdout is discarded (`do shell script` buffers the inner
-/// command's output as its result anyway); stderr is piped so the caller can
-/// distinguish an auth-prompt cancel (AppleScript error -128) from a real
-/// failure after the child exits.
-pub fn spawn_elevated(exe: &Path, argv: &[OsString]) -> std::io::Result<std::process::Child> {
-    build_elevated_command(exe, argv)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-}
+const RIGHT_VERSION: &str = "v1";
 
-/// Relaunch the current process with admin rights, passing the same argv.
-/// Returns `Err(ElevationRequired)` on failure; on success, the current process
-/// is replaced so this call typically doesn't return.
-pub fn elevate_self(extra_args: &[String]) -> InstallerResult<()> {
-    let exe = std::env::current_exe()
-        .map_err(|e| InstallerError::Other(format!("can't locate current exe: {e}")))?;
-
-    let mut argv: Vec<OsString> = std::env::args_os().skip(1).collect();
-    for a in extra_args {
-        argv.push(OsString::from(a));
+impl AuthPrompt {
+    pub fn install(package_id: &str, package_name: &str) -> Self {
+        Self::new(
+            package_id,
+            "install",
+            format!("The installer wants permission to install {package_name}."),
+        )
     }
 
-    let status = build_elevated_command(&exe, &argv)
-        .status()
-        .map_err(|e| InstallerError::Other(format!("osascript failed to launch: {e}")))?;
+    pub fn uninstall(package_id: &str, package_name: &str) -> Self {
+        Self::new(
+            package_id,
+            "uninstall",
+            format!("The uninstaller wants permission to remove {package_name}."),
+        )
+    }
 
-    if !status.success() {
-        return Err(InstallerError::ElevationRequired(format!(
-            "osascript exited with {status} (user may have cancelled the password prompt)"
+    fn new(package_id: &str, verb: &str, message: String) -> Self {
+        let id: String = package_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        Self {
+            right_name: format!("no.divvun.outto.{id}.{verb}.{RIGHT_VERSION}"),
+            message,
+        }
+    }
+}
+
+#[allow(non_upper_case_globals, non_snake_case)]
+mod ffi {
+    use std::ffi::{CStr, c_char, c_void};
+
+    use core_foundation::base::{CFIndex, CFTypeRef};
+    use core_foundation::dictionary::CFDictionaryRef;
+    use core_foundation::error::CFErrorRef;
+    use core_foundation::string::CFStringRef;
+
+    pub type OSStatus = i32;
+    pub type AuthorizationRef = *mut c_void;
+    pub type AuthorizationFlags = u32;
+
+    #[repr(C)]
+    pub struct AuthorizationItem {
+        pub name: *const c_char,
+        pub value_length: usize,
+        pub value: *mut c_void,
+        pub flags: u32,
+    }
+
+    #[repr(C)]
+    pub struct AuthorizationItemSet {
+        pub count: u32,
+        pub items: *mut AuthorizationItem,
+    }
+
+    pub const errAuthorizationSuccess: OSStatus = 0;
+    pub const errAuthorizationDenied: OSStatus = -60005;
+    pub const errAuthorizationCanceled: OSStatus = -60006;
+
+    pub const kAuthorizationFlagDefaults: AuthorizationFlags = 0;
+    pub const kAuthorizationFlagInteractionAllowed: AuthorizationFlags = 1 << 0;
+    pub const kAuthorizationFlagExtendRights: AuthorizationFlags = 1 << 1;
+
+    pub const kAuthorizationRuleAuthenticateAsAdmin: &str = "authenticate-admin";
+    pub const kSMRightModifySystemDaemons: &CStr = c"com.apple.ServiceManagement.daemons.modify";
+    pub const kSMErrorJobNotFound: CFIndex = 6;
+
+    #[link(name = "Security", kind = "framework")]
+    unsafe extern "C" {
+        pub fn AuthorizationCreate(
+            rights: *const AuthorizationItemSet,
+            environment: *const AuthorizationItemSet,
+            flags: AuthorizationFlags,
+            authorization: *mut AuthorizationRef,
+        ) -> OSStatus;
+        pub fn AuthorizationFree(
+            authorization: AuthorizationRef,
+            flags: AuthorizationFlags,
+        ) -> OSStatus;
+        pub fn AuthorizationCopyRights(
+            authorization: AuthorizationRef,
+            rights: *const AuthorizationItemSet,
+            environment: *const AuthorizationItemSet,
+            flags: AuthorizationFlags,
+            authorized_rights: *mut *mut AuthorizationItemSet,
+        ) -> OSStatus;
+        pub fn AuthorizationRightGet(
+            right_name: *const c_char,
+            right_definition: *mut CFDictionaryRef,
+        ) -> OSStatus;
+        pub fn AuthorizationRightSet(
+            authorization: AuthorizationRef,
+            right_name: *const c_char,
+            right_definition: CFTypeRef,
+            description_key: CFStringRef,
+            bundle: *const c_void,
+            locale_table_name: CFStringRef,
+        ) -> OSStatus;
+    }
+
+    #[link(name = "ServiceManagement", kind = "framework")]
+    unsafe extern "C" {
+        pub static kSMDomainSystemLaunchd: CFStringRef;
+        pub fn SMJobSubmit(
+            domain: CFStringRef,
+            job: CFDictionaryRef,
+            auth: AuthorizationRef,
+            out_error: *mut CFErrorRef,
+        ) -> u8;
+        pub fn SMJobRemove(
+            domain: CFStringRef,
+            label: CFStringRef,
+            auth: AuthorizationRef,
+            wait: u8,
+            out_error: *mut CFErrorRef,
+        ) -> u8;
+        pub fn SMJobCopyDictionary(domain: CFStringRef, label: CFStringRef) -> CFDictionaryRef;
+    }
+}
+
+/// An owned `AuthorizationRef`.
+struct Authorization(ffi::AuthorizationRef);
+
+impl Authorization {
+    fn create() -> InstallerResult<Self> {
+        let mut auth: ffi::AuthorizationRef = ptr::null_mut();
+        // SAFETY: null rights/environment are permitted; `auth` is a valid out-pointer.
+        let status = unsafe {
+            ffi::AuthorizationCreate(
+                ptr::null(),
+                ptr::null(),
+                ffi::kAuthorizationFlagDefaults,
+                &mut auth,
+            )
+        };
+        if status != ffi::errAuthorizationSuccess {
+            return Err(InstallerError::Other(format!(
+                "AuthorizationCreate failed: OSStatus {status}"
+            )));
+        }
+        Ok(Self(auth))
+    }
+
+    fn copy_right(&self, right: &CStr, flags: ffi::AuthorizationFlags) -> ffi::OSStatus {
+        let mut item = ffi::AuthorizationItem {
+            name: right.as_ptr(),
+            value_length: 0,
+            value: ptr::null_mut(),
+            flags: 0,
+        };
+        let rights = ffi::AuthorizationItemSet {
+            count: 1,
+            items: &mut item,
+        };
+        let environment = ffi::AuthorizationItemSet {
+            count: 0,
+            items: ptr::null_mut(),
+        };
+        // SAFETY: `item` outlives the call; a null out-pointer is permitted.
+        unsafe {
+            ffi::AuthorizationCopyRights(self.0, &rights, &environment, flags, ptr::null_mut())
+        }
+    }
+
+    /// Make sure our custom right exists in the authorization database,
+    /// registering it with the `authenticate-admin` rule if not. Returns false
+    /// if it is still unusable.
+    fn ensure_right(&self, right: &CStr, message: &str) -> bool {
+        // SAFETY: a null definition out-pointer is permitted.
+        if unsafe { ffi::AuthorizationRightGet(right.as_ptr(), ptr::null_mut()) }
+            == ffi::errAuthorizationSuccess
+        {
+            return true;
+        }
+        let rule = CFString::from_static_string(ffi::kAuthorizationRuleAuthenticateAsAdmin);
+        let description = CFString::new(message);
+        // SAFETY: all pointers are valid for the call; bundle/table may be null.
+        let status = unsafe {
+            ffi::AuthorizationRightSet(
+                self.0,
+                right.as_ptr(),
+                rule.as_CFTypeRef(),
+                description.as_concrete_TypeRef(),
+                ptr::null(),
+                ptr::null(),
+            )
+        };
+        status == ffi::errAuthorizationSuccess
+    }
+}
+
+impl Drop for Authorization {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` came from a successful AuthorizationCreate.
+        unsafe { ffi::AuthorizationFree(self.0, ffi::kAuthorizationFlagDefaults) };
+    }
+}
+
+/// Ask the user for admin rights. `None` means they cancelled the prompt.
+///
+/// This is Sparkle 2's sequence: request an app-specific right backed by the
+/// `authenticate-admin` rule with `ExtendRights | InteractionAllowed`, then
+/// hand the same `AuthorizationRef` to `SMJobSubmit`. Unlike
+/// `system.privilege.admin` (`AuthorizationExecuteWithPrivileges`, and what
+/// `osascript ... with administrator privileges` asks for) and
+/// `com.apple.ServiceManagement.blesshelper` (`SMJobBless`), authd lets this
+/// path be satisfied with Touch ID.
+fn authorize(prompt: &AuthPrompt) -> InstallerResult<Option<Authorization>> {
+    let auth = Authorization::create()?;
+    let custom = CString::new(prompt.right_name.as_str())
+        .map_err(|_| InstallerError::Other("authorization right name contains NUL".into()))?;
+    // Requesting the Service Management right directly still works, just
+    // with the generic system wording.
+    let right: &CStr = if auth.ensure_right(&custom, &prompt.message) {
+        &custom
+    } else {
+        ffi::kSMRightModifySystemDaemons
+    };
+    match auth.copy_right(
+        right,
+        ffi::kAuthorizationFlagInteractionAllowed | ffi::kAuthorizationFlagExtendRights,
+    ) {
+        ffi::errAuthorizationSuccess => Ok(Some(auth)),
+        ffi::errAuthorizationCanceled => Ok(None),
+        ffi::errAuthorizationDenied => Err(InstallerError::ElevationRequired(
+            "administrator authorization was denied".into(),
+        )),
+        status => Err(InstallerError::Other(format!(
+            "AuthorizationCopyRights failed: OSStatus {status}"
+        ))),
+    }
+}
+
+/// launchd label of the one-shot root job. Fixed (as in Sparkle) so a dead job
+/// left behind by a previous run gets cleared before the next submit.
+const JOB_LABEL: &str = "no.divvun.outto.elevated";
+
+/// How long to wait for launchd to start the job before giving up.
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Environment the root job inherits from the user session. launchd jobs start
+/// with an empty environment; path variables such as `#{home}` and the
+/// user-scope receipt base are resolved from these.
+const PASSTHROUGH_ENV: &[&str] = &["HOME", "USER", "LOGNAME", "TMPDIR", "LANG"];
+
+struct JobState {
+    pid: Option<i64>,
+    last_exit_status: Option<i64>,
+}
+
+fn system_domain() -> CFStringRef {
+    // SAFETY: an immutable framework constant.
+    unsafe { ffi::kSMDomainSystemLaunchd }
+}
+
+/// Snapshot the job from launchd; `None` if it isn't loaded.
+fn copy_job_state(label: &CFString) -> Option<JobState> {
+    // SAFETY: both arguments are valid CFStrings.
+    let dict = unsafe { ffi::SMJobCopyDictionary(system_domain(), label.as_concrete_TypeRef()) };
+    if dict.is_null() {
+        return None;
+    }
+    // SAFETY: SMJobCopyDictionary follows the create rule.
+    let dict: CFDictionary<CFString, CFType> =
+        unsafe { CFDictionary::wrap_under_create_rule(dict) };
+    let number = |key: &'static str| {
+        dict.find(CFString::from_static_string(key))
+            .and_then(|v| v.downcast::<CFNumber>())
+            .and_then(|n| n.to_i64())
+    };
+    Some(JobState {
+        pid: number("PID"),
+        last_exit_status: number("LastExitStatus"),
+    })
+}
+
+fn take_cf_error(err: CFErrorRef) -> Option<CFError> {
+    // SAFETY: SM out-errors follow the create rule.
+    (!err.is_null()).then(|| unsafe { CFError::wrap_under_create_rule(err) })
+}
+
+fn remove_job(auth: &Authorization, label: &CFString, wait: bool) -> Result<(), CFError> {
+    let mut err: CFErrorRef = ptr::null_mut();
+    // SAFETY: all pointers are valid; `err` is a valid out-pointer.
+    let ok = unsafe {
+        ffi::SMJobRemove(
+            system_domain(),
+            label.as_concrete_TypeRef(),
+            auth.0,
+            wait as u8,
+            &mut err,
+        )
+    };
+    match take_cf_error(err) {
+        Some(e) if ok == 0 => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// Submit `program_args` as a one-shot root job in the system launchd domain.
+fn submit_job(
+    auth: &Authorization,
+    label: &CFString,
+    program_args: &[String],
+    stderr_path: &Path,
+) -> InstallerResult<()> {
+    if let Err(e) = remove_job(auth, label, true) {
+        if e.code() != ffi::kSMErrorJobNotFound {
+            return Err(InstallerError::Other(format!(
+                "can't remove stale elevated job: {}",
+                e.description()
+            )));
+        }
+    }
+
+    let args: Vec<CFString> = program_args.iter().map(|a| CFString::new(a)).collect();
+    let env: Vec<(CFString, CFString)> = PASSTHROUGH_ENV
+        .iter()
+        .filter_map(|k| {
+            let v = std::env::var(k).ok()?;
+            Some((CFString::from_static_string(k), CFString::new(&v)))
+        })
+        .collect();
+    let stderr_path = stderr_path.to_str().ok_or_else(|| {
+        InstallerError::Other(format!("non-UTF-8 path: {}", stderr_path.display()))
+    })?;
+
+    let key = CFString::from_static_string;
+    let job = CFDictionary::from_CFType_pairs(&[
+        (key("Label"), label.as_CFType()),
+        (
+            key("ProgramArguments"),
+            CFArray::from_CFTypes(&args).as_CFType(),
+        ),
+        (
+            key("EnvironmentVariables"),
+            CFDictionary::from_CFType_pairs(&env).as_CFType(),
+        ),
+        (
+            key("StandardErrorPath"),
+            CFString::new(stderr_path).as_CFType(),
+        ),
+        (key("RunAtLoad"), CFBoolean::true_value().as_CFType()),
+        (key("LaunchOnlyOnce"), CFBoolean::true_value().as_CFType()),
+        (
+            key("EnableTransactions"),
+            CFBoolean::false_value().as_CFType(),
+        ),
+        (key("ProcessType"), key("Interactive").as_CFType()),
+        (key("Nice"), CFNumber::from(0i32).as_CFType()),
+    ]);
+
+    let mut err: CFErrorRef = ptr::null_mut();
+    // SMJobSubmit is deprecated, but it is the only public API that runs a
+    // non-permanent root helper with a caller-supplied AuthorizationRef.
+    // SAFETY: all pointers are valid; `err` is a valid out-pointer.
+    let ok =
+        unsafe { ffi::SMJobSubmit(system_domain(), job.as_concrete_TypeRef(), auth.0, &mut err) };
+    if ok == 0 {
+        let reason = take_cf_error(err)
+            .map(|e| e.description().to_string())
+            .unwrap_or_else(|| "unknown error".into());
+        return Err(InstallerError::Other(format!(
+            "SMJobSubmit failed: {reason}"
         )));
     }
+    Ok(())
+}
 
-    // The elevated child has run to completion; exit so we don't double-install.
-    std::process::exit(0);
+fn utf8(s: &std::ffi::OsStr) -> InstallerResult<String> {
+    s.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| InstallerError::Other(format!("non-UTF-8 argument: {}", s.display())))
+}
+
+/// Re-run the current command line as root, forwarding the elevated run's
+/// progress and log events to `callbacks`. Returns the elevated run's result.
+pub fn elevate_self(
+    prompt: &AuthPrompt,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()> {
+    let exe = std::env::current_exe()
+        .map_err(|e| InstallerError::Other(format!("can't locate current exe: {e}")))?;
+    let tmp = tempfile::Builder::new()
+        .prefix("outto-elevated")
+        .tempdir()
+        .map_err(|e| InstallerError::Other(format!("can't create temp dir: {e}")))?;
+    let progress_path = tmp.path().join("progress.jsonl");
+
+    let mut argv: Vec<OsString> = std::env::args_os().skip(1).collect();
+    argv.push("--progress-file".into());
+    argv.push(progress_path.clone().into());
+
+    let outcome = run_elevated_with_progress(&exe, &argv, &progress_path, prompt, |ev| match ev {
+        StreamEvent::Progress {
+            phase,
+            current,
+            total,
+        } => callbacks.on_progress(&phase, current, total),
+        StreamEvent::Log { level, message } => callbacks.on_log(level, &message),
+    })?;
+    match outcome {
+        ElevatedOutcome::Completed(Ok(())) => Ok(()),
+        ElevatedOutcome::Completed(Err(e)) => Err(InstallerError::Other(e)),
+        ElevatedOutcome::AuthCancelled => Err(InstallerError::ElevationRequired(
+            "the administrator authorization prompt was cancelled".into(),
+        )),
+    }
 }
 
 // --- Progress streaming between an unprivileged GUI and an elevated child ---
 //
-// The GUI process stays unprivileged (it owns the window); the elevated child
+// The GUI process stays unprivileged (it owns the window); the elevated job
 // runs the actual install/uninstall headlessly and reports progress by
 // appending JSON lines to a file the parent tails. A plain file rather than a
 // FIFO: opening a FIFO blocks until the peer appears, which would wedge the
-// parent if the user cancels the password prompt.
+// parent if the job never starts.
 
 /// A progress/log event streamed from the elevated child.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,7 +525,7 @@ pub enum StreamEvent {
 pub enum ElevatedOutcome {
     /// The child ran; the result is the install/uninstall result.
     Completed(Result<(), String>),
-    /// The user dismissed the macOS password prompt; nothing ran.
+    /// The user dismissed the macOS authorization prompt; nothing ran.
     AuthCancelled,
 }
 
@@ -186,11 +569,16 @@ fn parse_stream_line(line: &str) -> Option<StreamLine> {
             level: parse_level(v["level"].as_str().unwrap_or("info")),
             message: v["message"].as_str().unwrap_or_default().to_string(),
         })),
-        "finished" => Some(StreamLine::Finished(if v["ok"].as_bool().unwrap_or(false) {
-            Ok(())
-        } else {
-            Err(v["error"].as_str().unwrap_or("operation failed").to_string())
-        })),
+        "finished" => Some(StreamLine::Finished(
+            if v["ok"].as_bool().unwrap_or(false) {
+                Ok(())
+            } else {
+                Err(v["error"]
+                    .as_str()
+                    .unwrap_or("operation failed")
+                    .to_string())
+            },
+        )),
         _ => None,
     }
 }
@@ -296,18 +684,20 @@ impl Tail {
     }
 }
 
-/// Run `exe argv...` elevated, tailing `progress_path` and forwarding each
-/// streamed event to `on_event` until the child exits. Blocks; call from a
+/// Run `exe argv...` as root, tailing `progress_path` and forwarding each
+/// streamed event to `on_event` until the job exits. Blocks; call from a
 /// worker thread.
 ///
-/// The result reconciliation order: a `finished` event from the child wins;
-/// else a zero exit status means success; else AppleScript error -128 (or no
-/// other evidence the child ever ran) means the user cancelled the password
-/// prompt; anything else is a failure.
+/// The job is a launchd job rather than our child, so its end is observed
+/// through launchd (`PID` disappearing from the job dictionary). Result
+/// reconciliation: a `finished` event from the job wins; else a zero
+/// `LastExitStatus` means success; anything else is a failure, reported with
+/// the job's stderr.
 pub fn run_elevated_with_progress(
     exe: &Path,
     argv: &[OsString],
     progress_path: &Path,
+    prompt: &AuthPrompt,
     mut on_event: impl FnMut(StreamEvent),
 ) -> InstallerResult<ElevatedOutcome> {
     std::fs::write(progress_path, b"").map_err(|e| {
@@ -317,8 +707,25 @@ pub fn run_elevated_with_progress(
         ))
     })?;
 
-    let mut child = spawn_elevated(exe, argv)
-        .map_err(|e| InstallerError::Other(format!("osascript failed to launch: {e}")))?;
+    let mut program_args = vec![utf8(exe.as_os_str())?];
+    for a in argv {
+        program_args.push(utf8(a)?);
+    }
+
+    let Some(auth) = authorize(prompt)? else {
+        return Ok(ElevatedOutcome::AuthCancelled);
+    };
+
+    let label = CFString::from_static_string(JOB_LABEL);
+    if let Some(JobState { pid: Some(pid), .. }) = copy_job_state(&label) {
+        return Err(InstallerError::Other(format!(
+            "another elevated installer operation is already running (pid {pid})"
+        )));
+    }
+
+    let stderr_path = progress_path.with_extension("stderr");
+    let _ = std::fs::remove_file(&stderr_path);
+    submit_job(&auth, &label, &program_args, &stderr_path)?;
 
     let mut tail = Tail::new();
     let mut finished: Option<Result<(), String>> = None;
@@ -332,67 +739,61 @@ pub fn run_elevated_with_progress(
         });
     };
 
-    let status = loop {
+    let submitted_at = Instant::now();
+    let mut next_poll = submitted_at;
+    let mut seen_running = false;
+    let mut last_exit_status = None;
+    loop {
         pump(&mut tail, &mut finished, &mut on_event);
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-            Err(e) => {
-                return Err(InstallerError::Other(format!(
-                    "waiting for elevated process failed: {e}"
-                )));
+        if Instant::now() >= next_poll {
+            next_poll = Instant::now() + Duration::from_millis(250);
+            let Some(state) = copy_job_state(&label) else {
+                // Removed out from under us; nothing more will happen.
+                break;
+            };
+            if state.pid.is_some() {
+                seen_running = true;
+            } else {
+                last_exit_status = state.last_exit_status;
+                if seen_running || finished.is_some() || submitted_at.elapsed() > LAUNCH_TIMEOUT {
+                    break;
+                }
             }
         }
-    };
+        std::thread::sleep(Duration::from_millis(50));
+    }
     // Catch anything written between the last poll and exit.
     pump(&mut tail, &mut finished, &mut on_event);
 
-    let mut stderr_text = String::new();
-    if let Some(mut err) = child.stderr.take() {
-        let _ = err.read_to_string(&mut stderr_text);
+    // launchd keeps a LaunchOnlyOnce job loaded after it exits. Unload it now
+    // if the credential is still live without showing UI; otherwise the next
+    // run clears it before submitting.
+    if auth.copy_right(
+        ffi::kSMRightModifySystemDaemons,
+        ffi::kAuthorizationFlagExtendRights,
+    ) == ffi::errAuthorizationSuccess
+    {
+        let _ = remove_job(&auth, &label, false);
     }
+
+    let stderr_text = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&stderr_path);
 
     if let Some(result) = finished {
         return Ok(ElevatedOutcome::Completed(result));
     }
-    if status.success() {
+    if seen_running && last_exit_status == Some(0) {
         return Ok(ElevatedOutcome::Completed(Ok(())));
     }
-    // `do shell script` reports an auth-prompt dismissal as AppleScript error
-    // -128 ("User canceled."); the error number survives localization.
-    if stderr_text.contains("(-128)") || stderr_text.contains("User canceled") {
-        return Ok(ElevatedOutcome::AuthCancelled);
-    }
+    let how = match (seen_running, last_exit_status) {
+        (false, _) => "elevated process never started".to_string(),
+        (true, Some(status)) => format!("elevated process exited with status {status}"),
+        (true, None) => "elevated process exited".to_string(),
+    };
     Ok(ElevatedOutcome::Completed(Err(format!(
-        "elevated process exited with {status}: {}",
+        "{how}: {}",
         stderr_text.trim()
     ))))
-}
-
-fn quote_posix(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
-}
-
-fn escape_applescript(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -435,41 +836,18 @@ mod tests {
     }
 
     #[test]
-    fn test_quote_posix_escapes_single_quotes() {
-        assert_eq!(quote_posix("foo"), "'foo'");
-        assert_eq!(quote_posix("it's"), "'it'\\''s'");
-    }
-
-    #[test]
-    fn test_escape_applescript() {
-        assert_eq!(escape_applescript("hello"), "hello");
-        assert_eq!(escape_applescript("he \"said\""), "he \\\"said\\\"");
-        assert_eq!(escape_applescript("a\\b"), "a\\\\b");
-    }
-
-    #[test]
-    fn test_build_elevated_command_quotes_spaces_and_quotes() {
-        let cmd = build_elevated_command(
-            Path::new("/Applications/My App.app/Contents/MacOS/installer"),
-            &[
-                OsString::from("/DIR=/Library/It's Here"),
-                OsString::from("--progress-file"),
-                OsString::from("/tmp/p f.jsonl"),
-            ],
+    fn test_auth_prompt_right_name_is_sanitized() {
+        let p = AuthPrompt::install("com.example/My App", "My App");
+        assert_eq!(
+            p.right_name,
+            "no.divvun.outto.com.example-My-App.install.v1"
         );
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(args[0], "-e");
-        let script = &args[1];
-        assert!(script.starts_with("do shell script \""));
-        assert!(script.ends_with("\" with administrator privileges"));
-        assert!(script.contains("'/Applications/My App.app/Contents/MacOS/installer'"));
-        // Single quote inside an arg → '\'' POSIX escape, then AppleScript
-        // doubles the backslash.
-        assert!(script.contains("'/DIR=/Library/It'\\\\''s Here'"));
-        assert!(script.contains("'/tmp/p f.jsonl'"));
+        assert_eq!(
+            p.message,
+            "The installer wants permission to install My App."
+        );
+        let u = AuthPrompt::uninstall("com.example.app", "App");
+        assert_eq!(u.right_name, "no.divvun.outto.com.example.app.uninstall.v1");
     }
 
     #[test]

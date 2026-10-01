@@ -20,7 +20,7 @@ default_dir = "#{applications}/outto.app"
 min_macos_version = "11.0"
 
 [privileges]
-# /usr/local/bin symlink writes need admin; osascript handles the prompt.
+# /usr/local/bin symlink writes need admin; the installer asks for admin authorization.
 required = "auto"
 auto_elevate = true
 

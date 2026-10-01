@@ -8,7 +8,8 @@
 //! system-scope.
 //!
 //! Elevation (when install paths or TOML `[privileges]` require root) is done
-//! by self-relaunching through `osascript`. Notarization and `.app` bundle
+//! by re-running the installer as a one-shot root launchd job authorized via
+//! Authorization Services (see [`elevation`]). Notarization and `.app` bundle
 //! construction happen in the build pipeline (`outto-cli`), not at install time.
 
 #![cfg(target_os = "macos")]
@@ -86,7 +87,8 @@ pub fn install(
     // Decide scope by inspecting the install path.
     let scope = classify_scope(&install_dir);
 
-    // If we need admin rights and aren't root, relaunch via osascript.
+    // If we need admin rights and aren't root, re-run this command line as a
+    // root launchd job and report its result as ours.
     if elevation::needs_elevation(
         &config.privileges.required,
         &install_dir,
@@ -98,12 +100,9 @@ pub fn install(
                     .into(),
             ));
         }
-        callbacks.on_log(LogLevel::Info, "Elevating to admin via osascript...");
-        elevation::elevate_self(&[])?;
-        // elevate_self exits on success; if it returns, something unexpected happened.
-        return Err(InstallerError::ElevationRequired(
-            "osascript returned unexpectedly after elevation".into(),
-        ));
+        callbacks.on_log(LogLevel::Info, "Requesting administrator authorization...");
+        let prompt = elevation::AuthPrompt::install(&config.package.id, &config.package.name);
+        return elevation::elevate_self(&prompt, callbacks);
     }
 
     let resolver = make_resolver(config, Some(&install_dir));

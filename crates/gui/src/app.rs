@@ -379,9 +379,9 @@ impl AppState {
         BRIDGE_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
 
         // Installing into a root-owned location would make the in-process
-        // pipeline relaunch the whole installer via osascript and abandon
-        // this GUI. Instead, keep this process as the (unprivileged) UI and
-        // hand the actual work to an elevated headless child.
+        // pipeline re-run the whole installer headless as root. Instead, keep
+        // this process as the (unprivileged) UI and hand the actual work to
+        // an elevated headless child.
         #[cfg(target_os = "macos")]
         if bridge::install_needs_elevation(&self.config, &install_dir) {
             self.cancel_locked = true;
@@ -392,6 +392,10 @@ impl AppState {
                 Some(selected),
                 self.uninstall_exe.clone(),
                 self.flags.clone(),
+                outto_macos::elevation::AuthPrompt::install(
+                    &self.config.package.id,
+                    &self.config.package.name,
+                ),
                 self.bridge_queue.clone(),
             );
             return;
@@ -420,7 +424,11 @@ impl AppState {
         #[cfg(target_os = "macos")]
         if bridge::uninstall_needs_elevation(&package_id) {
             self.cancel_locked = true;
-            bridge::spawn_elevated_uninstall(dir, self.bridge_queue.clone());
+            let prompt = outto_macos::elevation::AuthPrompt::uninstall(
+                &package_id,
+                &self.config.package.name,
+            );
+            bridge::spawn_elevated_uninstall(dir, prompt, self.bridge_queue.clone());
             return;
         }
 

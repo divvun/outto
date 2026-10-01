@@ -13,4 +13,6 @@ toml.workspace = true
 semver.workspace = true
 plist.workspace = true
 libc.workspace = true
+core-foundation.workspace = true
+tempfile.workspace = true
 # Reads and writes Mach-O headers at the byte level (no runtime dep; we hand-parse).

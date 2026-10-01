@@ -148,7 +148,13 @@ impl AppState {
         #[cfg(target_os = "macos")]
         if bridge::uninstall_needs_elevation(&self.package_id) {
             self.cancel_locked = true;
-            bridge::spawn_elevated_uninstall(self.install_dir.clone(), self.bridge_queue.clone());
+            let prompt =
+                outto_macos::elevation::AuthPrompt::uninstall(&self.package_id, &self.app_name);
+            bridge::spawn_elevated_uninstall(
+                self.install_dir.clone(),
+                prompt,
+                self.bridge_queue.clone(),
+            );
             return;
         }
 

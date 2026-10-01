@@ -27,6 +27,7 @@ outto-macos = { path = "crates/macos" }
 # external
 blake3 = "1.8.3"
 box-format = { git = "https://github.com/bbqsrc/box", default-features = false, features = ["std", "zstd", "reader"] }
+core-foundation = "0.9"
 dunce = "1"
 glob = "0.3"
 iced = { version = "0.14", default-features = false, features = ["tokio", "tiny-skia"] }

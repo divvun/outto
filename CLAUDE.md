@@ -12,7 +12,7 @@ All code under `crates/`; the root crate is retired.
 
 - `crates/core` → `outto-core`. Platform-neutral framework: config scaffolding, the `.box` archive packer, neutral action primitives (file copy, directory create, command exec, prereq checks, signing), the generic `InstallManifest<A>` with the `RollbackAction` trait, callbacks. No `windows-sys` at the crate surface.
 - `crates/windows` → `outto-windows` (`#![cfg(windows)]`). Windows Config schema, install/uninstall pipelines, registry/COM/services/shortcuts/fonts/associations/environment actions, UAC elevation, ARP registration, PE section embedding, `WindowsAction` enum with `RollbackAction` impl.
-- `crates/macos` → `outto-macos` (`#![cfg(target_os = "macos")]`). macOS Config schema, install/uninstall pipelines, launchd/plist/symlinks/fonts/shell-rc actions, `osascript` self-elevation, Mach-O `__OUTTO` segment embedding, receipt-file detection, `MacosAction` enum with `RollbackAction` impl.
+- `crates/macos` → `outto-macos` (`#![cfg(target_os = "macos")]`). macOS Config schema, install/uninstall pipelines, launchd/plist/symlinks/fonts/shell-rc actions, Authorization Services + `SMJobSubmit` self-elevation (Touch ID capable), Mach-O `__OUTTO` segment embedding, receipt-file detection, `MacosAction` enum with `RollbackAction` impl.
 - `crates/cli` → binary `outto`. Build-time tool. On Windows: packs to `.box`, embeds as PE section in `outto-gui.exe`, optionally wraps in SFX. On macOS: packs to `.box`, embeds as Mach-O `__OUTTO` segment in `outto-gui`, builds inner installer `.app`, optionally tars + zstd's it and wraps in an SFX `.app`.
 - `crates/gui` → binary `outto-gui` (iced). Cross-platform installer GUI. On both Windows and macOS doubles as the installer template — when invoked without args it extracts the embedded payload (via PE section or Mach-O segment) and runs the install.
 - `crates/uninstall` → binary `outto-uninstall` (iced). Cross-platform uninstaller GUI.
@@ -90,7 +90,7 @@ Added by `outto_macos::paths::with_macos_env()`:
 
 ### macOS elevation
 
-For actions that touch `/Library`, `/usr/local`, `/Library/LaunchDaemons`, etc. (when `[privileges] required = "admin"` or `"auto"` with an install path under one of those roots), `outto_macos::elevation::elevate_self` re-launches the current process through `osascript 'do shell script "..." with administrator privileges'`. The user sees a standard macOS password prompt.
+For actions that touch `/Library`, `/usr/local`, `/Library/LaunchDaemons`, etc. (when `[privileges] required = "admin"` or `"auto"` with an install path under one of those roots), the work runs as a one-shot root launchd job (Sparkle 2's approach): `AuthorizationCopyRights` on a per-package custom right (`no.divvun.outto.<pkg-id>.<install|uninstall>.v1`, rule `authenticate-admin`, registered on first use) with `ExtendRights | InteractionAllowed`, then `SMJobSubmit` to the system domain with the same `AuthorizationRef` (`RunAtLoad` + `LaunchOnlyOnce`, label `no.divvun.outto.elevated`). Unlike `osascript ... with administrator privileges` (`system.privilege.admin`), authd allows Touch ID for this right. The job streams JSON progress to a file the unprivileged GUI tails (`run_elevated_with_progress`); headless runs use `elevate_self`, which forwards that stream to the caller's callbacks. authd caches the prompt wording per right name — bump `RIGHT_VERSION` in `elevation.rs` when changing it.
 
 ## Conventions / gotchas
 
