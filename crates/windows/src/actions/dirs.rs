@@ -1,4 +1,7 @@
+use std::os::windows::process::CommandExt;
 use std::path::Path;
+
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use crate::manifest::Action;
 use outto_core::callbacks::{InstallerCallbacks, LogLevel};
@@ -56,6 +59,7 @@ fn apply_permission(
         .arg(path.as_os_str())
         .arg("/grant")
         .arg(format!("{identity}:{access_flag}"))
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| InstallerError::DirOp {
             path: path.to_path_buf(),

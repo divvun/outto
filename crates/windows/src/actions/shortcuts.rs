@@ -1,4 +1,7 @@
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
+
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use crate::manifest::Action;
 use outto_core::callbacks::{InstallerCallbacks, LogLevel};
@@ -133,6 +136,7 @@ fn create_shortcut_powershell(
 
     let output = std::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| InstallerError::Shortcut {
             name: shortcut_path.to_string_lossy().into(),

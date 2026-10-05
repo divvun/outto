@@ -71,8 +71,10 @@ fn check_single(check: &crate::config::PrerequisiteCheck) -> InstallerResult<boo
 fn shell_command(cmd: &str) -> Command {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW: a check runs silently, not in a console window.
         let mut c = Command::new("cmd");
-        c.args(["/C", cmd]);
+        c.args(["/C", cmd]).creation_flags(0x08000000);
         c
     }
     #[cfg(not(windows))]
