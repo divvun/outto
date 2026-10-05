@@ -55,15 +55,43 @@ where
         ),
     );
 
-    let mut cmd = Command::new(&command);
+    let args = arguments.as_deref().map(split_args).unwrap_or_default();
+    let working_dir = entry
+        .working_dir
+        .as_deref()
+        .map(|wd| resolver.resolve(wd))
+        .transpose()?;
 
-    if let Some(ref args) = arguments {
-        cmd.args(split_args(args));
+    #[cfg(windows)]
+    if entry.run_as_original_user {
+        use super::original_user::{self, Outcome};
+        match original_user::run(
+            &command,
+            &args,
+            working_dir.as_deref(),
+            &entry.show,
+            entry.wait,
+        )? {
+            Outcome::Unavailable(reason) => callbacks.on_log(
+                LogLevel::Info,
+                &format!("Run: {reason}; running as the current user"),
+            ),
+            Outcome::Spawned => {
+                record(manifest, command, phase_str);
+                return Ok(());
+            }
+            Outcome::Exited(code) => {
+                handle_exit(code as i32, "", manifest, callbacks);
+                record(manifest, command, phase_str);
+                return Ok(());
+            }
+        }
     }
 
-    if let Some(ref wd) = entry.working_dir {
-        let resolved_wd = resolver.resolve(wd)?;
-        cmd.current_dir(&resolved_wd);
+    let mut cmd = Command::new(&command);
+    cmd.args(&args);
+    if let Some(ref wd) = working_dir {
+        cmd.current_dir(wd);
     }
 
     #[cfg(windows)]
@@ -82,23 +110,14 @@ where
             message: format!("failed to execute: {e}"),
         })?;
 
-        match output.status.code() {
-            Some(code) if is_reboot_exit_code(code) => {
-                callbacks.on_log(
-                    LogLevel::Info,
-                    &format!("Run: command requests a system restart (exit {code})"),
-                );
-                manifest.reboot_needed = true;
-            }
-            _ if !output.status.success() => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                callbacks.on_log(
-                    LogLevel::Warn,
-                    &format!("Run: command exited with {}: {stderr}", output.status),
-                );
-            }
-            _ => {}
-        }
+        // A process killed by a signal has no code; treat it as a failure.
+        let code = output.status.code().unwrap_or(-1);
+        handle_exit(
+            code,
+            &String::from_utf8_lossy(&output.stderr),
+            manifest,
+            callbacks,
+        );
     } else {
         cmd.spawn().map_err(|e| InstallerError::CommandExec {
             command: command.clone(),
@@ -106,12 +125,40 @@ where
         })?;
     }
 
-    manifest.record(CoreAction::CommandExecuted {
-        command: command.clone(),
-        phase: phase_str.to_string(),
-    });
-
+    record(manifest, command, phase_str);
     Ok(())
+}
+
+fn record<A>(manifest: &mut InstallManifest<A>, command: String, phase: &str)
+where
+    A: From<CoreAction>,
+{
+    manifest.record(CoreAction::CommandExecuted {
+        command,
+        phase: phase.to_string(),
+    });
+}
+
+/// A command's exit code is never fatal: a reboot request is noted, any other
+/// failure is logged.
+fn handle_exit<A>(
+    code: i32,
+    stderr: &str,
+    manifest: &mut InstallManifest<A>,
+    callbacks: &dyn InstallerCallbacks,
+) {
+    if is_reboot_exit_code(code) {
+        callbacks.on_log(
+            LogLevel::Info,
+            &format!("Run: command requests a system restart (exit {code})"),
+        );
+        manifest.reboot_needed = true;
+    } else if code != 0 {
+        callbacks.on_log(
+            LogLevel::Warn,
+            &format!("Run: command exited with {code}: {stderr}"),
+        );
+    }
 }
 
 /// Windows convention (MSI / many redistributables): 3010 =
