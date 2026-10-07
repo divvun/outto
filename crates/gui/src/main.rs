@@ -153,7 +153,8 @@ fn run_headless(
             Ok(cb) => cb,
             Err(e) => return Err(format!("can't open progress file {}: {e}", path.display())),
         };
-        let result = op(&outto_core::logfile::LoggingCallbacks::new(&cb)).map_err(|e| e.to_string());
+        let result =
+            op(&outto_core::logfile::LoggingCallbacks::new(&cb)).map_err(|e| e.to_string());
         cb.write_finished(result.as_ref().map(|_| ()).map_err(|e| e.as_str()));
         // The macOS config has no reboot policy, so the elevated child never
         // requests one through this path.

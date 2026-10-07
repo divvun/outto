@@ -24,7 +24,10 @@ pub fn parse_log_switch(arg: &str) -> Option<Option<String>> {
     if arg.eq_ignore_ascii_case("/LOG") || arg == "--log" {
         return Some(None);
     }
-    let value = if arg.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("/LOG=")) {
+    let value = if arg
+        .get(..5)
+        .is_some_and(|p| p.eq_ignore_ascii_case("/LOG="))
+    {
         &arg[5..]
     } else {
         arg.strip_prefix("--log=")?
@@ -109,7 +112,10 @@ pub fn write(level: LogLevel, message: &str) {
 /// Log the outcome of a whole operation (`"Installation"`, `"Uninstallation"`).
 pub fn write_result<E: std::fmt::Display>(operation: &str, result: &Result<(), E>) {
     match result {
-        Ok(()) => write(LogLevel::Info, &format!("{operation} finished successfully")),
+        Ok(()) => write(
+            LogLevel::Info,
+            &format!("{operation} finished successfully"),
+        ),
         Err(e) => write(LogLevel::Error, &format!("{operation} failed: {e}")),
     }
 }

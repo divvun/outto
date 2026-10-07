@@ -39,8 +39,7 @@ pub fn normalize_lexical(path: &str, windows: bool) -> String {
         if let Some(rest) = s.strip_prefix(r"\\") {
             prefix.push_str(r"\\");
             s = rest.to_string();
-        } else if s.len() >= 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic()
-        {
+        } else if s.len() >= 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic() {
             prefix.push_str(&s[..2]);
             s = s[2..].to_string();
         }
@@ -154,7 +153,10 @@ mod tests {
 
     #[test]
     fn posix_paths() {
-        assert_eq!(normalize_lexical("/usr//local/./bin/", false), "/usr/local/bin");
+        assert_eq!(
+            normalize_lexical("/usr//local/./bin/", false),
+            "/usr/local/bin"
+        );
         assert_eq!(normalize_lexical("/usr/local/../bin", false), "/usr/bin");
         // A backslash is an ordinary character on POSIX.
         assert_eq!(normalize_lexical(r"/a\b", false), r"/a\b");

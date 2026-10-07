@@ -136,9 +136,7 @@ fn pack_directory_tree(
         .filter_map(|e| e.ok())
     {
         let abs_path = entry.path();
-        let rel_path = abs_path
-            .strip_prefix(dir)
-            .map_err(io::Error::other)?;
+        let rel_path = abs_path.strip_prefix(dir).map_err(io::Error::other)?;
 
         if rel_path.as_os_str().is_empty() {
             continue;
@@ -184,7 +182,10 @@ mod tests {
         pack_payload(&config, &source, &out, uninstaller).unwrap();
         let extract = root.join("extract");
         fs::create_dir_all(&extract).unwrap();
-        BoxReader::open(&out).unwrap().extract_all(&extract).unwrap();
+        BoxReader::open(&out)
+            .unwrap()
+            .extract_all(&extract)
+            .unwrap();
         extract
     }
 
@@ -213,7 +214,11 @@ mod tests {
 
         let extract = pack_and_extract(tmp.path(), &app);
 
-        assert!(extract.join("uninstall.app/Contents/MacOS/Uninstall").is_file());
+        assert!(
+            extract
+                .join("uninstall.app/Contents/MacOS/Uninstall")
+                .is_file()
+        );
         assert_eq!(
             find_extracted_uninstaller(&extract),
             Some(extract.join(UNINSTALL_APP))

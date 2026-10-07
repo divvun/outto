@@ -451,7 +451,6 @@ mod tests {
         }
     }
 
-
     /// A stand-in uninstaller. `install` refuses to run without one and only
     /// copies it into the receipt, so any file will do.
     fn fake_uninstaller() -> PathBuf {

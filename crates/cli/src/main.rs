@@ -171,8 +171,8 @@ fn build_installer(
         )
     })?;
 
-    let mut uninstall_exe =
-        find_binary(&[&libexec_dir, cli_dir], "outto-uninstall.exe").ok_or_else(|| {
+    let mut uninstall_exe = find_binary(&[&libexec_dir, cli_dir], "outto-uninstall.exe")
+        .ok_or_else(|| {
             format!(
                 "Uninstaller outto-uninstall.exe not found.\nLooked in: {}, {}",
                 libexec_dir.display(),

@@ -298,7 +298,10 @@ pub fn cleanup_after_uninstall(install_dir: &std::path::Path) {
     }
     if install_dir.exists() {
         match std::fs::remove_dir(install_dir) {
-            Ok(()) => log(LogLevel::Info, &format!("Removed {}", install_dir.display())),
+            Ok(()) => log(
+                LogLevel::Info,
+                &format!("Removed {}", install_dir.display()),
+            ),
             Err(e) => log(
                 LogLevel::Info,
                 &format!("Left {} in place: {e}", install_dir.display()),

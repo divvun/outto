@@ -228,7 +228,9 @@ mod tests {
         assert_eq!(parse(&["/log", "/VERYSILENT"]).log, Some(None));
         assert_eq!(
             parse(&[r#"/LOG="C:\Users\me\AppData\Local\Temp\vro install.log""#]).log,
-            Some(Some(r"C:\Users\me\AppData\Local\Temp\vro install.log".to_string()))
+            Some(Some(
+                r"C:\Users\me\AppData\Local\Temp\vro install.log".to_string()
+            ))
         );
         assert_eq!(
             parse(&["/SILENT", r"/Log=C:\x.log"]).log,
