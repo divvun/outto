@@ -2,6 +2,7 @@
 
 mod app;
 mod bridge;
+mod cleanup;
 mod cli;
 #[cfg(target_os = "macos")]
 mod glass;
@@ -71,6 +72,7 @@ fn main() {
         Mode::InstallEmbedded => run_embedded_install(args.flags.clone()),
         Mode::Uninstall { dir } => run_uninstall(args.flags.clone(), dir.clone()),
     }
+    cleanup::run();
 }
 
 #[cfg(any(windows, target_os = "macos"))]
@@ -108,7 +110,7 @@ fn run_install(flags: cli::CliFlags, config_path: PathBuf, source_dir: PathBuf) 
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to load config: {e}");
-            std::process::exit(2);
+            crate::cleanup::exit(2);
         }
     };
 
@@ -214,14 +216,14 @@ fn run_install_inner(
                     println!("Restarting system...");
                     if let Err(e) = platform::reboot_system() {
                         eprintln!("Could not restart automatically: {e}");
-                        std::process::exit(1);
+                        crate::cleanup::exit(1);
                     }
                 }
-                std::process::exit(0);
+                crate::cleanup::exit(0);
             }
             Err(e) => {
                 eprintln!("Installation failed: {e}");
-                std::process::exit(1);
+                crate::cleanup::exit(1);
             }
         }
     }
@@ -259,11 +261,11 @@ fn run_uninstall(flags: cli::CliFlags, install_dir: PathBuf) {
         match result {
             Ok(_) => {
                 println!("Uninstall complete.");
-                std::process::exit(0);
+                crate::cleanup::exit(0);
             }
             Err(e) => {
                 eprintln!("Uninstall failed: {e}");
-                std::process::exit(1);
+                crate::cleanup::exit(1);
             }
         }
     }
@@ -282,7 +284,7 @@ fn run_uninstall(flags: cli::CliFlags, install_dir: PathBuf) {
 
     if let Err(e) = app::run(state) {
         eprintln!("GUI error: {e}");
-        std::process::exit(1);
+        crate::cleanup::exit(1);
     }
 }
 
@@ -345,7 +347,7 @@ fn fatal_error(msg: &str) -> ! {
         }
     }
 
-    std::process::exit(1);
+    crate::cleanup::exit(1);
 }
 
 fn find_uninstaller() -> Option<PathBuf> {

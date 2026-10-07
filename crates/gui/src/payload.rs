@@ -13,15 +13,15 @@ use box_format::sync::BoxReader;
 
 use crate::bridge::Config;
 
+/// Everything lives in a temporary directory registered with
+/// [`crate::cleanup`], so it survives for the whole GUI session (an elevated
+/// child re-reads `config_path`) and is removed when the process exits.
 pub struct ExtractedPayload {
     pub config: Config,
-    /// On-disk path of the extracted `outto.toml`, kept alive by `_temp_dir`
-    /// for the life of the GUI session — an elevated child re-reads it.
     pub config_path: PathBuf,
     pub source_dir: PathBuf,
     pub license_text: Option<String>,
     pub uninstall_exe: PathBuf,
-    _temp_dir: tempfile::TempDir,
 }
 
 /// Obtain a `.box` file on disk for the current process to read, or `None`
@@ -62,9 +62,10 @@ fn locate_box(_scratch: &std::path::Path) -> io::Result<Option<PathBuf>> {
 
 /// Extract the embedded payload from the current executable, if any.
 pub fn extract_embedded_payload() -> Result<Option<ExtractedPayload>, Box<dyn std::error::Error>> {
-    let temp_dir = tempfile::tempdir()?;
+    let temp_dir = tempfile::Builder::new().prefix("outto-").tempdir()?.keep();
+    crate::cleanup::register(temp_dir.clone());
 
-    let Some(box_path) = locate_box(temp_dir.path())? else {
+    let Some(box_path) = locate_box(&temp_dir)? else {
         return Ok(None);
     };
 
@@ -75,7 +76,7 @@ pub fn extract_embedded_payload() -> Result<Option<ExtractedPayload>, Box<dyn st
         )
     })?;
 
-    let extract_dir = temp_dir.path().join("contents");
+    let extract_dir = temp_dir.join("contents");
     fs::create_dir_all(&extract_dir)?;
 
     reader.extract_all(&extract_dir).map_err(|e| {
@@ -108,6 +109,5 @@ pub fn extract_embedded_payload() -> Result<Option<ExtractedPayload>, Box<dyn st
         source_dir,
         license_text,
         uninstall_exe,
-        _temp_dir: temp_dir,
     }))
 }

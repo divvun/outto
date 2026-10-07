@@ -624,7 +624,7 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
             if state.cancel_locked {
                 return Task::none();
             }
-            std::process::exit(0);
+            crate::cleanup::exit(0);
         }
         Message::LicenseAccepted(accepted) => {
             state.license_accepted = accepted;
@@ -698,7 +698,7 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::Finish => {
-            std::process::exit(if state.result.as_ref().is_some_and(|r| r.is_ok()) {
+            crate::cleanup::exit(if state.result.as_ref().is_some_and(|r| r.is_ok()) {
                 0
             } else {
                 1
@@ -708,7 +708,7 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
             // If the reboot is initiated the OS tears us down; if it fails we
             // surface the error and stay on the completion screen.
             match bridge::reboot_system() {
-                Ok(()) => std::process::exit(0),
+                Ok(()) => crate::cleanup::exit(0),
                 Err(e) => {
                     state.progress.log_lines.push(LogLine {
                         level: LogLevel::Error,
@@ -929,7 +929,7 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
                     state.focused_index = default_focus_index(state);
                 }
             }
-            _ => std::process::exit(0),
+            _ => crate::cleanup::exit(0),
         },
         WizardStep::License => match button_idx {
             0 => {
@@ -946,7 +946,7 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
                     }
                 }
             }
-            _ => std::process::exit(0),
+            _ => crate::cleanup::exit(0),
         },
         WizardStep::Directory => match button_idx {
             0 => {
@@ -963,7 +963,7 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
                     }
                 }
             }
-            _ => std::process::exit(0),
+            _ => crate::cleanup::exit(0),
         },
         WizardStep::Components => match button_idx {
             0 => {
@@ -978,7 +978,7 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
                     state.focused_index = default_focus_index(state);
                 }
             }
-            _ => std::process::exit(0),
+            _ => crate::cleanup::exit(0),
         },
         WizardStep::Summary => match button_idx {
             0 => {
@@ -992,7 +992,7 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
                 state.start_install();
                 state.focused_index = default_focus_index(state);
             }
-            _ => std::process::exit(0),
+            _ => crate::cleanup::exit(0),
         },
         WizardStep::Complete | WizardStep::UninstallComplete => {
             // Button 0 is "Restart Now" when a restart is on offer; everything
@@ -1000,7 +1000,7 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
             if state.step == WizardStep::Complete && state.offer_restart() && button_idx == 0 {
                 return Task::done(Message::RestartNow);
             }
-            std::process::exit(if state.result.as_ref().is_some_and(|r| r.is_ok()) {
+            crate::cleanup::exit(if state.result.as_ref().is_some_and(|r| r.is_ok()) {
                 0
             } else {
                 1
@@ -1012,7 +1012,7 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
                 state.start_uninstall();
                 state.focused_index = default_focus_index(state);
             }
-            _ => std::process::exit(0),
+            _ => crate::cleanup::exit(0),
         },
         _ => {}
     }
