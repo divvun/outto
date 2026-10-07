@@ -257,8 +257,16 @@ pub fn relocate_self() {
     }
     let temp_path =
         std::env::temp_dir().join(format!("outto-uninstall-{}.exe", std::process::id()));
-    let _ = std::fs::rename(&exe, &temp_path);
+    if std::fs::rename(&exe, &temp_path).is_ok() {
+        let _ = RELOCATED_EXE.set(temp_path);
+    }
 }
+
+/// Where [`relocate_self`] moved the running exe. `current_exe()` keeps
+/// reporting the original path after the rename, so this is the only record
+/// of the copy left in the temp directory.
+#[cfg(windows)]
+static RELOCATED_EXE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 #[cfg(not(windows))]
 pub fn relocate_self() {
@@ -298,7 +306,12 @@ pub fn cleanup_after_uninstall(install_dir: &std::path::Path) {
         }
     }
 
-    if let Ok(exe) = std::env::current_exe() {
+    // A running exe can't be deleted, only scheduled for deletion at restart.
+    if let Some(exe) = RELOCATED_EXE
+        .get()
+        .cloned()
+        .or_else(|| std::env::current_exe().ok())
+    {
         match schedule_delete_on_reboot(&exe) {
             Ok(()) => log(
                 LogLevel::Info,
