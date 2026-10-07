@@ -77,7 +77,7 @@ fn run_embedded_install(flags: cli::CliFlags) {
         payload.config_path,
         payload.source_dir,
         payload.license_text,
-        payload.uninstall_exe,
+        Some(payload.uninstall_exe),
     );
 }
 

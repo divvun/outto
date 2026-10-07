@@ -73,6 +73,23 @@ pub fn install(
         ));
     }
 
+    // Without an uninstaller the ARP entry gets no UninstallString and the
+    // package can never be removed, so refuse before touching anything.
+    let uninstall_exe_src = match options.uninstall_exe.as_deref() {
+        Some(p) if p.is_file() => p.to_path_buf(),
+        Some(p) => {
+            return Err(InstallerError::Validation(format!(
+                "uninstaller not found: {}",
+                p.display()
+            )));
+        }
+        None => {
+            return Err(InstallerError::Validation(
+                "no uninstaller was supplied; the package could not be uninstalled".into(),
+            ));
+        }
+    };
+
     let install_dir = if let Some(ref dir) = options.install_dir {
         PathBuf::from(
             dir.to_string_lossy()
@@ -222,28 +239,24 @@ pub fn install(
                 }
             }
 
-            let uninstall_string = if let Some(ref uninstall_exe_src) = options.uninstall_exe {
-                let pkg_dir =
-                    InstallManifest::<WindowsAction>::package_dir(&install_dir, &config.package.id);
-                let uninstall_dest = pkg_dir.join("uninstall.exe");
-                std::fs::copy(uninstall_exe_src, &uninstall_dest).map_err(|e| {
-                    InstallerError::FileOp {
-                        path: uninstall_dest.clone(),
-                        source: e,
-                    }
-                })?;
-                callbacks.on_log(
-                    LogLevel::Info,
-                    &format!("Copied uninstaller to {}", uninstall_dest.display()),
-                );
-                Some(format!(
-                    "\"{}\" --dir \"{}\"",
-                    uninstall_dest.display(),
-                    install_dir.display()
-                ))
-            } else {
-                None
-            };
+            let pkg_dir =
+                InstallManifest::<WindowsAction>::package_dir(&install_dir, &config.package.id);
+            let uninstall_dest = pkg_dir.join(outto_core::archive::UNINSTALL_EXE);
+            std::fs::copy(&uninstall_exe_src, &uninstall_dest).map_err(|e| {
+                InstallerError::FileOp {
+                    path: uninstall_dest.clone(),
+                    source: e,
+                }
+            })?;
+            callbacks.on_log(
+                LogLevel::Info,
+                &format!("Copied uninstaller to {}", uninstall_dest.display()),
+            );
+            let uninstall_string = format!(
+                "\"{}\" --dir \"{}\"",
+                uninstall_dest.display(),
+                install_dir.display()
+            );
 
             let display_icon = config
                 .uninstall
@@ -261,7 +274,7 @@ pub fn install(
                 display_icon: display_icon.as_deref(),
                 url: config.package.url.as_deref(),
                 support_url: config.package.support_url.as_deref(),
-                uninstall_string: uninstall_string.as_deref(),
+                uninstall_string: &uninstall_string,
                 depends_on: &config.package.depends_on,
             })?;
 
@@ -421,6 +434,21 @@ mod tests {
         }
     }
 
+
+    /// A stand-in uninstaller. `install` refuses to run without one and only
+    /// copies it into the receipt, so any file will do.
+    fn fake_uninstaller() -> PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "outto_test_uninstall_{}_{}.exe",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::write(&p, b"MZ").unwrap();
+        p
+    }
+
     #[test]
     fn test_install_basic_files() {
         let test_dir = std::env::temp_dir().join("outto_test_install");
@@ -451,7 +479,7 @@ overwrite = "always"
             source_dir,
             install_dir: Some(install_dir.clone()),
             selected_components: None,
-            uninstall_exe: None,
+            uninstall_exe: Some(fake_uninstaller()),
         };
 
         let result = install(&config, &options, &callbacks);
@@ -463,6 +491,11 @@ overwrite = "always"
         assert!(
             InstallManifest::<WindowsAction>::manifest_path(&install_dir, "com.test.basic")
                 .exists()
+        );
+        assert!(
+            InstallManifest::<WindowsAction>::package_dir(&install_dir, "com.test.basic")
+                .join("uninstall.exe")
+                .is_file()
         );
 
         let result = uninstall_package(&install_dir, "com.test.basic", &callbacks);
@@ -520,7 +553,7 @@ component = "extras"
             source_dir,
             install_dir: Some(install_dir.clone()),
             selected_components: Some(selected),
-            uninstall_exe: None,
+            uninstall_exe: Some(fake_uninstaller()),
         };
 
         let result = install(&config, &options, &callbacks);
@@ -528,6 +561,48 @@ component = "extras"
 
         assert!(install_dir.join("app.exe").exists());
         assert!(!install_dir.join("extras/plugin.dll").exists());
+
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn test_install_without_uninstaller_is_refused() {
+        let test_dir = std::env::temp_dir().join("outto_test_no_uninstaller");
+        let source_dir = test_dir.join("source");
+        let install_dir = test_dir.join("installed");
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("app.exe"), "fake exe").unwrap();
+
+        let config = Config::from_toml(
+            r##"
+[package]
+id = "com.test.nouninst"
+name = "NoUninstTest"
+version = "1.0.0"
+
+[[files]]
+source = "*"
+dest = "#{app}"
+"##,
+        )
+        .unwrap();
+        let callbacks = TestCallbacks::default();
+
+        for uninstall_exe in [None, Some(test_dir.join("missing-uninstall.exe"))] {
+            let options = InstallOptions {
+                source_dir: source_dir.clone(),
+                install_dir: Some(install_dir.clone()),
+                selected_components: None,
+                uninstall_exe,
+            };
+            let result = install(&config, &options, &callbacks);
+            assert!(
+                matches!(result, Err(InstallerError::Validation(_))),
+                "{result:?}"
+            );
+            assert!(!install_dir.exists());
+        }
 
         let _ = fs::remove_dir_all(&test_dir);
     }

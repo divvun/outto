@@ -35,6 +35,20 @@ fn path_resolver_new(install_dir: &std::path::Path, name: &str, version: &str) -
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// A stand-in uninstaller. `install` refuses to run without one and only
+/// copies it into the receipt, so any file will do.
+fn fake_uninstaller() -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let p = std::env::temp_dir().join(format!(
+        "outto_test_uninstall_{}_{}.exe",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::write(&p, b"MZ").unwrap();
+    p
+}
+
 fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s)
         .encode_wide()
@@ -691,7 +705,7 @@ fn test_write_and_remove_uninstall_registry() {
         display_icon: None,
         url: None,
         support_url: None,
-        uninstall_string: None,
+        uninstall_string: "\"C:\\TestUninstall\\uninstall.exe\"",
         depends_on: &[],
     };
 
@@ -784,7 +798,7 @@ action = "set"
         source_dir,
         install_dir: Some(install_dir.clone()),
         selected_components: None,
-        uninstall_exe: None,
+        uninstall_exe: Some(fake_uninstaller()),
     };
 
     // Install
@@ -1320,7 +1334,7 @@ overwrite = "always"
         source_dir,
         install_dir: Some(install_dir.clone()),
         selected_components: None,
-        uninstall_exe: None,
+        uninstall_exe: Some(fake_uninstaller()),
     };
 
     install(&config, &options, &NoOpCallbacks).unwrap();
@@ -1360,7 +1374,7 @@ overwrite = "never"
         source_dir,
         install_dir: Some(install_dir.clone()),
         selected_components: None,
-        uninstall_exe: None,
+        uninstall_exe: Some(fake_uninstaller()),
     };
 
     install(&config, &options, &NoOpCallbacks).unwrap();
@@ -1403,7 +1417,7 @@ overwrite = "if_newer"
         source_dir,
         install_dir: Some(install_dir.clone()),
         selected_components: None,
-        uninstall_exe: None,
+        uninstall_exe: Some(fake_uninstaller()),
     };
 
     install(&config, &options, &NoOpCallbacks).unwrap();
@@ -1444,7 +1458,7 @@ overwrite = "always"
         source_dir,
         install_dir: Some(install_dir.clone()),
         selected_components: None,
-        uninstall_exe: None,
+        uninstall_exe: Some(fake_uninstaller()),
     };
 
     install(&config, &options, &NoOpCallbacks).unwrap();
@@ -1481,7 +1495,7 @@ dest = "#{app}"
         source_dir,
         install_dir: Some(dir.join("dst")),
         selected_components: None,
-        uninstall_exe: None,
+        uninstall_exe: Some(fake_uninstaller()),
     };
 
     // Should succeed (no matches is a warning, not an error)
@@ -1530,7 +1544,7 @@ show = "hidden"
         source_dir,
         install_dir: Some(install_dir.clone()),
         selected_components: None,
-        uninstall_exe: None,
+        uninstall_exe: Some(fake_uninstaller()),
     };
 
     install(&config, &options, &NoOpCallbacks).unwrap();
@@ -1560,7 +1574,7 @@ version = "1.0.0"
         source_dir,
         install_dir: None, // No install dir
         selected_components: None,
-        uninstall_exe: None,
+        uninstall_exe: Some(fake_uninstaller()),
     };
 
     let result = install(&config, &options, &NoOpCallbacks);
@@ -1599,7 +1613,7 @@ dest = "#{{app}}"
         source_dir,
         install_dir: None, // Use default_dir from config
         selected_components: None,
-        uninstall_exe: None,
+        uninstall_exe: Some(fake_uninstaller()),
     };
 
     let result = install(&config, &options, &NoOpCallbacks);
@@ -1641,7 +1655,7 @@ required = true
         source_dir,
         install_dir: Some(install_dir.clone()),
         selected_components: None,
-        uninstall_exe: None,
+        uninstall_exe: Some(fake_uninstaller()),
     };
 
     let result = install(&config, &options, &NoOpCallbacks);

@@ -20,7 +20,7 @@ pub struct ExtractedPayload {
     pub config_path: PathBuf,
     pub source_dir: PathBuf,
     pub license_text: Option<String>,
-    pub uninstall_exe: Option<PathBuf>,
+    pub uninstall_exe: PathBuf,
     _temp_dir: tempfile::TempDir,
 }
 
@@ -99,24 +99,8 @@ pub fn extract_embedded_payload() -> Result<Option<ExtractedPayload>, Box<dyn st
         fs::read_to_string(&license_path).ok()
     });
 
-    // The CLI packs the uninstaller as `uninstall.exe` on Windows; on macOS the
-    // uninstaller is stored as a directory tree representing `uninstall.app`.
-    let uninstall_exe = {
-        #[cfg(windows)]
-        {
-            let p = extract_dir.join("uninstall.exe");
-            if p.exists() { Some(p) } else { None }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let p = extract_dir.join("uninstall.app");
-            if p.exists() { Some(p) } else { None }
-        }
-        #[cfg(not(any(windows, target_os = "macos")))]
-        {
-            None
-        }
-    };
+    let uninstall_exe = outto_core::archive::find_extracted_uninstaller(&extract_dir)
+        .ok_or("Embedded payload does not contain an uninstaller")?;
 
     Ok(Some(ExtractedPayload {
         config,

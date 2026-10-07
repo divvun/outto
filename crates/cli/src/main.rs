@@ -171,38 +171,35 @@ fn build_installer(
         )
     })?;
 
-    let mut uninstall_exe = find_binary(&[&libexec_dir, cli_dir], "outto-uninstall.exe");
-    if let Some(ref p) = uninstall_exe {
-        eprintln!("Uninstaller: {}", p.display());
-    } else {
-        eprintln!(
-            "Warning: outto-uninstall binary not found. Installer will not include an uninstaller."
-        );
-    }
+    let mut uninstall_exe =
+        find_binary(&[&libexec_dir, cli_dir], "outto-uninstall.exe").ok_or_else(|| {
+            format!(
+                "Uninstaller outto-uninstall.exe not found.\nLooked in: {}, {}",
+                libexec_dir.display(),
+                cli_dir.display()
+            )
+        })?;
+    eprintln!("Uninstaller: {}", uninstall_exe.display());
 
-    if let (Some(cmd), Some(uninstall_path)) = (sign_command, &uninstall_exe) {
+    let temp_dir = tempfile::tempdir()?;
+
+    if let Some(cmd) = sign_command {
         let callbacks = NoOpCallbacks;
 
-        let temp_uninstall = tempfile::tempdir()?.keep().join("outto-uninstall.exe");
-        fs::copy(uninstall_path, &temp_uninstall)?;
+        let temp_uninstall = temp_dir.path().join("outto-uninstall.exe");
+        fs::copy(&uninstall_exe, &temp_uninstall)?;
 
         eprintln!("Signing uninstaller...");
         signing::sign_file(cmd, &temp_uninstall, &callbacks)
             .map_err(|e| format!("Failed to sign uninstaller: {e}"))?;
 
-        uninstall_exe = Some(temp_uninstall);
+        uninstall_exe = temp_uninstall;
     }
 
-    let temp_dir = tempfile::tempdir()?;
     let temp_box_path = temp_dir.path().join("payload.box");
 
     eprintln!("Packing payload...");
-    pack_payload(
-        config_path,
-        source_dir,
-        &temp_box_path,
-        uninstall_exe.as_deref(),
-    )?;
+    pack_payload(config_path, source_dir, &temp_box_path, &uninstall_exe)?;
 
     let box_size = fs::metadata(&temp_box_path)?.len();
     eprintln!(
@@ -304,41 +301,34 @@ fn build_installer(
 
     let gui_bin = find_binary(&[&libexec, cli_dir], "outto-gui")
         .ok_or("outto-gui binary not found (built by build-release.sh)")?;
-    let uninstall_bin = find_binary(&[&libexec, cli_dir], "outto-uninstall");
+    let uninstall_bin = find_binary(&[&libexec, cli_dir], "outto-uninstall")
+        .ok_or("outto-uninstall binary not found (built by build-release.sh)")?;
     let sfx_bin = find_binary(&[&libexec, cli_dir], "outto-sfx-macos");
 
     eprintln!("GUI template: {}", gui_bin.display());
 
-    // 1. Build uninstall.app (if uninstaller binary available).
+    // 1. Build uninstall.app.
     let scratch = tempfile::tempdir()?;
-    let uninstall_app = if let Some(ref bin) = uninstall_bin {
-        eprintln!("Uninstaller: {}", bin.display());
-        let app = scratch.path().join("uninstall.app");
-        build_app_bundle(
-            &app,
-            bin,
-            &config.package.name,
-            &format!("{}.uninstall", config.package.id),
-            &format!("Uninstall {}", config.package.name),
-            "Uninstall",
-        )?;
-        if let Some(cmd) = sign_command {
-            eprintln!("Signing uninstall.app...");
-            signing::sign_file(cmd, &app, &callbacks)
-                .map_err(|e| format!("sign uninstall.app: {e}"))?;
-        }
-        Some(app)
-    } else {
-        eprintln!(
-            "Warning: outto-uninstall binary not found; installer will not include an uninstaller."
-        );
-        None
-    };
+    eprintln!("Uninstaller: {}", uninstall_bin.display());
+    let uninstall_app = scratch.path().join("uninstall.app");
+    build_app_bundle(
+        &uninstall_app,
+        &uninstall_bin,
+        &config.package.name,
+        &format!("{}.uninstall", config.package.id),
+        &format!("Uninstall {}", config.package.name),
+        "Uninstall",
+    )?;
+    if let Some(cmd) = sign_command {
+        eprintln!("Signing uninstall.app...");
+        signing::sign_file(cmd, &uninstall_app, &callbacks)
+            .map_err(|e| format!("sign uninstall.app: {e}"))?;
+    }
 
     // 2. Pack payload: config + source/** + uninstall.app/**.
     let box_path = scratch.path().join("payload.box");
     eprintln!("Packing payload...");
-    pack_payload(config_path, source_dir, &box_path, uninstall_app.as_deref())?;
+    pack_payload(config_path, source_dir, &box_path, &uninstall_app)?;
     let box_size = std::fs::metadata(&box_path)?.len();
     eprintln!(
         "Payload size: {} bytes ({:.1} MB)",

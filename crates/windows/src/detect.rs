@@ -210,7 +210,7 @@ pub struct UninstallRegistryInfo<'a> {
     pub display_icon: Option<&'a str>,
     pub url: Option<&'a str>,
     pub support_url: Option<&'a str>,
-    pub uninstall_string: Option<&'a str>,
+    pub uninstall_string: &'a str,
     pub depends_on: &'a [String],
 }
 
@@ -295,10 +295,12 @@ pub fn write_uninstall_registry(info: &UninstallRegistryInfo<'_>) -> InstallerRe
     if let Some(su) = info.support_url {
         set_str(hkey, "HelpLink", su);
     }
-    if let Some(us) = info.uninstall_string {
-        set_str(hkey, "UninstallString", us);
-        set_str(hkey, "QuietUninstallString", &format!("{us} /VERYSILENT"));
-    }
+    set_str(hkey, "UninstallString", info.uninstall_string);
+    set_str(
+        hkey,
+        "QuietUninstallString",
+        &format!("{} /VERYSILENT", info.uninstall_string),
+    );
 
     let one: u32 = 1;
     let name_wide = to_wide("NoModify");
