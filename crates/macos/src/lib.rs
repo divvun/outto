@@ -216,23 +216,33 @@ pub fn install(
 
             // Clean up orphaned files from a prior install (upgrade).
             if let Some(old) = old_manifest {
-                let new_files: std::collections::HashSet<PathBuf> = install_manifest
-                    .actions
-                    .iter()
-                    .filter_map(|a| match a {
-                        MacosAction::FileCopied { dest, .. } => Some(dest.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                for action in &old.actions {
-                    if let MacosAction::FileCopied { dest, .. } = action {
-                        if !new_files.contains(dest) && dest.exists() {
-                            callbacks.on_log(
-                                LogLevel::Info,
-                                &format!("Upgrade: removing orphaned file {}", dest.display()),
-                            );
-                            let _ = std::fs::remove_file(dest);
-                        }
+                let mut written: Vec<&std::path::Path> = Vec::new();
+                for action in &install_manifest.actions {
+                    if let MacosAction::FileCopied { dest, backup, .. } = action {
+                        written.push(dest);
+                        written.extend(backup.as_deref());
+                    }
+                }
+                let old_files = old.actions.iter().filter_map(|a| match a {
+                    MacosAction::FileCopied { dest, .. } => Some(dest.as_path()),
+                    _ => None,
+                });
+                let orphans = outto_core::manifest::orphans::orphaned_files(
+                    old_files,
+                    written,
+                    Some(&resolver),
+                    false,
+                );
+                for dest in orphans.iter().filter(|d| d.exists()) {
+                    callbacks.on_log(
+                        LogLevel::Info,
+                        &format!("Upgrade: removing orphaned file {}", dest.display()),
+                    );
+                    if let Err(e) = std::fs::remove_file(dest) {
+                        callbacks.on_log(
+                            LogLevel::Warn,
+                            &format!("Upgrade: could not remove {}: {e}", dest.display()),
+                        );
                     }
                 }
             }
