@@ -163,3 +163,78 @@ pub fn collect_cascade_order(target_id: &str) -> Vec<detect::InstalledPackageInf
 
     ordered
 }
+
+/// Remove an installation made by the Inno Setup installer this package
+/// replaces, by running its `unins000.exe` silently.
+///
+/// Inno's uninstaller copies itself to `%TEMP%` and does the work from that
+/// copy, which can outlive the process we spawned, so after it exits we poll
+/// until both the Add/Remove Programs entry and `unins000.exe` are gone. If
+/// the uninstaller no longer exists, the entry is stale and is deleted.
+pub fn uninstall_legacy_inno(
+    existing: &detect::LegacyInnoInstall,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()> {
+    use std::os::windows::process::CommandExt;
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    const TIMEOUT: Duration = Duration::from_secs(300);
+
+    let entry = format!("{}\\{}", existing.root, existing.key);
+
+    let Some(exe) = existing.uninstaller.as_ref().filter(|exe| exe.exists()) else {
+        callbacks.on_log(
+            LogLevel::Warn,
+            &format!("Inno Setup uninstaller missing; removing stale entry {entry}"),
+        );
+        return crate::actions::registry::delete_key(existing.root, &existing.key);
+    };
+
+    callbacks.on_log(
+        LogLevel::Info,
+        &format!("Running Inno Setup uninstaller {}", exe.display()),
+    );
+
+    let status = std::process::Command::new(exe)
+        .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map_err(|e| InstallerError::CommandExec {
+            command: exe.display().to_string(),
+            message: format!("failed to execute: {e}"),
+        })?;
+
+    if !status.success() {
+        return Err(InstallerError::CommandExec {
+            command: exe.display().to_string(),
+            message: format!(
+                "Inno Setup uninstaller exited with code {}",
+                status.code().unwrap_or(-1)
+            ),
+        });
+    }
+
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let entry_present = detect::legacy_inno_entry_exists(existing);
+        if !entry_present && !exe.exists() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(InstallerError::UpgradeConflict(format!(
+                "Inno Setup uninstaller did not finish within {}s ({} still present)",
+                TIMEOUT.as_secs(),
+                if entry_present {
+                    entry
+                } else {
+                    exe.display().to_string()
+                }
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    callbacks.on_log(LogLevel::Info, "Inno Setup installation removed");
+    Ok(())
+}

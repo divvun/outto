@@ -34,7 +34,24 @@ fn validate_package(config: &Config) -> InstallerResult<()> {
             config.package.version
         )));
     }
+    if let Some(guid) = &config.package.legacy_inno_app_id {
+        if !is_bare_guid(guid) {
+            return Err(InstallerError::Validation(format!(
+                "package.legacy_inno_app_id '{guid}' must be a GUID without braces, \
+                 e.g. 8A3F2C1D-0B4E-4F6A-9C7D-1E2F3A4B5C6D"
+            )));
+        }
+    }
     Ok(())
+}
+
+fn is_bare_guid(s: &str) -> bool {
+    let groups: Vec<&str> = s.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(g, len)| g.len() == len && g.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 fn validate_components(config: &Config) -> InstallerResult<()> {
@@ -212,6 +229,22 @@ version = "1.0.0-beta.1"
         )
         .unwrap();
         assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_legacy_inno_app_id() {
+        let parse = |guid: &str| -> Config {
+            toml::from_str(&format!(
+                "{}legacy_inno_app_id = \"{guid}\"\n",
+                minimal_toml()
+            ))
+            .unwrap()
+        };
+        assert!(validate_config(&parse("8A3F2C1D-0B4E-4F6A-9C7D-1E2F3A4B5C6D")).is_ok());
+        assert!(validate_config(&parse("8a3f2c1d-0b4e-4f6a-9c7d-1e2f3a4b5c6d")).is_ok());
+        assert!(validate_config(&parse("{8A3F2C1D-0B4E-4F6A-9C7D-1E2F3A4B5C6D}")).is_err());
+        assert!(validate_config(&parse("8A3F2C1D-0B4E-4F6A-9C7D")).is_err());
+        assert!(validate_config(&parse("MyApp")).is_err());
     }
 
     #[test]

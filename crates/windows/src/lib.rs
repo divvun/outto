@@ -121,6 +121,35 @@ pub fn install(
         }
     }
 
+    let legacy_inno = match &config.package.legacy_inno_app_id {
+        Some(guid) => detect::detect_legacy_inno_install(guid),
+        None => None,
+    };
+    if let Some(inno) = legacy_inno {
+        callbacks.on_log(
+            LogLevel::Info,
+            &format!(
+                "Inno Setup installation found: {} v{} at {} ({}\\{})",
+                inno.display_name.as_deref().unwrap_or("unknown"),
+                inno.version.as_deref().unwrap_or("unknown"),
+                inno.install_dir.display(),
+                inno.root,
+                inno.key
+            ),
+        );
+        match config.upgrade.policy {
+            UpgradePolicy::Fail => {
+                return Err(InstallerError::UpgradeConflict(format!(
+                    "{} is already installed",
+                    config.package.name
+                )));
+            }
+            UpgradePolicy::SideBySide => {}
+            // We install over it, so it has to be gone before anything else runs.
+            UpgradePolicy::Overwrite => uninstall::uninstall_legacy_inno(&inno, callbacks)?,
+        }
+    }
+
     actions::check_prerequisites_windows(config, callbacks)?;
 
     std::fs::create_dir_all(&install_dir).map_err(|e| InstallerError::DirOp {

@@ -9,6 +9,8 @@ license_file = "LICENSE.txt"
 architecture = "x64"
 privileges = "admin"
 default_dir = "#{pf}/#{package.name}"
+# AppId of the Inno Setup installer this replaces (bare GUID, no braces).
+# legacy_inno_app_id = "8A3F2C1D-0B4E-4F6A-9C7D-1E2F3A4B5C6D"
 
 [logging]
 enabled = true

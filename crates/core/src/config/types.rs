@@ -181,6 +181,11 @@ pub struct PackageConfig {
 
     #[serde(default)]
     pub depends_on: Vec<String>,
+
+    /// AppId of an Inno Setup installer this package replaces, as a bare GUID
+    /// (no braces). An existing `<GUID>_is1` or `{<GUID>}_is1` Add/Remove
+    /// Programs entry is treated as a previous install for `[upgrade]`.
+    pub legacy_inno_app_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

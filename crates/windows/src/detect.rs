@@ -2,6 +2,14 @@ use std::path::PathBuf;
 
 use outto_core::config::Architecture;
 use outto_core::error::InstallerResult;
+use windows_sys::Win32::System::Registry::{
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExW,
+    RegQueryValueExW,
+};
+
+const UNINSTALL_KEY: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
+const UNINSTALL_KEY_WOW64: &str =
+    "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
 
 /// Information about an existing installation found via Add/Remove Programs registry.
 #[derive(Debug, Clone)]
@@ -11,9 +19,118 @@ pub struct ExistingInstall {
     pub display_name: Option<String>,
 }
 
+/// An installation made by an Inno Setup installer, found via its
+/// `<AppId>_is1` Add/Remove Programs entry.
+#[derive(Debug, Clone)]
+pub struct LegacyInnoInstall {
+    /// Registry root of the entry, `"HKLM"` or `"HKCU"`.
+    pub root: &'static str,
+    /// Path of the entry under `root`.
+    pub key: String,
+    pub install_dir: PathBuf,
+    pub version: Option<String>,
+    pub display_name: Option<String>,
+    /// Path to `unins000.exe`, parsed from `UninstallString`.
+    pub uninstaller: Option<PathBuf>,
+}
+
 /// Detect an existing installation of the given package by its AppID.
 pub fn detect_existing_install(package_id: &str) -> InstallerResult<Option<ExistingInstall>> {
-    detect_windows(package_id)
+    Ok(
+        find_uninstall_entry(&[package_id.to_string()], |hkey| ExistingInstall {
+            install_dir: read_string_value(hkey, "InstallLocation")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
+            version: read_string_value(hkey, "DisplayVersion"),
+            display_name: read_string_value(hkey, "DisplayName"),
+        })
+        .map(|(_, _, install)| install),
+    )
+}
+
+/// Detect an Inno Setup installation of the given AppId (a bare GUID). Inno
+/// names its entry `<AppId>_is1`, and AppIds are conventionally written with
+/// braces, so both `<GUID>_is1` and `{<GUID>}_is1` are checked.
+pub fn detect_legacy_inno_install(guid: &str) -> Option<LegacyInnoInstall> {
+    let subkeys = [format!("{{{guid}}}_is1"), format!("{guid}_is1")];
+    find_uninstall_entry(&subkeys, |hkey| {
+        let install_dir = read_string_value(hkey, "InstallLocation")
+            .or_else(|| read_string_value(hkey, "Inno Setup: App Path"))
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        LegacyInnoInstall {
+            root: "",
+            key: String::new(),
+            install_dir,
+            version: read_string_value(hkey, "DisplayVersion"),
+            display_name: read_string_value(hkey, "DisplayName"),
+            uninstaller: read_string_value(hkey, "UninstallString")
+                .and_then(|s| parse_uninstall_exe(&s)),
+        }
+    })
+    .map(|(root, key, install)| LegacyInnoInstall {
+        root,
+        key,
+        ..install
+    })
+}
+
+/// Whether the registry entry a [`LegacyInnoInstall`] was found at still exists.
+pub fn legacy_inno_entry_exists(install: &LegacyInnoInstall) -> bool {
+    let root = if install.root == "HKCU" {
+        HKEY_CURRENT_USER
+    } else {
+        HKEY_LOCAL_MACHINE
+    };
+    let key_wide = to_wide(&install.key);
+    let mut hkey: HKEY = std::ptr::null_mut();
+    let result = unsafe { RegOpenKeyExW(root, key_wide.as_ptr(), 0, KEY_READ, &mut hkey) };
+    if result == 0 {
+        unsafe { RegCloseKey(hkey) };
+    }
+    result == 0
+}
+
+/// Extract the executable from an `UninstallString`, which Inno writes as a
+/// quoted path (`"C:\...\unins000.exe"`), possibly followed by arguments.
+fn parse_uninstall_exe(s: &str) -> Option<PathBuf> {
+    let s = s.trim();
+    let exe = match s.strip_prefix('"') {
+        Some(rest) => rest.split('"').next()?,
+        None => s,
+    };
+    (!exe.is_empty()).then(|| PathBuf::from(exe))
+}
+
+/// Open the first of `subkeys` that exists under the HKLM (native, then
+/// WOW6432Node) or HKCU Uninstall keys, and read it with `read`. Returns the
+/// root name and path of the matching key alongside the result.
+fn find_uninstall_entry<T>(
+    subkeys: &[String],
+    read: impl Fn(HKEY) -> T,
+) -> Option<(&'static str, String, T)> {
+    let roots: [(HKEY, &str, &str); 3] = [
+        (HKEY_LOCAL_MACHINE, "HKLM", UNINSTALL_KEY),
+        (HKEY_LOCAL_MACHINE, "HKLM", UNINSTALL_KEY_WOW64),
+        (HKEY_CURRENT_USER, "HKCU", UNINSTALL_KEY),
+    ];
+
+    for (root, root_name, base) in roots {
+        for subkey in subkeys {
+            let key = format!("{base}\\{subkey}");
+            let key_wide = to_wide(&key);
+            let mut hkey: HKEY = std::ptr::null_mut();
+
+            let result = unsafe { RegOpenKeyExW(root, key_wide.as_ptr(), 0, KEY_READ, &mut hkey) };
+            if result == 0 {
+                let value = read(hkey);
+                unsafe { RegCloseKey(hkey) };
+                return Some((root_name, key, value));
+            }
+        }
+    }
+
+    None
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
@@ -25,97 +142,51 @@ fn to_wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
-fn detect_windows(package_id: &str) -> InstallerResult<Option<ExistingInstall>> {
-    use windows_sys::Win32::System::Registry::*;
+fn read_string_value(hkey: HKEY, name: &str) -> Option<String> {
+    let name_wide = to_wide(name);
+    let mut data_type: u32 = 0;
+    let mut data_size: u32 = 0;
 
-    fn read_string_value(hkey: HKEY, name: &str) -> Option<String> {
-        let name_wide = super::detect::to_wide(name);
-        let mut data_type: u32 = 0;
-        let mut data_size: u32 = 0;
-
-        let result = unsafe {
-            RegQueryValueExW(
-                hkey,
-                name_wide.as_ptr(),
-                std::ptr::null(),
-                &mut data_type,
-                std::ptr::null_mut(),
-                &mut data_size,
-            )
-        };
-
-        if result != 0 || data_size == 0 {
-            return None;
-        }
-
-        let mut buffer = vec![0u8; data_size as usize];
-        let result = unsafe {
-            RegQueryValueExW(
-                hkey,
-                name_wide.as_ptr(),
-                std::ptr::null(),
-                &mut data_type,
-                buffer.as_mut_ptr(),
-                &mut data_size,
-            )
-        };
-
-        if result != 0 {
-            return None;
-        }
-
-        let wide: Vec<u16> = buffer
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        Some(
-            String::from_utf16_lossy(&wide)
-                .trim_end_matches('\0')
-                .to_string(),
+    let result = unsafe {
+        RegQueryValueExW(
+            hkey,
+            name_wide.as_ptr(),
+            std::ptr::null(),
+            &mut data_type,
+            std::ptr::null_mut(),
+            &mut data_size,
         )
+    };
+
+    if result != 0 || data_size == 0 {
+        return None;
     }
 
-    let paths: [(HKEY, String); 3] = [
-        (
-            HKEY_LOCAL_MACHINE,
-            format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{package_id}"),
-        ),
-        (
-            HKEY_LOCAL_MACHINE,
-            format!(
-                "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{package_id}"
-            ),
-        ),
-        (
-            HKEY_CURRENT_USER,
-            format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{package_id}"),
-        ),
-    ];
+    let mut buffer = vec![0u8; data_size as usize];
+    let result = unsafe {
+        RegQueryValueExW(
+            hkey,
+            name_wide.as_ptr(),
+            std::ptr::null(),
+            &mut data_type,
+            buffer.as_mut_ptr(),
+            &mut data_size,
+        )
+    };
 
-    for (root, key) in &paths {
-        let key_wide = to_wide(key);
-        let mut hkey: HKEY = std::ptr::null_mut();
-
-        let result = unsafe { RegOpenKeyExW(*root, key_wide.as_ptr(), 0, KEY_READ, &mut hkey) };
-
-        if result == 0 {
-            let install_dir = read_string_value(hkey, "InstallLocation")
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            let version = read_string_value(hkey, "DisplayVersion");
-            let display_name = read_string_value(hkey, "DisplayName");
-
-            unsafe { RegCloseKey(hkey) };
-
-            return Ok(Some(ExistingInstall {
-                install_dir,
-                version,
-                display_name,
-            }));
-        }
+    if result != 0 {
+        return None;
     }
 
-    Ok(None)
+    let wide: Vec<u16> = buffer
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    Some(
+        String::from_utf16_lossy(&wide)
+            .trim_end_matches('\0')
+            .to_string(),
+    )
 }
 
 /// Check whether the given architecture matches the current system.
@@ -314,53 +385,6 @@ pub fn enumerate_outto_packages() -> Vec<InstalledPackageInfo> {
 
 fn enumerate_outto_packages_windows() -> Vec<InstalledPackageInfo> {
     use windows_sys::Win32::System::Registry::*;
-
-    fn read_string_value(hkey: HKEY, name: &str) -> Option<String> {
-        let name_wide = super::detect::to_wide(name);
-        let mut data_type: u32 = 0;
-        let mut data_size: u32 = 0;
-
-        let result = unsafe {
-            RegQueryValueExW(
-                hkey,
-                name_wide.as_ptr(),
-                std::ptr::null(),
-                &mut data_type,
-                std::ptr::null_mut(),
-                &mut data_size,
-            )
-        };
-
-        if result != 0 || data_size == 0 {
-            return None;
-        }
-
-        let mut buffer = vec![0u8; data_size as usize];
-        let result = unsafe {
-            RegQueryValueExW(
-                hkey,
-                name_wide.as_ptr(),
-                std::ptr::null(),
-                &mut data_type,
-                buffer.as_mut_ptr(),
-                &mut data_size,
-            )
-        };
-
-        if result != 0 {
-            return None;
-        }
-
-        let wide: Vec<u16> = buffer
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        Some(
-            String::from_utf16_lossy(&wide)
-                .trim_end_matches('\0')
-                .to_string(),
-        )
-    }
 
     fn read_multi_sz(hkey: HKEY, name: &str) -> Vec<String> {
         let name_wide = super::detect::to_wide(name);
