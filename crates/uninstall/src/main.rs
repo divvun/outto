@@ -29,6 +29,7 @@ fn main() {
     let mut very_silent = false;
     let mut no_cancel = false;
     let mut progress_file: Option<PathBuf> = None;
+    let mut log: Option<Option<String>> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -50,16 +51,31 @@ fn main() {
             install_dir = args.get(i).map(PathBuf::from);
         } else if upper.starts_with("/DIR=") {
             install_dir = Some(PathBuf::from(arg["/DIR=".len()..].trim_matches('"')));
+        } else if let Some(value) = outto_core::logfile::parse_log_switch(arg) {
+            log = Some(value);
         } else if arg == "--progress-file" {
             i += 1;
             progress_file = args.get(i).map(PathBuf::from);
         } else {
             fatal_error(&format!(
-                "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT]"
+                "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT] [/LOG[=path]]"
             ));
         }
 
         i += 1;
+    }
+
+    if let Some(value) = &log {
+        // An elevated child appends to the log its parent opened.
+        outto_core::logfile::start(value.as_deref(), "Uninstall", progress_file.is_some());
+        outto_core::logfile::write(
+            outto_core::LogLevel::Info,
+            &format!(
+                "outto-uninstall {} started: {}",
+                env!("CARGO_PKG_VERSION"),
+                args.join(" ")
+            ),
+        );
     }
 
     let (install_dir, package_id) = infer_target(install_dir);
@@ -69,7 +85,9 @@ fn main() {
     // /VERYSILENT: no GUI
     if very_silent {
         relocate_self();
-        match run_headless(progress_file.as_deref(), &install_dir, &package_id) {
+        let result = run_headless(progress_file.as_deref(), &install_dir, &package_id);
+        outto_core::logfile::write_result("Uninstallation", &result);
+        match result {
             Ok(()) => {
                 cleanup_after_uninstall(&install_dir);
                 println!("Uninstall complete.");
@@ -110,13 +128,22 @@ fn run_headless(
             Ok(cb) => cb,
             Err(e) => return Err(format!("can't open progress file {}: {e}", path.display())),
         };
-        let result =
-            platform::uninstall_package(install_dir, package_id, &cb).map_err(|e| e.to_string());
+        let result = platform::uninstall_package(
+            install_dir,
+            package_id,
+            &outto_core::logfile::LoggingCallbacks::new(&cb),
+        )
+        .map_err(|e| e.to_string());
         cb.write_finished(result.as_ref().map(|_| ()).map_err(|e| e.as_str()));
         return result;
     }
     let _ = progress_file;
-    platform::uninstall_package(install_dir, package_id, &SilentCallbacks).map_err(|e| e.to_string())
+    platform::uninstall_package(
+        install_dir,
+        package_id,
+        &outto_core::logfile::LoggingCallbacks::new(&SilentCallbacks),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Derive `(install_dir, package_id)` from either the `--dir` flag or the
@@ -245,18 +272,43 @@ pub fn relocate_self() {
 pub fn cleanup_after_uninstall(install_dir: &std::path::Path) {
     let _ = std::env::set_current_dir(std::env::temp_dir());
 
+    use outto_core::LogLevel;
+    use outto_core::logfile::write as log;
+
     let outto_dir = install_dir.join(".outto");
     if outto_dir.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&outto_dir) {
-            eprintln!("Warning: could not remove {}: {e}", outto_dir.display());
+        match std::fs::remove_dir_all(&outto_dir) {
+            Ok(()) => log(LogLevel::Info, &format!("Removed {}", outto_dir.display())),
+            Err(e) => {
+                eprintln!("Warning: could not remove {}: {e}", outto_dir.display());
+                log(
+                    LogLevel::Warn,
+                    &format!("Could not remove {}: {e}", outto_dir.display()),
+                );
+            }
         }
     }
     if install_dir.exists() {
-        let _ = std::fs::remove_dir(install_dir);
+        match std::fs::remove_dir(install_dir) {
+            Ok(()) => log(LogLevel::Info, &format!("Removed {}", install_dir.display())),
+            Err(e) => log(
+                LogLevel::Info,
+                &format!("Left {} in place: {e}", install_dir.display()),
+            ),
+        }
     }
 
     if let Ok(exe) = std::env::current_exe() {
-        let _ = schedule_delete_on_reboot(&exe);
+        match schedule_delete_on_reboot(&exe) {
+            Ok(()) => log(
+                LogLevel::Info,
+                &format!("Scheduled {} for deletion at reboot", exe.display()),
+            ),
+            Err(e) => log(
+                LogLevel::Warn,
+                &format!("Could not schedule {} for deletion: {e}", exe.display()),
+            ),
+        }
     }
 }
 
@@ -346,6 +398,7 @@ fn parse_name_and_version(manifest_path: &std::path::Path) -> (String, String) {
 
 fn fatal_error(msg: &str) -> ! {
     eprintln!("Error: {msg}");
+    outto_core::logfile::write(outto_core::LogLevel::Error, msg);
 
     #[cfg(windows)]
     {

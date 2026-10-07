@@ -89,7 +89,12 @@ pub fn spawn_uninstall(install_dir: PathBuf, package_id: String, queue: BridgeQu
         let callbacks = UninstallCallbacks {
             queue: queue.clone(),
         };
-        let result = platform::uninstall_package(&install_dir, &package_id, &callbacks);
+        let result = platform::uninstall_package(
+            &install_dir,
+            &package_id,
+            &outto_core::logfile::LoggingCallbacks::new(&callbacks),
+        );
+        outto_core::logfile::write_result("Uninstallation", &result);
         let mut q = queue.lock().unwrap();
         q.push_back(BridgeEvent::Finished(result.map_err(|e| e.to_string())));
     });
@@ -133,6 +138,9 @@ pub fn spawn_elevated_uninstall(
             if !install_dir.as_os_str().is_empty() {
                 argv.push("--dir".into());
                 argv.push(install_dir.clone().into());
+            }
+            if let Some(log) = outto_core::logfile::path() {
+                argv.push(format!("/LOG={}", log.display()).into());
             }
             argv.push("--progress-file".into());
             argv.push(progress_path.clone().into());

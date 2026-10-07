@@ -180,7 +180,12 @@ pub fn spawn_install(
             uninstall_exe,
         };
 
-        let result = platform::install(&config, &options, &callbacks);
+        let result = platform::install(
+            &config,
+            &options,
+            &outto_core::logfile::LoggingCallbacks::new(&callbacks),
+        );
+        outto_core::logfile::write_result("Installation", &result);
         let mut q = queue.lock().unwrap();
         q.push_back(BridgeEvent::Finished(result.map_err(|e| e.to_string())));
     });
@@ -198,7 +203,12 @@ pub fn spawn_uninstall(
             queue: queue.clone(),
             suppress_prompts,
         };
-        let result = platform::uninstall_package(&install_dir, &package_id, &callbacks);
+        let result = platform::uninstall_package(
+            &install_dir,
+            &package_id,
+            &outto_core::logfile::LoggingCallbacks::new(&callbacks),
+        );
+        outto_core::logfile::write_result("Uninstallation", &result);
         let mut q = queue.lock().unwrap();
         q.push_back(BridgeEvent::Finished(result.map_err(|e| e.to_string())));
     });
@@ -286,10 +296,8 @@ pub fn spawn_elevated_install(
     if flags.no_restart {
         argv.push("/NORESTART".into());
     }
-    match &flags.log {
-        Some(Some(path)) => argv.push(format!("/LOG={path}").into()),
-        Some(None) => argv.push("/LOG".into()),
-        None => {}
+    if let Some(log) = outto_core::logfile::path() {
+        argv.push(format!("/LOG={}", log.display()).into());
     }
 
     spawn_elevated_with_args(argv, prompt, queue);
@@ -305,13 +313,16 @@ pub fn spawn_elevated_uninstall(
 ) {
     use std::ffi::OsString;
 
-    let argv: Vec<OsString> = vec![
+    let mut argv: Vec<OsString> = vec![
         "uninstall".into(),
         "--dir".into(),
         install_dir.into(),
         "/VERYSILENT".into(),
         "/SUPPRESSMSGBOXES".into(),
     ];
+    if let Some(log) = outto_core::logfile::path() {
+        argv.push(format!("/LOG={}", log.display()).into());
+    }
     spawn_elevated_with_args(argv, prompt, queue);
 }
 

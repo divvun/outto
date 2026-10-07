@@ -14,6 +14,7 @@ pub mod archive;
 pub mod callbacks;
 pub mod config;
 pub mod error;
+pub mod logfile;
 pub mod manifest;
 
 pub use callbacks::{

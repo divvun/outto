@@ -77,11 +77,15 @@ where
                 &format!("Run: {reason}; running as the current user"),
             ),
             Outcome::Spawned => {
+                callbacks.on_log(
+                    LogLevel::Info,
+                    &format!("Run: started {command} as the signed-in user (not waiting)"),
+                );
                 record(manifest, command, phase_str);
                 return Ok(());
             }
             Outcome::Exited(code) => {
-                handle_exit(code as i32, "", manifest, callbacks);
+                handle_exit(&command, code as i32, "", manifest, callbacks);
                 record(manifest, command, phase_str);
                 return Ok(());
             }
@@ -113,6 +117,7 @@ where
         // A process killed by a signal has no code; treat it as a failure.
         let code = output.status.code().unwrap_or(-1);
         handle_exit(
+            &command,
             code,
             &String::from_utf8_lossy(&output.stderr),
             manifest,
@@ -123,6 +128,10 @@ where
             command: command.clone(),
             message: format!("failed to spawn: {e}"),
         })?;
+        callbacks.on_log(
+            LogLevel::Info,
+            &format!("Run: started {command} (not waiting)"),
+        );
     }
 
     record(manifest, command, phase_str);
@@ -140,8 +149,9 @@ where
 }
 
 /// A command's exit code is never fatal: a reboot request is noted, any other
-/// failure is logged.
+/// failure is logged with its stderr. Every exit code is logged.
 fn handle_exit<A>(
+    command: &str,
     code: i32,
     stderr: &str,
     manifest: &mut InstallManifest<A>,
@@ -150,14 +160,16 @@ fn handle_exit<A>(
     if is_reboot_exit_code(code) {
         callbacks.on_log(
             LogLevel::Info,
-            &format!("Run: command requests a system restart (exit {code})"),
+            &format!("Run: {command} exited with {code}, requesting a system restart"),
         );
         manifest.reboot_needed = true;
     } else if code != 0 {
         callbacks.on_log(
             LogLevel::Warn,
-            &format!("Run: command exited with {code}: {stderr}"),
+            &format!("Run: {command} exited with {code}: {stderr}"),
         );
+    } else {
+        callbacks.on_log(LogLevel::Info, &format!("Run: {command} exited with 0"));
     }
 }
 

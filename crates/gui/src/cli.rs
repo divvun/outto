@@ -157,10 +157,8 @@ fn parse_flags(
                     .filter(|s| !s.is_empty())
                     .collect(),
             );
-        } else if upper == "/LOG" || arg == "--log" {
-            flags.log = Some(None);
-        } else if upper.starts_with("/LOG=") {
-            flags.log = Some(Some(strip_value(arg, "/LOG=")));
+        } else if let Some(log) = outto_core::logfile::parse_log_switch(arg) {
+            flags.log = Some(log);
         }
         // Standard --flags
         else if arg == "--config" {
@@ -220,6 +218,25 @@ mod tests {
         assert_eq!(
             parse(&["/COMPONENTS=a, b,"]).components,
             Some(vec!["a".to_string(), "b".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_log_flag() {
+        assert_eq!(parse(&[]).log, None);
+        assert_eq!(parse(&["/LOG"]).log, Some(None));
+        assert_eq!(parse(&["/log", "/VERYSILENT"]).log, Some(None));
+        assert_eq!(
+            parse(&[r#"/LOG="C:\Users\me\AppData\Local\Temp\vro install.log""#]).log,
+            Some(Some(r"C:\Users\me\AppData\Local\Temp\vro install.log".to_string()))
+        );
+        assert_eq!(
+            parse(&["/SILENT", r"/Log=C:\x.log"]).log,
+            Some(Some(r"C:\x.log".to_string()))
+        );
+        assert_eq!(
+            parse(&["--log=/tmp/x.log"]).log,
+            Some(Some("/tmp/x.log".to_string()))
         );
     }
 

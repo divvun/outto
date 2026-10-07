@@ -46,6 +46,23 @@ fn main() {
         }
     };
 
+    if let Some(log) = &args.flags.log {
+        let kind = match args.mode {
+            Mode::Uninstall { .. } => "Uninstall",
+            _ => "Setup",
+        };
+        // An elevated child appends to the log its parent opened.
+        outto_core::logfile::start(log.as_deref(), kind, args.flags.progress_file.is_some());
+        outto_core::logfile::write(
+            outto_core::LogLevel::Info,
+            &format!(
+                "outto {} started: {}",
+                env!("CARGO_PKG_VERSION"),
+                std::env::args().collect::<Vec<_>>().join(" ")
+            ),
+        );
+    }
+
     match &args.mode {
         Mode::Install {
             config_path,
@@ -134,7 +151,7 @@ fn run_headless(
             Ok(cb) => cb,
             Err(e) => return Err(format!("can't open progress file {}: {e}", path.display())),
         };
-        let result = op(&cb).map_err(|e| e.to_string());
+        let result = op(&outto_core::logfile::LoggingCallbacks::new(&cb)).map_err(|e| e.to_string());
         cb.write_finished(result.as_ref().map(|_| ()).map_err(|e| e.as_str()));
         // The macOS config has no reboot policy, so the elevated child never
         // requests one through this path.
@@ -142,7 +159,7 @@ fn run_headless(
     }
     let _ = progress_file;
     let cb = SilentCallbacks::default();
-    op(&cb).map_err(|e| e.to_string())?;
+    op(&outto_core::logfile::LoggingCallbacks::new(&cb)).map_err(|e| e.to_string())?;
     Ok(cb.reboot_required.load(std::sync::atomic::Ordering::SeqCst))
 }
 
@@ -184,9 +201,11 @@ fn run_install_inner(
             uninstall_exe,
         };
 
-        match run_headless(flags.progress_file.as_deref(), |cb| {
+        let result = run_headless(flags.progress_file.as_deref(), |cb| {
             platform::install(&config, &options, cb)
-        }) {
+        });
+        outto_core::logfile::write_result("Installation", &result.as_ref().map(|_| ()));
+        match result {
             Ok(reboot) => {
                 println!("Installation complete.");
                 // Inno semantics: a silent install restarts automatically when
@@ -233,9 +252,11 @@ fn run_uninstall(flags: cli::CliFlags, install_dir: PathBuf) {
     let config = load_config_for_uninstall(&install_dir);
 
     if flags.very_silent {
-        match run_headless(flags.progress_file.as_deref(), |cb| {
+        let result = run_headless(flags.progress_file.as_deref(), |cb| {
             platform::uninstall_package(&install_dir, &config.package.id, cb)
-        }) {
+        });
+        outto_core::logfile::write_result("Uninstallation", &result.as_ref().map(|_| ()));
+        match result {
             Ok(_) => {
                 println!("Uninstall complete.");
                 std::process::exit(0);
@@ -296,6 +317,7 @@ fn load_config_for_uninstall(install_dir: &std::path::Path) -> Config {
 
 fn fatal_error(msg: &str) -> ! {
     eprintln!("Error: {msg}");
+    outto_core::logfile::write(outto_core::LogLevel::Error, msg);
 
     #[cfg(windows)]
     {

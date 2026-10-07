@@ -287,6 +287,14 @@ pub fn install(
                 depends_on: &config.package.depends_on,
             })?;
 
+            callbacks.on_log(
+                LogLevel::Info,
+                &format!(
+                    "Registered uninstall entry {} (UninstallString: {uninstall_string})",
+                    config.package.id
+                ),
+            );
+
             callbacks.on_log(LogLevel::Info, "Installation complete");
             callbacks.on_progress("complete", 1, 1);
 
