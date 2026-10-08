@@ -43,6 +43,23 @@ pub enum CoreAction {
     },
 }
 
+/// Move the directory-creation records (`dir_path` returns their path) to the
+/// front of `actions`, outermost first. Uninstall undoes actions in reverse, so
+/// every directory is then reached after everything that was put in it, and
+/// nested directories innermost first — which matters once records from an
+/// earlier install have been merged in out of order.
+pub fn order_directories_last_to_undo<A>(
+    actions: &mut Vec<A>,
+    dir_path: impl Fn(&A) -> Option<&Path>,
+) {
+    let (mut dirs, rest): (Vec<A>, Vec<A>) = std::mem::take(actions)
+        .into_iter()
+        .partition(|a| dir_path(a).is_some());
+    dirs.sort_by_key(|a| dir_path(a).map_or(0, |p| p.components().count()));
+    dirs.extend(rest);
+    *actions = dirs;
+}
+
 /// A `before_uninstall` or `after_uninstall` command with every variable
 /// already expanded, so the uninstaller needs neither the config nor a
 /// resolver to run it.
@@ -196,6 +213,51 @@ impl<A: DeserializeOwned> InstallManifest<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directories_are_undone_last_innermost_first() {
+        let dir = |p: &str| CoreAction::DirectoryCreated { path: p.into() };
+        let file = |p: &str| CoreAction::FileCopied {
+            dest: p.into(),
+            backup: None,
+            preserve_on_uninstall: false,
+            uninst_remove_readonly: false,
+            uninst_restart_delete: false,
+            restart_replace: false,
+        };
+        let mut actions = vec![
+            dir("/a/app/deps/deep"),
+            dir("/a/app/deps"),
+            dir("/a/app"),
+            file("/a/app/x"),
+            dir("/a/shared"),
+            file("/a/shared/y"),
+        ];
+        order_directories_last_to_undo(&mut actions, |a| match a {
+            CoreAction::DirectoryCreated { path } => Some(path.as_path()),
+            _ => None,
+        });
+        let undo: Vec<String> = actions
+            .iter()
+            .rev()
+            .map(|a| match a {
+                CoreAction::DirectoryCreated { path } => format!("dir {}", path.display()),
+                CoreAction::FileCopied { dest, .. } => format!("file {}", dest.display()),
+                CoreAction::CommandExecuted { .. } => unreachable!(),
+            })
+            .collect();
+        assert_eq!(
+            undo,
+            [
+                "file /a/shared/y",
+                "file /a/app/x",
+                "dir /a/app/deps/deep",
+                "dir /a/app/deps",
+                "dir /a/shared",
+                "dir /a/app",
+            ]
+        );
+    }
 
     #[test]
     fn test_manifest_roundtrip_core_actions() {

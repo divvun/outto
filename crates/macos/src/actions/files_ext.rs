@@ -37,10 +37,7 @@ pub fn install_bundle(
     }
 
     let dest_dir = resolver.resolve_path(&entry.dest)?;
-    std::fs::create_dir_all(&dest_dir).map_err(|e| InstallerError::DirOp {
-        path: dest_dir.clone(),
-        source: e,
-    })?;
+    outto_core::actions::dirs::create_dir_all_recorded(&dest_dir, manifest)?;
 
     let file_name = entry
         .dest_name

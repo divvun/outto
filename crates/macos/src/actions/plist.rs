@@ -31,12 +31,7 @@ pub fn apply_plist_entry(
 
     // Ensure parent dir exists.
     if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| InstallerError::DirOp {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-        }
+        outto_core::actions::dirs::create_dir_all_recorded(parent, manifest)?;
     }
 
     // Load existing root, or default to an empty dict if the file didn't exist.

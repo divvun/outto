@@ -21,12 +21,7 @@ pub fn create_symlink(
 
     // Ensure parent directory exists.
     if let Some(parent) = link.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| InstallerError::DirOp {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-        }
+        outto_core::actions::dirs::create_dir_all_recorded(parent, manifest)?;
     }
 
     // Determine whether to replace an existing link/file.

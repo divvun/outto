@@ -444,6 +444,10 @@ fn inherit_created(new: &mut InstallManifest<WindowsAction>, old: &InstallManife
         .cloned()
         .collect();
     new.actions.splice(0..0, inherited);
+    outto_core::manifest::order_directories_last_to_undo(&mut new.actions, |a| match a {
+        WindowsAction::DirectoryCreated { path } => Some(path.as_path()),
+        _ => None,
+    });
 }
 
 /// Reboot the machine now. Enables `SeShutdownPrivilege` on the current

@@ -13,7 +13,7 @@ use outto_core::actions::{files as core_files, prerequisites, run};
 use outto_core::callbacks::{InstallerCallbacks, LogLevel};
 use outto_core::config::{RunPhase as CoreRunPhase, VariableResolver};
 use outto_core::error::{InstallerError, InstallerResult};
-use outto_core::manifest::{CoreAction, InstallManifest};
+use outto_core::manifest::InstallManifest;
 
 use crate::config::{Config, FileEntry, RunEntry, RunPhase};
 use crate::manifest::Action;
@@ -179,11 +179,7 @@ fn install_dir(
             LogLevel::Info,
             &format!("Dirs: creating {}", path.display()),
         );
-        std::fs::create_dir_all(&path).map_err(|e| InstallerError::DirOp {
-            path: path.clone(),
-            source: e,
-        })?;
-        manifest.record(CoreAction::DirectoryCreated { path: path.clone() });
+        outto_core::actions::dirs::create_dir_all_recorded(&path, manifest)?;
     }
 
     if entry.permissions.is_some() || entry.owner.is_some() {

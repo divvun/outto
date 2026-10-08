@@ -172,7 +172,14 @@ pub fn install(
                 source: e,
             })?;
 
+            if let Some(old) = &old_manifest {
+                inherit_from_previous(&mut install_manifest, old);
+            }
+            let backups = take_backups(&mut install_manifest);
             install_manifest.save_to(&base)?;
+            for backup in &backups {
+                remove_backup(backup, callbacks);
+            }
 
             // Write the lightweight receipt.json (display_name/version/install_dir/depends_on).
             detect::write_receipt(
@@ -246,6 +253,30 @@ pub fn install(
                         );
                     }
                 }
+
+                // Backups an older outto left behind after its install.
+                let new_files: Vec<&std::path::Path> = install_manifest
+                    .actions
+                    .iter()
+                    .filter_map(|a| match a {
+                        MacosAction::FileCopied { dest, .. } => Some(dest.as_path()),
+                        _ => None,
+                    })
+                    .collect();
+                let old_backups = old.actions.iter().filter_map(|a| match a {
+                    MacosAction::FileCopied {
+                        backup: Some(b), ..
+                    } => Some(b.as_path()),
+                    _ => None,
+                });
+                for backup in outto_core::manifest::orphans::orphaned_files(
+                    old_backups,
+                    new_files,
+                    Some(&resolver),
+                    false,
+                ) {
+                    remove_backup(&backup, callbacks);
+                }
             }
 
             callbacks.on_log(LogLevel::Info, "Installation complete");
@@ -284,6 +315,114 @@ pub fn uninstall_package(
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
     uninstall::uninstall(package_id, callbacks)
+}
+
+/// Detach the backups of overwritten files from a committed install; see the
+/// Windows backend for why nothing needs them once the install has succeeded.
+fn take_backups(manifest: &mut InstallManifest<MacosAction>) -> Vec<PathBuf> {
+    manifest
+        .actions
+        .iter_mut()
+        .filter_map(|a| match a {
+            MacosAction::FileCopied { backup, .. } => backup.take(),
+            _ => None,
+        })
+        .collect()
+}
+
+fn remove_backup(backup: &std::path::Path, callbacks: &dyn InstallerCallbacks) {
+    if !backup.exists() {
+        return;
+    }
+    match std::fs::remove_file(backup) {
+        Ok(()) => callbacks.on_log(
+            LogLevel::Debug,
+            &format!("Removed backup {}", backup.display()),
+        ),
+        Err(e) => callbacks.on_log(
+            LogLevel::Warn,
+            &format!("Could not remove backup {}: {e}", backup.display()),
+        ),
+    }
+}
+
+/// Keep what the package owned before an upgrade.
+///
+/// The new install sees the previous one's work as already there, so on its
+/// own it would record no directory or plist file as created, and would take
+/// the previous install's plist values and symlink targets as "what was
+/// there before" — uninstall would then restore them instead of removing
+/// them. So: directories and plist files the previous install created are
+/// carried over (first, so uninstall reaches them last), and a plist value or
+/// symlink both installs set keeps the state from before the first one.
+fn inherit_from_previous(
+    new: &mut InstallManifest<MacosAction>,
+    old: &InstallManifest<MacosAction>,
+) {
+    use outto_core::manifest::orphans::path_key;
+    let key = |p: &std::path::Path| path_key(p, None, false);
+
+    for action in new.actions.iter_mut() {
+        match action {
+            MacosAction::PlistValueSet {
+                path,
+                key_path,
+                previous_value,
+            } => {
+                if let Some(original) = old.actions.iter().find_map(|a| match a {
+                    MacosAction::PlistValueSet {
+                        path: p,
+                        key_path: k,
+                        previous_value: v,
+                    } if k == key_path && key(p) == key(path) => Some(v.clone()),
+                    _ => None,
+                }) {
+                    *previous_value = original;
+                }
+            }
+            MacosAction::SymlinkCreated {
+                link,
+                previous_target,
+                ..
+            } => {
+                if let Some(original) = old.actions.iter().find_map(|a| match a {
+                    MacosAction::SymlinkCreated {
+                        link: l,
+                        previous_target: t,
+                        ..
+                    } if key(l) == key(link) => Some(t.clone()),
+                    _ => None,
+                }) {
+                    *previous_target = original;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let created_path = |a: &MacosAction| match a {
+        MacosAction::DirectoryCreated { path } | MacosAction::PlistFileCreated { path } => {
+            Some(key(path))
+        }
+        _ => None,
+    };
+    let inherited: Vec<MacosAction> = old
+        .actions
+        .iter()
+        .filter(|a| {
+            created_path(a).is_some_and(|k| {
+                !new.actions
+                    .iter()
+                    .any(|b| created_path(b).as_ref() == Some(&k))
+            })
+        })
+        .cloned()
+        .collect();
+    new.actions.splice(0..0, inherited);
+    outto_core::manifest::order_directories_last_to_undo(&mut new.actions, |a| match a {
+        MacosAction::DirectoryCreated { path } => Some(path.as_path()),
+        _ => None,
+    });
 }
 
 fn classify_scope(install_dir: &std::path::Path) -> String {
@@ -336,6 +475,149 @@ pub fn reboot_system() -> InstallerResult<()> {
 mod tests {
     use super::*;
     use outto_core::callbacks::NoOpCallbacks;
+
+    fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() && !p.is_symlink() {
+                    out.extend(walk(&p));
+                }
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    /// After install → upgrade → uninstall nothing the package created is
+    /// left: no `.bak` files after either install; nested directories (also
+    /// ones only the first install created), the plist file it created and
+    /// its symlink are gone; a directory and a plist that existed beforehand
+    /// stay, the plist with its original value back.
+    #[test]
+    fn upgrade_then_uninstall_leaves_nothing_behind() {
+        let _home_guard = crate::test_util::lock_home();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let install_dir = root.join("app");
+        let shared = root.join("shared");
+        let preexisting = root.join("preexisting");
+        let own_plist = root.join("prefs").join("own.plist");
+        let user_plist = preexisting.join("user.plist");
+        let link = root.join("links").join("tool");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&preexisting).unwrap();
+        let mut user_dict = plist::Dictionary::new();
+        user_dict.insert("Setting".into(), plist::Value::String("user".into()));
+        plist::Value::Dictionary(user_dict)
+            .to_file_xml(&user_plist)
+            .unwrap();
+        let old_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", &home) };
+
+        let run = |version: &str, content: &str| -> InstallerResult<()> {
+            let source = root.join(format!("source-{version}"));
+            std::fs::create_dir_all(source.join("deps")).unwrap();
+            std::fs::write(source.join("app.txt"), content).unwrap();
+            std::fs::write(source.join("deps").join("dep.txt"), content).unwrap();
+            let toml = format!(
+                r##"
+[package]
+id = "no.divvun.outto-leftover-test"
+name = "Leftover Test"
+version = "{version}"
+
+[[files]]
+source = "app.txt"
+dest = "#{{app}}"
+
+[[files]]
+source = "deps/*"
+dest = "#{{app}}/dependencies/deep"
+
+[[files]]
+source = "app.txt"
+dest = "{shared}/a/b"
+
+[[files]]
+source = "app.txt"
+dest = "{preexisting}"
+
+[[plist]]
+path = "{own_plist}"
+values = [{{ key = "Version", type = "string", data = "#{{package.version}}" }}]
+
+[[plist]]
+path = "{user_plist}"
+values = [{{ key = "Setting", type = "string", data = "#{{package.version}}" }}]
+
+[[symlinks]]
+target = "#{{app}}/app.txt"
+link = "{link}"
+overwrite = "always"
+"##,
+                shared = shared.display(),
+                preexisting = preexisting.display(),
+                own_plist = own_plist.display(),
+                user_plist = user_plist.display(),
+                link = link.display(),
+            );
+            let config = Config::from_toml(&toml).unwrap();
+            let options = InstallOptions {
+                source_dir: source,
+                install_dir: Some(install_dir.clone()),
+                selected_components: None,
+                uninstall_exe: None,
+            };
+            install(&config, &options, &NoOpCallbacks)
+        };
+
+        let mut baks = Vec::new();
+        let v1 = run("1.0.0", "v1");
+        baks.extend(
+            walk(&root)
+                .into_iter()
+                .filter(|p| p.extension().is_some_and(|e| e == "bak")),
+        );
+        let v2 = run("2.0.0", "v2");
+        baks.extend(
+            walk(&root)
+                .into_iter()
+                .filter(|p| p.extension().is_some_and(|e| e == "bak")),
+        );
+        let app_after_upgrade = std::fs::read_to_string(install_dir.join("app.txt"));
+        let uninstalled = uninstall_package(
+            &install_dir,
+            "no.divvun.outto-leftover-test",
+            &NoOpCallbacks,
+        );
+
+        match old_home {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        v1.unwrap();
+        v2.unwrap();
+        uninstalled.unwrap();
+        assert!(baks.is_empty(), "{baks:?}");
+        assert_eq!(app_after_upgrade.unwrap(), "v2");
+
+        assert!(!install_dir.exists(), "{:?}", walk(&install_dir));
+        assert!(!shared.exists(), "{:?}", walk(&shared));
+        assert!(!own_plist.parent().unwrap().exists(), "{:?}", walk(&root));
+        assert!(!link.parent().unwrap().exists(), "{:?}", walk(&root));
+        assert!(preexisting.is_dir());
+        assert!(!preexisting.join("app.txt").exists());
+        let user = plist::Value::from_file(&user_plist).unwrap();
+        assert_eq!(
+            user.as_dictionary()
+                .and_then(|d| d.get("Setting"))
+                .and_then(|v| v.as_string()),
+            Some("user")
+        );
+    }
 
     /// `before_uninstall` / `after_uninstall` commands are recorded at install
     /// time and run, in order around the rollback, by uninstall.
