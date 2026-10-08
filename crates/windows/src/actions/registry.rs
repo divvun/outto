@@ -283,17 +283,69 @@ pub fn parse_qword(data: &str) -> Result<u64, String> {
         .map_err(|_| format!("cannot parse '{data}' as QWORD"))
 }
 
+/// Win32 `ERROR_FILE_NOT_FOUND`: the key or value is already gone, which for
+/// an uninstall is success.
+const NOT_FOUND: u32 = 2;
+
 pub fn delete_key(root: &str, key: &str) -> InstallerResult<()> {
     let hroot = root_from_str(root)?;
     let key_wide = to_wide(key);
     let result = unsafe { RegDeleteKeyW(hroot, key_wide.as_ptr()) };
-    if result != 0 {
+    if result != 0 && result != NOT_FOUND {
         return Err(InstallerError::Registry {
             key: format!("{root}\\{key}"),
             message: format!("RegDeleteKeyW failed with error code {result}"),
         });
     }
     Ok(())
+}
+
+/// Delete `key` if it has neither values nor subkeys; leave it otherwise.
+/// Returns whether it is gone.
+pub fn delete_key_if_empty(root: &str, key: &str) -> InstallerResult<bool> {
+    let hroot = root_from_str(root)?;
+    let key_wide = to_wide(key);
+    let mut hkey: HKEY = std::ptr::null_mut();
+    let result = unsafe { RegOpenKeyExW(hroot, key_wide.as_ptr(), 0, KEY_READ, &mut hkey) };
+    if result == NOT_FOUND {
+        return Ok(true);
+    }
+    if result != 0 {
+        return Err(InstallerError::Registry {
+            key: format!("{root}\\{key}"),
+            message: format!("RegOpenKeyExW failed: {result}"),
+        });
+    }
+    let mut subkeys: u32 = 0;
+    let mut values: u32 = 0;
+    let result = unsafe {
+        RegQueryInfoKeyW(
+            hkey,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            &mut subkeys,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut values,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    unsafe { RegCloseKey(hkey) };
+    if result != 0 {
+        return Err(InstallerError::Registry {
+            key: format!("{root}\\{key}"),
+            message: format!("RegQueryInfoKeyW failed: {result}"),
+        });
+    }
+    if subkeys != 0 || values != 0 {
+        return Ok(false);
+    }
+    delete_key(root, key)?;
+    Ok(true)
 }
 
 pub fn delete_value(root: &str, key: &str, value_name: &str) -> InstallerResult<()> {
@@ -303,6 +355,9 @@ pub fn delete_value(root: &str, key: &str, value_name: &str) -> InstallerResult<
     let mut hkey: HKEY = std::ptr::null_mut();
 
     let result = unsafe { RegOpenKeyExW(hroot, key_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey) };
+    if result == NOT_FOUND {
+        return Ok(());
+    }
     if result != 0 {
         return Err(InstallerError::Registry {
             key: format!("{root}\\{key}"),
@@ -313,7 +368,7 @@ pub fn delete_value(root: &str, key: &str, value_name: &str) -> InstallerResult<
     let result = unsafe { RegDeleteValueW(hkey, name_wide.as_ptr()) };
     unsafe { RegCloseKey(hkey) };
 
-    if result != 0 {
+    if result != 0 && result != NOT_FOUND {
         return Err(InstallerError::Registry {
             key: format!("{root}\\{key}\\{value_name}"),
             message: format!("RegDeleteValueW failed: {result}"),

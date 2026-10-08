@@ -171,11 +171,6 @@ pub fn install(
 
     actions::check_prerequisites_windows(config, callbacks)?;
 
-    std::fs::create_dir_all(&install_dir).map_err(|e| InstallerError::DirOp {
-        path: install_dir.clone(),
-        source: e,
-    })?;
-
     let mut install_manifest = InstallManifest::<WindowsAction>::new(
         &config.package.id,
         &config.package.name,
@@ -183,9 +178,13 @@ pub fn install(
         &install_dir,
         config.package.depends_on.clone(),
     );
-    install_manifest.record(CoreAction::DirectoryCreated {
-        path: install_dir.clone(),
-    });
+    // The install dir is the package's own even when it already existed
+    // (an upgrade), so it is always recorded; uninstall removes it once empty.
+    if !outto_core::actions::dirs::create_dir_all_recorded(&install_dir, &mut install_manifest)? {
+        install_manifest.record(CoreAction::DirectoryCreated {
+            path: install_dir.clone(),
+        });
+    }
     install_manifest.uninstall_hooks = Some(uninstall_hooks);
 
     let result = actions::execute_install(
@@ -199,7 +198,14 @@ pub fn install(
 
     match result {
         Ok(()) => {
+            if let Some(old) = &old_manifest {
+                inherit_created(&mut install_manifest, old);
+            }
+            let backups = take_backups(&mut install_manifest);
             install_manifest.save()?;
+            for backup in &backups {
+                remove_backup(backup, callbacks);
+            }
 
             if let Some(old) = old_manifest {
                 let mut written: Vec<&std::path::Path> = Vec::new();
@@ -230,6 +236,22 @@ pub fn install(
                             &format!("Upgrade: could not remove {}: {e}", dest.display()),
                         );
                     }
+                }
+
+                // Backups an older outto left behind after its install.
+                let old_backups = old.actions.iter().filter_map(|a| match a {
+                    WindowsAction::FileCopied {
+                        backup: Some(b), ..
+                    } => Some(b.as_path()),
+                    _ => None,
+                });
+                for backup in outto_core::manifest::orphans::orphaned_files(
+                    old_backups,
+                    written_after_install(&install_manifest),
+                    Some(&resolver),
+                    true,
+                ) {
+                    remove_backup(&backup, callbacks);
                 }
 
                 if let Some(ref old_dir) = old_install_dir {
@@ -340,6 +362,88 @@ pub fn install(
             }
         }
     }
+}
+
+/// Every file the install wrote.
+fn written_after_install(manifest: &InstallManifest<WindowsAction>) -> Vec<&std::path::Path> {
+    manifest
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            WindowsAction::FileCopied { dest, .. } => Some(dest.as_path()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Detach the backups of overwritten files from a committed install.
+///
+/// Backups exist so a failed install can be rolled back. Once the install has
+/// succeeded nothing uses them: like Inno Setup (and MSI), uninstall removes
+/// the installed file rather than restoring whatever it replaced, so keeping
+/// `foo.dll.bak` next to every replaced file — in System32 too — only leaves
+/// clutter until uninstall, or forever if an upgrade drops the file.
+fn take_backups(manifest: &mut InstallManifest<WindowsAction>) -> Vec<PathBuf> {
+    manifest
+        .actions
+        .iter_mut()
+        .filter_map(|a| match a {
+            WindowsAction::FileCopied { backup, .. } => backup.take(),
+            _ => None,
+        })
+        .collect()
+}
+
+fn remove_backup(backup: &std::path::Path, callbacks: &dyn InstallerCallbacks) {
+    if !backup.exists() {
+        return;
+    }
+    match std::fs::remove_file(backup) {
+        Ok(()) => callbacks.on_log(
+            LogLevel::Debug,
+            &format!("Removed backup {}", backup.display()),
+        ),
+        Err(e) => callbacks.on_log(
+            LogLevel::Warn,
+            &format!("Could not remove backup {}: {e}", backup.display()),
+        ),
+    }
+}
+
+/// Carry over from the previous install's manifest the directories and
+/// registry keys it created that the new install found already there, so
+/// the package still owns them and uninstall can remove them once empty.
+/// They go first, so uninstall reaches them last, after everything inside.
+fn inherit_created(new: &mut InstallManifest<WindowsAction>, old: &InstallManifest<WindowsAction>) {
+    use outto_core::manifest::orphans::path_key;
+    let same = |a: &WindowsAction, b: &WindowsAction| match (a, b) {
+        (
+            WindowsAction::DirectoryCreated { path: p },
+            WindowsAction::DirectoryCreated { path: q },
+        ) => path_key(p, None, true) == path_key(q, None, true),
+        (
+            WindowsAction::RegistryKeyCreated {
+                root: r1, key: k1, ..
+            },
+            WindowsAction::RegistryKeyCreated {
+                root: r2, key: k2, ..
+            },
+        ) => r1.eq_ignore_ascii_case(r2) && k1.eq_ignore_ascii_case(k2),
+        _ => false,
+    };
+    let inherited: Vec<WindowsAction> = old
+        .actions
+        .iter()
+        .filter(|a| {
+            matches!(
+                a,
+                WindowsAction::DirectoryCreated { .. } | WindowsAction::RegistryKeyCreated { .. }
+            )
+        })
+        .filter(|a| !new.actions.iter().any(|b| same(a, b)))
+        .cloned()
+        .collect();
+    new.actions.splice(0..0, inherited);
 }
 
 /// Reboot the machine now. Enables `SeShutdownPrivilege` on the current
@@ -702,6 +806,124 @@ show = "hidden"
         assert!(trace.join("after").is_dir(), "{:?}", callbacks.logs);
 
         let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    /// After install → upgrade → uninstall nothing the package created is
+    /// left: no `.bak` files after either install, the nested directories it
+    /// created (including ones only the first install created) and its HKCU
+    /// key are gone, and a directory that existed beforehand stays.
+    #[test]
+    fn test_upgrade_then_uninstall_leaves_nothing_behind() {
+        let test_dir = std::env::temp_dir().join("outto_test_leftovers");
+        let install_dir = test_dir.join("installed");
+        let shared = test_dir.join("shared");
+        let preexisting = test_dir.join("preexisting");
+        let reg_key = "Software\\OuttoTest_leftovers";
+        let _ = fs::remove_dir_all(&test_dir);
+        let _ = actions::registry::delete_key("HKCU", reg_key);
+        fs::create_dir_all(&preexisting).unwrap();
+
+        let make = |version: &str, content: &str| {
+            let source = test_dir.join(format!("source-{version}"));
+            fs::create_dir_all(source.join("deps")).unwrap();
+            fs::write(source.join("app.exe"), content).unwrap();
+            fs::write(source.join("deps").join("dep.exe"), content).unwrap();
+            let toml = format!(
+                r##"
+[package]
+id = "com.test.leftovers"
+name = "LeftoversTest"
+version = "{version}"
+
+[[files]]
+source = "app.exe"
+dest = "#{{app}}"
+overwrite = "always"
+
+[[files]]
+source = "deps/*"
+dest = "#{{app}}/dependencies/deep"
+overwrite = "always"
+
+[[files]]
+source = "app.exe"
+dest = "{shared}/a/b"
+overwrite = "always"
+
+[[files]]
+source = "app.exe"
+dest = "{preexisting}"
+overwrite = "always"
+
+[[registry]]
+root = "hkcu"
+key = "{reg_key}"
+values = [{{ name = "Version", type = "string", data = "#{{package.version}}" }}]
+"##,
+                shared = shared.display().to_string().replace('\\', "/"),
+                preexisting = preexisting.display().to_string().replace('\\', "/"),
+                reg_key = reg_key.replace('\\', "\\\\"),
+            );
+            (Config::from_toml(&toml).unwrap(), source)
+        };
+        let callbacks = TestCallbacks::default();
+        for (version, content) in [("1.0.0", "v1"), ("2.0.0", "v2")] {
+            let (config, source_dir) = make(version, content);
+            let options = InstallOptions {
+                source_dir,
+                install_dir: Some(install_dir.clone()),
+                selected_components: None,
+                uninstall_exe: Some(fake_uninstaller()),
+            };
+            install(&config, &options, &callbacks).unwrap();
+            let baks: Vec<_> = walk(&test_dir)
+                .into_iter()
+                .filter(|p| p.extension().is_some_and(|e| e == "bak"))
+                .collect();
+            assert!(baks.is_empty(), "{version}: {baks:?}");
+        }
+        assert_eq!(
+            fs::read_to_string(install_dir.join("app.exe")).unwrap(),
+            "v2"
+        );
+
+        uninstall_package(&install_dir, "com.test.leftovers", &callbacks).unwrap();
+        // The uninstaller binary removes .outto itself; emulate that.
+        let _ = fs::remove_dir_all(install_dir.join(".outto"));
+        let _ = fs::remove_dir(&install_dir);
+
+        assert!(!install_dir.exists(), "{:?}", walk(&install_dir));
+        assert!(!shared.exists(), "{:?}", walk(&shared));
+        assert!(preexisting.is_dir());
+        assert!(!preexisting.join("app.exe").exists());
+        assert!(!hkcu_key_exists(reg_key), "HKCU\\{reg_key} left behind");
+
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    fn hkcu_key_exists(key: &str) -> bool {
+        use windows_sys::Win32::System::Registry::*;
+        let wide: Vec<u16> = key.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut hkey: HKEY = std::ptr::null_mut();
+        let r = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, wide.as_ptr(), 0, KEY_READ, &mut hkey) };
+        if r == 0 {
+            unsafe { RegCloseKey(hkey) };
+        }
+        r == 0
+    }
+
+    fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    out.extend(walk(&p));
+                }
+                out.push(p);
+            }
+        }
+        out
     }
 
     #[test]

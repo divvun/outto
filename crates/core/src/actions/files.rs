@@ -189,15 +189,7 @@ where
     }
 
     if let Some(parent) = dest.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent).map_err(|e| InstallerError::DirOp {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-            manifest.record(CoreAction::DirectoryCreated {
-                path: parent.to_path_buf(),
-            });
-        }
+        super::dirs::create_dir_all_recorded(parent, manifest)?;
     }
 
     if dest.exists() && entry.overwrite_readonly {

@@ -203,7 +203,15 @@ impl RollbackAction for Action {
                 if !restore_backups && *on_uninstall == UninstallBehavior::Nothing {
                     return Ok(());
                 }
-                registry::delete_key(root, key)
+                // `remove_key` (and a failed install) take the key away; with
+                // `remove_values` its values are already gone by now (they are
+                // recorded after the key), and the key goes only if nothing
+                // else was put in it.
+                if !restore_backups && *on_uninstall == UninstallBehavior::RemoveValues {
+                    registry::delete_key_if_empty(root, key).map(|_| ())
+                } else {
+                    registry::delete_key(root, key)
+                }
             }
             Action::RegistryValueSet {
                 root,

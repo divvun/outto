@@ -54,12 +54,7 @@ pub fn create_shortcut(
     );
 
     if let Some(parent) = shortcut_path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| InstallerError::DirOp {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-        }
+        outto_core::actions::dirs::create_dir_all_recorded(parent, manifest)?;
     }
 
     let arguments = entry

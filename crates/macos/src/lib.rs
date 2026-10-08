@@ -139,11 +139,6 @@ pub fn install(
 
     actions::check_prerequisites(config, callbacks)?;
 
-    std::fs::create_dir_all(&install_dir).map_err(|e| InstallerError::DirOp {
-        path: install_dir.clone(),
-        source: e,
-    })?;
-
     let mut install_manifest = InstallManifest::<MacosAction>::new(
         &config.package.id,
         &config.package.name,
@@ -151,9 +146,13 @@ pub fn install(
         &install_dir,
         config.package.depends_on.clone(),
     );
-    install_manifest.record(CoreAction::DirectoryCreated {
-        path: install_dir.clone(),
-    });
+    // The install dir is the package's own even when it already existed
+    // (an upgrade), so it is always recorded; uninstall removes it once empty.
+    if !outto_core::actions::dirs::create_dir_all_recorded(&install_dir, &mut install_manifest)? {
+        install_manifest.record(CoreAction::DirectoryCreated {
+            path: install_dir.clone(),
+        });
+    }
     install_manifest.uninstall_hooks = Some(uninstall_hooks);
 
     let result = actions::execute_install(

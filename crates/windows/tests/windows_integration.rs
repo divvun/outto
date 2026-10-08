@@ -1429,7 +1429,7 @@ overwrite = "if_newer"
 }
 
 #[test]
-fn test_file_backup_created_on_overwrite() {
+fn test_file_backup_discarded_after_install() {
     let mut cleanup = TestCleanup::new();
     let dir = std::env::temp_dir().join("outto_test_ow_backup");
     let _ = std::fs::remove_dir_all(&dir);
@@ -1463,12 +1463,21 @@ overwrite = "always"
 
     install(&config, &options, &NoOpCallbacks).unwrap();
 
-    // Backup should exist
-    assert!(install_dir.join("app.exe.bak").exists());
+    // The backup only serves a rollback of a failed install; once the install
+    // has succeeded it is removed and the manifest no longer refers to it.
     assert_eq!(
-        std::fs::read_to_string(install_dir.join("app.exe.bak")).unwrap(),
-        "old exe"
+        std::fs::read_to_string(install_dir.join("app.exe")).unwrap(),
+        "new exe"
     );
+    assert!(!install_dir.join("app.exe.bak").exists());
+    let manifest = InstallManifest::<ActionRecord>::load(&install_dir, "com.test.backup").unwrap();
+    assert!(manifest.actions.iter().all(|a| !matches!(
+        a,
+        ActionRecord::FileCopied {
+            backup: Some(_),
+            ..
+        }
+    )));
 }
 
 #[test]

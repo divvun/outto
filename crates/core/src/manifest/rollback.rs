@@ -116,12 +116,93 @@ pub fn rollback_file_copied(
 }
 
 /// Remove `path` if it exists and is empty — the standard "undo DirectoryCreated"
-/// semantics that both platforms share.
+/// semantics that both platforms share. A protected directory (see
+/// [`is_protected_dir`]) is never removed, whatever a manifest says.
 pub fn rollback_directory_created(path: &std::path::Path) -> InstallerResult<()> {
-    if path.exists() {
+    if path.exists() && !is_protected_dir(path, &protected_dirs()) {
         let _ = fs::remove_dir(path); // silently ignore non-empty dirs
     }
     Ok(())
+}
+
+/// Well-known system and user directories on this machine: the Windows
+/// folders (Windows, System32, SysWOW64, Program Files, ProgramData, the
+/// profile and AppData folders, Temp) and the macOS ones (home, Library,
+/// /Applications, /usr/local).
+pub fn protected_dirs() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let env = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let mut dirs: Vec<PathBuf> = [
+        "SystemRoot",
+        "windir",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramW6432",
+        "CommonProgramFiles",
+        "CommonProgramFiles(x86)",
+        "ProgramData",
+        "ALLUSERSPROFILE",
+        "PUBLIC",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "TEMP",
+        "TMP",
+        "HOME",
+        "TMPDIR",
+    ]
+    .iter()
+    .filter_map(|v| env(v))
+    .collect();
+    if let Some(root) = env("SystemRoot") {
+        for sub in ["System32", "SysWOW64", "Fonts", "Sysnative"] {
+            dirs.push(root.join(sub));
+        }
+    }
+    if let Some(home) = env("HOME") {
+        for sub in [
+            "Library",
+            "Applications",
+            "Library/Fonts",
+            "Library/LaunchAgents",
+        ] {
+            dirs.push(home.join(sub));
+        }
+    }
+    for fixed in [
+        "/Applications",
+        "/Library",
+        "/Library/Fonts",
+        "/Library/LaunchAgents",
+        "/Library/LaunchDaemons",
+        "/usr",
+        "/usr/local",
+        "/usr/local/bin",
+        "/opt",
+    ] {
+        dirs.push(PathBuf::from(fixed));
+    }
+    dirs
+}
+
+/// Whether `path` is a filesystem root, a drive root, or one of `protected`
+/// (compared after normalisation, so `C:/Windows/SysWOW64` matches
+/// `C:\WINDOWS\SysWOW64`).
+pub fn is_protected_dir(path: &std::path::Path, protected: &[std::path::PathBuf]) -> bool {
+    use crate::manifest::orphans::normalize_lexical;
+    let raw = path.to_string_lossy();
+    let windows = cfg!(windows)
+        || raw.contains('\\')
+        || (raw.len() >= 2 && raw.as_bytes()[1] == b':' && raw.as_bytes()[0].is_ascii_alphabetic());
+    let key = normalize_lexical(&path.to_string_lossy(), windows);
+    let is_root = key.is_empty()
+        || key == "/"
+        || key == "\\"
+        || (key.len() <= 3 && key.as_bytes().get(1) == Some(&b':'));
+    is_root
+        || protected
+            .iter()
+            .any(|p| normalize_lexical(&p.to_string_lossy(), windows) == key)
 }
 
 impl RollbackAction for CoreAction {
@@ -270,4 +351,53 @@ mod tests {
     const _: () = {
         let _: PathBuf;
     };
+}
+
+#[cfg(test)]
+mod protected_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn protected_dirs_are_matched_in_any_spelling() {
+        let protected = vec![
+            PathBuf::from(r"C:\WINDOWS"),
+            PathBuf::from(r"C:\WINDOWS\SysWOW64"),
+            PathBuf::from(r"C:\Program Files"),
+        ];
+        for p in [
+            r"C:\Windows\SysWOW64",
+            "C:/Windows/SysWOW64/",
+            r"c:\windows",
+            r"C:\Program Files\",
+            r"C:\",
+            "C:",
+            "D:/",
+            "/",
+        ] {
+            assert!(is_protected_dir(Path::new(p), &protected), "{p}");
+        }
+        for p in [
+            r"C:\Program Files\Outto E2E Test",
+            r"C:\ProgramData\OuttoE2E-Shared",
+            r"C:\Windows\SysWOW64\outto",
+        ] {
+            assert!(!is_protected_dir(Path::new(p), &protected), "{p}");
+        }
+    }
+
+    #[test]
+    fn rollback_removes_only_empty_unprotected_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = tmp.path().join("empty");
+        let full = tmp.path().join("full");
+        fs::create_dir(&empty).unwrap();
+        fs::create_dir(&full).unwrap();
+        fs::write(full.join("keep.txt"), "x").unwrap();
+
+        rollback_directory_created(&empty).unwrap();
+        rollback_directory_created(&full).unwrap();
+        assert!(!empty.exists());
+        assert!(full.join("keep.txt").exists());
+    }
 }
