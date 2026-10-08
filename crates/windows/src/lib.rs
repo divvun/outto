@@ -106,6 +106,8 @@ pub fn install(
     };
 
     let resolver = make_resolver(config, Some(&install_dir));
+    let uninstall_hooks =
+        outto_core::actions::run::resolve_uninstall_hooks(&config.run, &resolver)?;
 
     let mut old_manifest: Option<InstallManifest<WindowsAction>> = None;
     let mut old_install_dir: Option<PathBuf> = None;
@@ -184,6 +186,7 @@ pub fn install(
     install_manifest.record(CoreAction::DirectoryCreated {
         path: install_dir.clone(),
     });
+    install_manifest.uninstall_hooks = Some(uninstall_hooks);
 
     let result = actions::execute_install(
         config,
@@ -619,6 +622,84 @@ dest = "#{app}"
             );
             assert!(!install_dir.exists());
         }
+
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    /// `before_uninstall` runs while the package's files are still there,
+    /// `after_uninstall` once they are gone, and both survive the trip
+    /// through the manifest. The program is `#{sys}/cmd.exe`, which only
+    /// works once its path has native separators.
+    #[test]
+    fn test_uninstall_runs_recorded_hooks() {
+        let test_dir = std::env::temp_dir().join("outto_test_uninstall_hooks");
+        let source_dir = test_dir.join("source");
+        let install_dir = test_dir.join("installed");
+        let trace = test_dir.join("trace");
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::create_dir_all(&trace).unwrap();
+        fs::write(source_dir.join("app.exe"), "fake exe").unwrap();
+
+        let toml = format!(
+            r##"
+[package]
+id = "com.test.hooks"
+name = "HookTest"
+version = "1.0.0"
+
+[[files]]
+source = "*"
+dest = "#{{app}}"
+
+[[run]]
+phase = "after_install"
+command = "#{{sys}}/cmd.exe"
+arguments = "/c mkdir {trace}\\installed"
+wait = true
+show = "hidden"
+
+[[run]]
+phase = "before_uninstall"
+command = "#{{sys}}/cmd.exe"
+arguments = "/c if exist #{{app}}\\app.exe mkdir {trace}\\before"
+wait = true
+show = "hidden"
+
+[[run]]
+phase = "after_uninstall"
+command = "#{{sys}}/cmd.exe"
+arguments = "/c if not exist #{{app}}\\app.exe mkdir {trace}\\after"
+wait = true
+show = "hidden"
+"##,
+            trace = trace.display().to_string().replace('\\', "\\\\")
+        );
+        let config = Config::from_toml(&toml).unwrap();
+        let callbacks = TestCallbacks::default();
+        let options = InstallOptions {
+            source_dir,
+            install_dir: Some(install_dir.clone()),
+            selected_components: None,
+            uninstall_exe: Some(fake_uninstaller()),
+        };
+        install(&config, &options, &callbacks).unwrap();
+        assert!(trace.join("installed").is_dir(), "{:?}", callbacks.logs);
+
+        let manifest =
+            InstallManifest::<WindowsAction>::load(&install_dir, "com.test.hooks").unwrap();
+        let hooks = manifest.uninstall_hooks.unwrap();
+        assert_eq!(hooks.len(), 2);
+        assert!(
+            hooks[0].command.ends_with(r"\System32\cmd.exe"),
+            "{}",
+            hooks[0].command
+        );
+        assert!(!hooks[0].arguments.join(" ").contains("#{"));
+
+        uninstall_package(&install_dir, "com.test.hooks", &callbacks).unwrap();
+        assert!(trace.join("before").is_dir(), "{:?}", callbacks.logs);
+        assert!(trace.join("after").is_dir(), "{:?}", callbacks.logs);
 
         let _ = fs::remove_dir_all(&test_dir);
     }

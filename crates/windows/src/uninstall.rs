@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
+use outto_core::actions::run::run_uninstall_hooks;
 use outto_core::callbacks::{InstallerCallbacks, LogLevel};
+use outto_core::config::RunPhase;
 use outto_core::error::{InstallerError, InstallerResult};
 use outto_core::manifest::{InstallManifest, rollback::rollback_actions};
 
@@ -61,8 +63,7 @@ pub fn uninstall(
         ),
     );
 
-    rollback_actions(&manifest.actions, callbacks, false)?;
-    detect::remove_uninstall_registry(&manifest.package_id)?;
+    remove_package(&manifest, callbacks)?;
 
     callbacks.on_log(LogLevel::Info, "Uninstallation complete");
     callbacks.on_progress("uninstall", 1, 1);
@@ -93,9 +94,20 @@ fn uninstall_single(
         ),
     );
 
+    remove_package(&manifest, callbacks)
+}
+
+/// `before_uninstall` hooks, then undo every recorded action, drop the ARP
+/// entry, then `after_uninstall` hooks.
+fn remove_package(
+    manifest: &InstallManifest<WindowsAction>,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()> {
+    let hooks = manifest.uninstall_hooks.as_deref();
+    run_uninstall_hooks(hooks, &RunPhase::BeforeUninstall, callbacks);
     rollback_actions(&manifest.actions, callbacks, false)?;
     detect::remove_uninstall_registry(&manifest.package_id)?;
-
+    run_uninstall_hooks(hooks, &RunPhase::AfterUninstall, callbacks);
     Ok(())
 }
 

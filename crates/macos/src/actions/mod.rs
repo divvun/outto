@@ -112,6 +112,37 @@ pub fn execute_install(
     Ok(())
 }
 
+/// A macOS `[[run]]` entry in core's shape.
+fn core_run_entry(entry: &RunEntry) -> outto_core::config::RunEntry {
+    let phase = match entry.phase {
+        RunPhase::BeforeInstall => CoreRunPhase::BeforeInstall,
+        RunPhase::AfterInstall => CoreRunPhase::AfterInstall,
+        RunPhase::BeforeUninstall => CoreRunPhase::BeforeUninstall,
+        RunPhase::AfterUninstall => CoreRunPhase::AfterUninstall,
+    };
+    outto_core::config::RunEntry {
+        phase,
+        command: entry.command.clone(),
+        arguments: entry.arguments.clone(),
+        wait: entry.wait,
+        show: outto_core::config::ShowWindow::Normal,
+        component: entry.component.clone(),
+        working_dir: entry.working_dir.clone(),
+        arch: None,
+        run_as_original_user: false,
+    }
+}
+
+/// The `before_uninstall` / `after_uninstall` commands, resolved for the
+/// manifest.
+pub fn uninstall_hooks(
+    config: &Config,
+    resolver: &VariableResolver,
+) -> InstallerResult<Vec<outto_core::manifest::UninstallHook>> {
+    let entries: Vec<_> = config.run.iter().map(core_run_entry).collect();
+    run::resolve_uninstall_hooks(&entries, resolver)
+}
+
 /// Map each macos RunEntry into core's shape and delegate to core's phase runner.
 fn execute_run_phase(
     entries: &[RunEntry],
@@ -121,23 +152,7 @@ fn execute_run_phase(
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
     for entry in entries.iter().filter(|e| &e.phase == phase) {
-        let core_phase = match entry.phase {
-            RunPhase::BeforeInstall => CoreRunPhase::BeforeInstall,
-            RunPhase::AfterInstall => CoreRunPhase::AfterInstall,
-            RunPhase::BeforeUninstall => CoreRunPhase::BeforeUninstall,
-            RunPhase::AfterUninstall => CoreRunPhase::AfterUninstall,
-        };
-        let core_entry = outto_core::config::RunEntry {
-            phase: core_phase,
-            command: entry.command.clone(),
-            arguments: entry.arguments.clone(),
-            wait: entry.wait,
-            show: outto_core::config::ShowWindow::Normal,
-            component: entry.component.clone(),
-            working_dir: entry.working_dir.clone(),
-            arch: None,
-            run_as_original_user: false,
-        };
+        let core_entry = core_run_entry(entry);
 
         run::execute_phase_commands(
             std::slice::from_ref(&core_entry),

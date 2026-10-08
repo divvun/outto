@@ -137,7 +137,7 @@ pub enum ComAction {
     Typelib,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RunPhase {
     BeforeInstall,
@@ -146,7 +146,7 @@ pub enum RunPhase {
     AfterUninstall,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ShowWindow {
     #[default]

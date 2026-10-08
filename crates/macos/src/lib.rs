@@ -106,6 +106,7 @@ pub fn install(
     }
 
     let resolver = make_resolver(config, Some(&install_dir));
+    let uninstall_hooks = actions::uninstall_hooks(config, &resolver)?;
 
     // Check existing install → honour upgrade policy.
     let mut old_manifest: Option<InstallManifest<MacosAction>> = None;
@@ -153,6 +154,7 @@ pub fn install(
     install_manifest.record(CoreAction::DirectoryCreated {
         path: install_dir.clone(),
     });
+    install_manifest.uninstall_hooks = Some(uninstall_hooks);
 
     let result = actions::execute_install(
         config,
@@ -328,5 +330,77 @@ pub fn reboot_system() -> InstallerResult<()> {
         Err(InstallerError::Other(format!(
             "osascript restart exited with {status}"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use outto_core::callbacks::NoOpCallbacks;
+
+    /// `before_uninstall` / `after_uninstall` commands are recorded at install
+    /// time and run, in order around the rollback, by uninstall.
+    #[test]
+    fn uninstall_runs_recorded_hooks() {
+        let _home_guard = crate::test_util::lock_home();
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let source = tmp.path().join("source");
+        let install_dir = tmp.path().join("app");
+        let trace = tmp.path().join("trace.txt");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("a.txt"), "a").unwrap();
+        let old_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", &home) };
+
+        let toml = format!(
+            r##"
+[package]
+id = "no.divvun.outto-hook-test"
+name = "Hook Test"
+version = "1.0.0"
+
+[[files]]
+source = "a.txt"
+dest = "#{{app}}"
+
+[[run]]
+phase = "before_uninstall"
+command = "/bin/sh"
+arguments = "-c \"test -f '#{{app}}/a.txt' && echo before >> '{trace}'\""
+
+[[run]]
+phase = "after_uninstall"
+command = "/bin/sh"
+arguments = "-c \"test -f '#{{app}}/a.txt' || echo after >> '{trace}'\""
+"##,
+            trace = trace.display()
+        );
+        let config = Config::from_toml(&toml).unwrap();
+        let options = InstallOptions {
+            source_dir: source,
+            install_dir: Some(install_dir.clone()),
+            selected_components: None,
+            uninstall_exe: None,
+        };
+        let result = install(&config, &options, &NoOpCallbacks);
+        let hooks = InstallManifest::<MacosAction>::load_from_base(
+            &detect::user_receipt_base().unwrap(),
+            "no.divvun.outto-hook-test",
+        )
+        .map(|m| m.uninstall_hooks);
+        let uninstalled =
+            uninstall_package(&install_dir, "no.divvun.outto-hook-test", &NoOpCallbacks);
+
+        match old_home {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        result.unwrap();
+        assert_eq!(hooks.unwrap().map(|h| h.len()), Some(2));
+        uninstalled.unwrap();
+        assert_eq!(std::fs::read_to_string(&trace).unwrap(), "before\nafter\n");
+        assert!(!install_dir.join("a.txt").exists());
     }
 }
