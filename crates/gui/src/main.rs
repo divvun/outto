@@ -40,6 +40,14 @@ fn main() {
             windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
         );
     }
+    // Before parsing, which can itself fail with a fatal error.
+    QUIET.store(
+        std::env::args().skip(1).any(|arg| {
+            let arg = arg.to_uppercase();
+            arg == "/VERYSILENT" || arg == "/SUPPRESSMSGBOXES"
+        }),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let args = match cli::parse_args() {
         Ok(a) => a,
         Err(e) => {
@@ -318,12 +326,18 @@ fn load_config_for_uninstall(install_dir: &std::path::Path) -> Config {
         .unwrap()
 }
 
+/// Set by `/VERYSILENT` and `/SUPPRESSMSGBOXES`: report fatal errors on
+/// stderr, in the log and in the exit code only. A silent installer usually
+/// runs from another installer that waits for it, which a message box would
+/// block for good.
+static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn fatal_error(msg: &str) -> ! {
     eprintln!("Error: {msg}");
     outto_core::logfile::write(outto_core::LogLevel::Error, msg);
 
     #[cfg(windows)]
-    {
+    if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;
 

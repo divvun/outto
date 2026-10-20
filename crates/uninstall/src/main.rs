@@ -5,6 +5,7 @@ mod bridge;
 mod theme;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bridge::SilentCallbacks;
 
@@ -31,6 +32,15 @@ fn main() {
     let mut progress_file: Option<PathBuf> = None;
     let mut log: Option<Option<String>> = None;
 
+    // Before parsing, which can itself fail with a fatal error.
+    NO_MESSAGE_BOXES.store(
+        args.iter().skip(1).any(|arg| {
+            let arg = arg.to_uppercase();
+            arg == "/VERYSILENT" || arg == "/SUPPRESSMSGBOXES"
+        }),
+        Ordering::Relaxed,
+    );
+
     let mut i = 1;
     while i < args.len() {
         let arg = &args[i];
@@ -42,8 +52,11 @@ fn main() {
             very_silent = true;
             silent = true;
         } else if upper == "/SUPPRESSMSGBOXES" {
-            // accepted for parity with the installer; prompts are always
-            // auto-answered in this binary
+            // Prompts are always auto-answered in this binary; this only
+            // silences the error boxes (NO_MESSAGE_BOXES).
+        } else if upper == "/NORESTART" {
+            // Accepted for parity with Inno Setup's uninstaller: this one
+            // never restarts the machine.
         } else if upper == "/NOCANCEL" {
             no_cancel = true;
         } else if arg == "--dir" {
@@ -58,7 +71,7 @@ fn main() {
             progress_file = args.get(i).map(PathBuf::from);
         } else {
             fatal_error(&format!(
-                "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT] [/LOG[=path]]"
+                "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT] [/SUPPRESSMSGBOXES] [/NORESTART] [/LOG[=path]]"
             ));
         }
 
@@ -412,34 +425,46 @@ fn parse_name_and_version(manifest_path: &std::path::Path) -> (String, String) {
     ("Application".to_string(), String::new())
 }
 
+/// Set by `/VERYSILENT` and `/SUPPRESSMSGBOXES`: report errors on stderr and
+/// in the log only. A silent uninstaller usually runs from another program
+/// that waits for it, and a message box would block that program for good.
+static NO_MESSAGE_BOXES: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+fn message_box(text: &str, title: &str, icon: u32) {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let text = to_wide(text);
+    let title = to_wide(title);
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            windows_sys::Win32::UI::WindowsAndMessaging::MB_OK | icon,
+        );
+    }
+}
+
 fn fatal_error(msg: &str) -> ! {
     eprintln!("Error: {msg}");
     outto_core::logfile::write(outto_core::LogLevel::Error, msg);
 
     #[cfg(windows)]
-    {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-
-        fn to_wide(s: &str) -> Vec<u16> {
-            OsStr::new(s)
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect()
-        }
-
-        let text = to_wide(msg);
-        let title = to_wide("Outto Uninstaller");
-
-        unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
-                std::ptr::null_mut(),
-                text.as_ptr(),
-                title.as_ptr(),
-                windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
-                    | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
-            );
-        }
+    if !NO_MESSAGE_BOXES.load(Ordering::Relaxed) {
+        message_box(
+            msg,
+            "Outto Uninstaller",
+            windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+        );
     }
 
     std::process::exit(1);
