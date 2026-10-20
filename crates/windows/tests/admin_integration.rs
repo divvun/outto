@@ -492,3 +492,231 @@ fn test_admin_com_register_nonexistent_dll() {
     let result = com::register_com(&entry, &resolver, &mut manifest, &callbacks);
     assert!(result.is_err(), "Should fail for nonexistent DLL");
 }
+
+// ---------------------------------------------------------------------------
+// Operations queued for the next restart (HKLM Session Manager — needs admin)
+// ---------------------------------------------------------------------------
+
+mod restart_queue {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    use outto_core::callbacks::{
+        InstallOptions, InstallerCallbacks, LogLevel, Prompt, PromptResponse,
+    };
+    use outto_core::error::{ErrorAction, InstallerError};
+    use outto_windows::pending_renames::{Operation, entry_path, parse, registry};
+
+    const VALUES: [&str; 2] = [
+        "PendingFileRenameOperations",
+        "PendingFileRenameOperations2",
+    ];
+
+    #[derive(Default)]
+    struct Logs(Mutex<Vec<String>>);
+
+    impl InstallerCallbacks for Logs {
+        fn on_progress(&self, _phase: &str, _current: u64, _total: u64) {}
+        fn on_prompt(&self, _prompt: Prompt) -> PromptResponse {
+            PromptResponse::Yes
+        }
+        fn on_log(&self, _level: LogLevel, message: &str) {
+            self.0.lock().unwrap().push(message.to_string());
+        }
+        fn on_error(&self, _error: &InstallerError) -> ErrorAction {
+            ErrorAction::Abort
+        }
+    }
+
+    fn wide(p: &Path) -> Vec<u16> {
+        p.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// Queue `from` to be deleted, or renamed to `to`, at the next restart.
+    fn queue(from: &Path, to: Option<&Path>, replace: bool) {
+        use windows_sys::Win32::Storage::FileSystem::{
+            MOVEFILE_DELAY_UNTIL_REBOOT, MOVEFILE_REPLACE_EXISTING, MoveFileExW,
+        };
+        let to = to.map(wide);
+        let flags = MOVEFILE_DELAY_UNTIL_REBOOT
+            | if replace {
+                MOVEFILE_REPLACE_EXISTING
+            } else {
+                0
+            };
+        let ok = unsafe {
+            MoveFileExW(
+                wide(from).as_ptr(),
+                to.as_ref().map_or(std::ptr::null(), |t| t.as_ptr()),
+                flags,
+            )
+        };
+        assert_ne!(ok, 0, "{}", std::io::Error::last_os_error());
+    }
+
+    fn under(op: &Operation, dir: &str) -> bool {
+        [&op.from, &op.to].into_iter().any(|name| {
+            entry_path(&String::from_utf16_lossy(name))
+                .is_some_and(|p| p.to_lowercase().starts_with(dir))
+        })
+    }
+
+    /// Every queued operation, from both values, split into those naming a
+    /// path under `dir` and the rest.
+    fn queued(dir: &Path) -> (Vec<(String, String)>, Vec<Operation>) {
+        let dir = format!("{}\\", dir.display()).to_lowercase();
+        let mut ours = Vec::new();
+        let mut others = Vec::new();
+        for value in VALUES {
+            let Some(data) = registry::read(value).unwrap() else {
+                continue;
+            };
+            for op in parse(&data.data).unwrap() {
+                if under(&op, &dir) {
+                    let path = |name: &[u16]| {
+                        entry_path(&String::from_utf16_lossy(name)).unwrap_or_default()
+                    };
+                    ours.push((path(&op.from), path(&op.to)));
+                } else {
+                    others.push(op);
+                }
+            }
+        }
+        (ours, others)
+    }
+
+    /// Takes everything the test queued under its directory out again.
+    struct Dequeue(PathBuf);
+
+    impl Drop for Dequeue {
+        fn drop(&mut self) {
+            let dir = format!("{}\\", self.0.display()).to_lowercase();
+            for value in VALUES {
+                let _ = registry::rewrite(value, |ops| {
+                    ops.into_iter().partition(|op| !under(op, &dir))
+                });
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// An install cancels what is queued to delete, move away or replace a
+    /// file it wrote: here the deletion the Inno Setup uninstaller of a
+    /// keyboard queues for its layout DLL in use. It keeps the replacement it
+    /// queues itself for a file in use, and everything else queued.
+    #[test]
+    #[ignore]
+    fn test_admin_install_cancels_restart_operations_on_its_files() {
+        super::assert_admin();
+        let test_dir = std::env::temp_dir().join("outto_test_restart_queue");
+        let _ = std::fs::remove_dir_all(&test_dir);
+        let _dequeue = Dequeue(test_dir.clone());
+        let source = test_dir.join("source");
+        let installed = test_dir.join("installed");
+        let other = test_dir.join("other");
+        for dir in [&source, &installed, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+        for name in ["a.dll", "b.dll", "c.dll", "d.dll"] {
+            std::fs::write(source.join(name), format!("new {name}")).unwrap();
+        }
+        std::fs::write(installed.join("a.dll"), "old a.dll").unwrap();
+        std::fs::write(installed.join("b.dll"), "old b.dll").unwrap();
+        std::fs::copy(system.join("msimg32.dll"), installed.join("d.dll")).unwrap();
+        std::fs::write(other.join("staged.tmp"), "staged").unwrap();
+        std::fs::write(other.join("dummy.txt"), "dummy").unwrap();
+        let uninstaller = test_dir.join("uninstall.exe");
+        std::fs::write(&uninstaller, b"MZ").unwrap();
+
+        // d.dll stays loaded, so the install can only replace it at the
+        // restart, and the deletion queued for it is cancelled all the same.
+        let module = unsafe {
+            windows_sys::Win32::System::LibraryLoader::LoadLibraryW(
+                wide(&installed.join("d.dll")).as_ptr(),
+            )
+        };
+        assert!(!module.is_null(), "{}", std::io::Error::last_os_error());
+
+        let (_, others_before) = queued(&test_dir);
+        queue(&installed.join("a.dll"), None, false);
+        queue(&installed.join("b.dll"), Some(&other.join("b.dll")), false);
+        queue(
+            &other.join("staged.tmp"),
+            Some(&installed.join("c.dll")),
+            true,
+        );
+        queue(&installed.join("d.dll"), None, false);
+        queue(&other.join("dummy.txt"), None, false);
+        assert_eq!(queued(&test_dir).0.len(), 5);
+
+        let config = outto_core::Config::from_toml(
+            r##"
+[package]
+id = "no.divvun.outto-test.restart-queue"
+name = "OuttoRestartQueueTest"
+version = "1.0.0"
+
+[reboot]
+restart_manager = false
+
+[[files]]
+source = "*.dll"
+dest = "#{app}"
+overwrite = "always"
+"##,
+        )
+        .unwrap();
+        let logs = Logs::default();
+        let result = outto_windows::install(
+            &config,
+            &InstallOptions {
+                source_dir: source.clone(),
+                install_dir: Some(installed.clone()),
+                selected_components: None,
+                uninstall_exe: Some(uninstaller),
+            },
+            &logs,
+        );
+        let log = logs.0.lock().unwrap().join("\n");
+        result.unwrap_or_else(|e| panic!("{e}\n{log}"));
+
+        let (ours, others_after) = queued(&test_dir);
+        let path = |p: &Path| p.display().to_string().to_lowercase();
+        let ours: Vec<(String, String)> = ours
+            .into_iter()
+            .map(|(from, to)| (from.to_lowercase(), to.to_lowercase()))
+            .collect();
+        let staged = outto_core::actions::files::staged_path(&installed.join("d.dll"));
+        assert_eq!(
+            ours,
+            vec![
+                (path(&other.join("dummy.txt")), String::new()),
+                (path(&staged), path(&installed.join("d.dll"))),
+            ],
+            "{log}"
+        );
+        assert_eq!(others_after, others_before, "unrelated operations changed");
+        assert_eq!(
+            log.matches("Cancelled what PendingFileRenameOperations")
+                .count(),
+            4,
+            "{log}"
+        );
+        for name in ["a.dll", "b.dll", "c.dll"] {
+            assert_eq!(
+                std::fs::read_to_string(installed.join(name)).unwrap(),
+                format!("new {name}")
+            );
+        }
+        assert!(other.join("staged.tmp").exists());
+
+        unsafe { windows_sys::Win32::Foundation::FreeLibrary(module) };
+        outto_windows::uninstall_package(&installed, "no.divvun.outto-test.restart-queue", &logs)
+            .unwrap();
+    }
+}

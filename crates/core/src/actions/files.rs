@@ -221,11 +221,12 @@ where
     // the holders via the platform unlocker), then fall back to a
     // replace-on-restart if it's still locked. A deferred file isn't present
     // yet, so its post-copy steps (attributes/hash/touch) are skipped.
-    if matches!(
-        copy_or_defer(source, dest, unlocker, callbacks)?,
-        CopyOutcome::DeferredToReboot
-    ) {
+    if let CopyOutcome::DeferredToReboot(staged) = copy_or_defer(source, dest, unlocker, callbacks)?
+    {
         manifest.reboot_needed = true;
+        manifest
+            .replaced_at_restart
+            .push((staged, normalize_path(dest)));
         manifest.record(CoreAction::FileCopied {
             dest: normalize_path(dest),
             backup,
@@ -290,10 +291,11 @@ where
 enum CopyOutcome {
     /// The file was copied into place.
     Done,
-    /// The file is locked and was staged for replacement on the next restart.
-    /// Only produced on Windows (the only platform with locked-file semantics).
+    /// The file is locked and this staged copy replaces it at the next
+    /// restart. Only produced on Windows (the only platform with locked-file
+    /// semantics).
     #[cfg_attr(not(windows), allow(dead_code))]
-    DeferredToReboot,
+    DeferredToReboot(PathBuf),
 }
 
 /// Copy `source` over `dest`. If the copy fails because `dest` is held open by
@@ -318,7 +320,7 @@ fn copy_or_defer(
                 return Ok(CopyOutcome::Done);
             }
         }
-        schedule_replace_on_reboot(source, dest)?;
+        let staged = schedule_replace_on_reboot(source, dest)?;
         callbacks.on_log(
             LogLevel::Warn,
             &format!(
@@ -326,7 +328,7 @@ fn copy_or_defer(
                 normalize_path(dest).display()
             ),
         );
-        return Ok(CopyOutcome::DeferredToReboot);
+        return Ok(CopyOutcome::DeferredToReboot(staged));
     }
 
     let _ = (unlocker, callbacks);
@@ -346,9 +348,10 @@ fn is_sharing_error(e: &std::io::Error) -> bool {
 }
 
 /// Stage `source` next to `dest` (same volume, so it survives the reboot) and
-/// queue an atomic replace for the next restart via `MoveFileEx`.
+/// queue an atomic replace for the next restart via `MoveFileEx`. Returns the
+/// staged copy.
 #[cfg(windows)]
-fn schedule_replace_on_reboot(source: &Path, dest: &Path) -> InstallerResult<()> {
+fn schedule_replace_on_reboot(source: &Path, dest: &Path) -> InstallerResult<PathBuf> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 
@@ -382,12 +385,12 @@ fn schedule_replace_on_reboot(source: &Path, dest: &Path) -> InstallerResult<()>
             dest.display()
         )));
     }
-    Ok(())
+    Ok(staged)
 }
 
 /// A sibling path for staging the pending replacement: `<dir>/.<name>.outto-pending`.
 #[cfg(windows)]
-fn staged_path(dest: &Path) -> PathBuf {
+pub fn staged_path(dest: &Path) -> PathBuf {
     let name = dest
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

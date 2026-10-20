@@ -16,6 +16,7 @@ pub mod elevation;
 pub mod manifest;
 pub mod paths;
 pub mod pe;
+pub mod pending_renames;
 pub mod restart_manager;
 pub mod uninstall;
 
@@ -223,8 +224,25 @@ pub fn install(
         callbacks,
     );
 
+    let pkg_dir = InstallManifest::<WindowsAction>::package_dir(&install_dir, &config.package.id);
+    let uninstall_dest = pkg_dir.join(outto_core::archive::UNINSTALL_EXE);
+
     match result {
         Ok(()) => {
+            // The install can no longer be rolled back, so nothing queued for
+            // the next restart may undo it.
+            let mut written = written_after_install(&install_manifest);
+            written.extend(installed_by_actions(&install_manifest));
+            let manifest_path =
+                InstallManifest::<WindowsAction>::manifest_path(&install_dir, &config.package.id);
+            written.push(&manifest_path);
+            written.push(&uninstall_dest);
+            pending_renames::cancel_clashing(
+                &written,
+                &install_manifest.replaced_at_restart,
+                callbacks,
+            );
+
             if let Some(old) = &old_manifest {
                 inherit_kept(&mut install_manifest, old);
                 inherit_created(&mut install_manifest, old);
@@ -305,9 +323,6 @@ pub fn install(
                 prune(dir, &install_manifest, &declared_dirs, callbacks);
             }
 
-            let pkg_dir =
-                InstallManifest::<WindowsAction>::package_dir(&install_dir, &config.package.id);
-            let uninstall_dest = pkg_dir.join(outto_core::archive::UNINSTALL_EXE);
             std::fs::copy(&uninstall_exe_src, &uninstall_dest).map_err(|e| {
                 InstallerError::FileOp {
                     path: uninstall_dest.clone(),
@@ -615,6 +630,20 @@ fn written_after_install(manifest: &InstallManifest<WindowsAction>) -> Vec<&std:
         .iter()
         .filter_map(|a| match a {
             WindowsAction::FileCopied { dest, .. } => Some(dest.as_path()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The files other than `[[files]]` the install put in place: fonts and
+/// shortcuts.
+fn installed_by_actions(manifest: &InstallManifest<WindowsAction>) -> Vec<&std::path::Path> {
+    manifest
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            WindowsAction::FontInstalled { file, .. } => Some(file.as_path()),
+            WindowsAction::ShortcutCreated { path } => Some(path.as_path()),
             _ => None,
         })
         .collect()

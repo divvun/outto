@@ -123,6 +123,12 @@ pub struct InstallManifest<A> {
     /// previous install recorded. Not part of the persisted receipt.
     #[serde(skip)]
     pub kept_files: Vec<PathBuf>,
+
+    /// Transient: destinations that were in use, each with the staged copy
+    /// that replaces it at the next restart, as `(staged, dest)`. Not part of
+    /// the persisted receipt.
+    #[serde(skip)]
+    pub replaced_at_restart: Vec<(PathBuf, PathBuf)>,
 }
 
 impl<A> InstallManifest<A> {
@@ -144,6 +150,7 @@ impl<A> InstallManifest<A> {
             refuse_uninstall_while: Vec::new(),
             reboot_needed: false,
             kept_files: Vec::new(),
+            replaced_at_restart: Vec::new(),
         }
     }
 
