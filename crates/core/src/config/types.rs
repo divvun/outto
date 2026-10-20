@@ -1,10 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+/// A Windows architecture selector. `x86` matches x86 and x64 Windows, `x64`
+/// only x64 Windows and `arm64` only Arm64 Windows, also when the installer
+/// itself runs there under x64 emulation.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Architecture {
     X64,
     X86,
+    Arm64,
     #[default]
     Any,
 }

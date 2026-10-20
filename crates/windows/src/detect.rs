@@ -191,13 +191,17 @@ fn read_string_value(hkey: HKEY, name: &str) -> Option<String> {
 
 /// Check whether the given architecture matches the current system.
 pub fn arch_matches(required: &Architecture) -> bool {
+    arch_matches_system(required, crate::elevation::get_system_architecture())
+}
+
+/// Whether `required` matches Windows of architecture `system`, as
+/// [`crate::elevation::get_system_architecture`] names it.
+pub fn arch_matches_system(required: &Architecture, system: &str) -> bool {
     match required {
         Architecture::Any => true,
-        Architecture::X64 => crate::elevation::get_system_architecture() == "x64",
-        Architecture::X86 => {
-            let arch = crate::elevation::get_system_architecture();
-            arch == "x86" || arch == "x64"
-        }
+        Architecture::X64 => system == "x64",
+        Architecture::X86 => system == "x86" || system == "x64",
+        Architecture::Arm64 => system == "arm64",
     }
 }
 
@@ -515,4 +519,23 @@ fn enumerate_outto_packages_windows() -> Vec<InstalledPackageInfo> {
     }
 
     packages
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arch_selectors_match_their_windows() {
+        let matching = |arch: Architecture| {
+            ["x86", "x64", "arm64"]
+                .into_iter()
+                .filter(|system| arch_matches_system(&arch, system))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(matching(Architecture::Any), ["x86", "x64", "arm64"]);
+        assert_eq!(matching(Architecture::X86), ["x86", "x64"]);
+        assert_eq!(matching(Architecture::X64), ["x64"]);
+        assert_eq!(matching(Architecture::Arm64), ["arm64"]);
+    }
 }
