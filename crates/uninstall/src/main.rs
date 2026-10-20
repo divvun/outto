@@ -29,13 +29,6 @@ fn main() {
         return;
     }
 
-    let mut install_dir: Option<PathBuf> = None;
-    let mut silent = false;
-    let mut very_silent = false;
-    let mut no_cancel = false;
-    let mut progress_file: Option<PathBuf> = None;
-    let mut log: Option<Option<String>> = None;
-
     // Before parsing, which can itself fail with a fatal error.
     NO_MESSAGE_BOXES.store(
         args.iter().skip(1).any(|arg| {
@@ -45,42 +38,14 @@ fn main() {
         Ordering::Relaxed,
     );
 
-    let mut i = 1;
-    while i < args.len() {
-        let arg = &args[i];
-        let upper = arg.to_uppercase();
-
-        if upper == "/SILENT" {
-            silent = true;
-        } else if upper == "/VERYSILENT" {
-            very_silent = true;
-            silent = true;
-        } else if upper == "/SUPPRESSMSGBOXES" {
-            // Prompts are always auto-answered in this binary; this only
-            // silences the error and refusal boxes (NO_MESSAGE_BOXES).
-        } else if upper == "/NORESTART" {
-            // Accepted for parity with Inno Setup's uninstaller: this one
-            // never restarts the machine.
-        } else if upper == "/NOCANCEL" {
-            no_cancel = true;
-        } else if arg == "--dir" {
-            i += 1;
-            install_dir = args.get(i).map(PathBuf::from);
-        } else if upper.starts_with("/DIR=") {
-            install_dir = Some(PathBuf::from(arg["/DIR=".len()..].trim_matches('"')));
-        } else if let Some(value) = outto_core::logfile::parse_log_switch(arg) {
-            log = Some(value);
-        } else if arg == "--progress-file" {
-            i += 1;
-            progress_file = args.get(i).map(PathBuf::from);
-        } else {
-            fatal_error(&format!(
-                "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT] [/SUPPRESSMSGBOXES] [/NORESTART] [/LOG[=path]]\n       outto-uninstall --version"
-            ));
-        }
-
-        i += 1;
-    }
+    let Options {
+        install_dir,
+        silent,
+        very_silent,
+        no_cancel,
+        progress_file,
+        log,
+    } = parse_args(args.get(1..).unwrap_or_default()).unwrap_or_else(|e| fatal_error(&e));
 
     if let Some(value) = &log {
         // An elevated child appends to the log its parent opened.
@@ -141,6 +106,67 @@ fn main() {
         fatal_error(&format!("Failed to start uninstaller: {e}"));
     }
     restore_self();
+}
+
+/// What the command line asks of the uninstaller.
+#[derive(Debug, Default, PartialEq)]
+struct Options {
+    install_dir: Option<PathBuf>,
+    silent: bool,
+    very_silent: bool,
+    no_cancel: bool,
+    progress_file: Option<PathBuf>,
+    log: Option<Option<String>>,
+}
+
+/// Parse the arguments after the program name. The Inno Setup switches that
+/// package managers pass to an Inno uninstaller are accepted, so a bare
+/// `uninstall.exe /VERYSILENT /SP- /SUPPRESSMSGBOXES /NORESTART` (pahkat's
+/// Inno uninstall arguments, which replace the ones `QuietUninstallString`
+/// carries) works: without `--dir`, the install is found from the
+/// uninstaller's own location (`infer_target`).
+fn parse_args(args: &[String]) -> Result<Options, String> {
+    let mut options = Options::default();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        let upper = arg.to_uppercase();
+
+        if upper == "/SILENT" {
+            options.silent = true;
+        } else if upper == "/VERYSILENT" {
+            options.very_silent = true;
+            options.silent = true;
+        } else if upper == "/SUPPRESSMSGBOXES" {
+            // Prompts are always auto-answered in this binary; this only
+            // silences the error and refusal boxes (NO_MESSAGE_BOXES).
+        } else if upper == "/NORESTART" {
+            // Accepted for parity with Inno Setup's uninstaller: this one
+            // never restarts the machine.
+        } else if upper == "/SP-" {
+            // Accepted for parity with Inno Setup's switches: this
+            // uninstaller asks no startup question to skip.
+        } else if upper == "/NOCANCEL" {
+            options.no_cancel = true;
+        } else if arg == "--dir" {
+            i += 1;
+            options.install_dir = args.get(i).map(PathBuf::from);
+        } else if upper.starts_with("/DIR=") {
+            options.install_dir = Some(PathBuf::from(arg["/DIR=".len()..].trim_matches('"')));
+        } else if let Some(value) = outto_core::logfile::parse_log_switch(arg) {
+            options.log = Some(value);
+        } else if arg == "--progress-file" {
+            i += 1;
+            options.progress_file = args.get(i).map(PathBuf::from);
+        } else {
+            return Err(format!(
+                "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT] [/SUPPRESSMSGBOXES] [/NORESTART] [/LOG[=path]]\n       outto-uninstall --version"
+            ));
+        }
+
+        i += 1;
+    }
+    Ok(options)
 }
 
 /// Run the headless uninstall with the right callbacks: when `--progress-file`
@@ -596,4 +622,56 @@ fn fatal_error(msg: &str) -> ! {
     }
 
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Options, String> {
+        parse_args(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn accepts_inno_uninstall_switches_without_dir() {
+        let options = parse(&["/VERYSILENT", "/SP-", "/SUPPRESSMSGBOXES", "/NORESTART"]).unwrap();
+        assert_eq!(
+            options,
+            Options {
+                silent: true,
+                very_silent: true,
+                ..Options::default()
+            }
+        );
+        assert_eq!(parse(&["/sp-"]).unwrap(), Options::default());
+    }
+
+    #[test]
+    fn reads_the_install_dir_and_log() {
+        let options = parse(&[
+            "--dir",
+            r"C:\Program Files\App",
+            "/VERYSILENT",
+            "/LOG=x.log",
+        ])
+        .unwrap();
+        assert_eq!(
+            options.install_dir,
+            Some(PathBuf::from(r"C:\Program Files\App"))
+        );
+        assert_eq!(options.log, Some(Some("x.log".to_string())));
+        assert_eq!(
+            parse(&[r#"/DIR="C:\App""#]).unwrap().install_dir,
+            Some(PathBuf::from(r"C:\App"))
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_arguments() {
+        assert!(
+            parse(&["/VERYSILENT", "/BOGUS"])
+                .unwrap_err()
+                .starts_with("Unknown argument: /BOGUS")
+        );
+    }
 }
