@@ -79,6 +79,20 @@ TOML values accept `#{…}` placeholders that are resolved at install time:
 | `#{package.name}` | From `[package].name` |
 | `#{package.version}` | From `[package].version` |
 
+### Passing `/LOG` on to another installer
+
+A `[[run]]` command that runs another installer can hand it the current log with `#{log_arg:NAME}`, an argument of its own in `arguments`:
+
+```toml
+[[run]]
+phase = "after_install"
+command = "#{app}/dependencies/tip-setup.exe"
+arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART #{log_arg:text-service}"
+wait = true
+```
+
+When the installer or uninstaller runs with `/LOG`, `#{log_arg:NAME}` becomes the single argument `/LOG=<path>`, a log next to the current one with `.NAME` added before the extension: with `/LOG=C:\logs\install.log` the command above gets `/LOG=C:\logs\install.text-service.log`. Without `/LOG` it becomes no argument at all. It is expanded when the command runs, so a `before_uninstall` or `after_uninstall` command passes on the uninstaller's log. `NAME` is letters, digits, `-`, `_` and `.`; `#{log_arg:…}` can't be used anywhere else, or inside a longer argument.
+
 ## Configuration sections
 
 | Section | Purpose |
@@ -94,7 +108,7 @@ TOML values accept `#{…}` placeholders that are resolved at install time:
 | `[[com]]` | COM server registration with regsvr32; `host = "x86"` uses SysWOW64's, `arch` limits it to one architecture |
 | `[[fonts]]` | Font installation |
 | `[[prerequisites]]` | Detect and require prior installs |
-| `[[run]]` | Run commands in `before_install` / `after_install` / `before_uninstall` phases |
+| `[[run]]` | Run commands in `before_install` / `after_install` / `before_uninstall` / `after_uninstall` phases; `#{log_arg:NAME}` passes `/LOG` on (see above) |
 | `[[components]]` | Optional/required component groups; each entry may set `component = "foo"` |
 | `[upgrade]` | `policy = "overwrite" \| "side_by_side" \| "fail"`; `downgrade = "refuse"` with an optional `[upgrade.installed_version]` registry probe; `prune`, directories emptied of everything the install did not record |
 | `[uninstall]` | Display icon, whether to remove `#{app}` on uninstall, extra dirs; `[[uninstall.refuse_while]]` registry keys (with `*` segments) that make the uninstaller refuse, exiting 2 |

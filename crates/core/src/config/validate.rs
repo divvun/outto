@@ -11,6 +11,19 @@ pub fn validate_config(config: &Config) -> InstallerResult<()> {
     validate_associations(config)?;
     validate_upgrade(config)?;
     validate_uninstall(config)?;
+    validate_run(config)?;
+    Ok(())
+}
+
+fn validate_run(config: &Config) -> InstallerResult<()> {
+    for (i, r) in config.run.iter().enumerate() {
+        crate::actions::run::validate_log_args(
+            &r.command,
+            r.arguments.as_deref(),
+            r.working_dir.as_deref(),
+        )
+        .map_err(|e| InstallerError::Validation(format!("run[{i}]: {e}")))?;
+    }
     Ok(())
 }
 
@@ -298,6 +311,35 @@ version = "1.0.0-beta.1"
         assert!(validate_config(&parse("{8A3F2C1D-0B4E-4F6A-9C7D-1E2F3A4B5C6D}")).is_err());
         assert!(validate_config(&parse("8A3F2C1D-0B4E-4F6A-9C7D")).is_err());
         assert!(validate_config(&parse("MyApp")).is_err());
+    }
+
+    #[test]
+    fn test_run_log_args() {
+        let parse = |run: &str| Config::from_toml(&format!("{}\n[[run]]\n{run}\n", minimal_toml()));
+        assert!(
+            parse(
+                r##"phase = "after_install"
+command = "#{app}/tip-setup.exe"
+arguments = "/VERYSILENT #{log_arg:text-service}""##
+            )
+            .is_ok()
+        );
+        for run in [
+            r##"phase = "after_install"
+command = "#{app}/x.exe"
+arguments = "/LOG=#{log_arg:x}""##,
+            r##"phase = "after_install"
+command = "#{app}/x.exe"
+arguments = "#{log_arg:a b}""##,
+            r##"phase = "after_install"
+command = "#{log_arg:x}""##,
+            r##"phase = "after_install"
+command = "#{app}/x.exe"
+working_dir = "#{log_arg:x}""##,
+        ] {
+            let err = parse(run).err().unwrap_or_else(|| panic!("{run}"));
+            assert!(err.to_string().contains("run[0]"), "{err}");
+        }
     }
 
     #[test]

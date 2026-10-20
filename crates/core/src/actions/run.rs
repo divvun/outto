@@ -1,6 +1,8 @@
+use std::path::Path;
 use std::process::Command;
 
 use crate::callbacks::{InstallerCallbacks, LogLevel};
+use crate::config::paths::parse_log_arg;
 use crate::config::{RunEntry, RunPhase, ShowWindow, VariableResolver};
 use crate::error::{InstallerError, InstallerResult};
 use crate::manifest::{CoreAction, InstallManifest, UninstallHook};
@@ -48,10 +50,11 @@ pub fn resolve_command(
     let arguments = entry
         .arguments
         .as_deref()
-        .map(|a| resolver.resolve(a))
+        .map(|a| resolver.resolve_arguments(a))
         .transpose()?
         .map(|a| split_args(&a))
         .unwrap_or_default();
+    check_log_args(&arguments)?;
     let working_dir = entry
         .working_dir
         .as_deref()
@@ -67,6 +70,59 @@ pub fn resolve_command(
         show: entry.show.clone(),
         run_as_original_user: entry.run_as_original_user,
     })
+}
+
+/// `#{log_arg:NAME}` stands for a whole argument or for nothing, so it can't
+/// be part of a longer one.
+fn check_log_args(arguments: &[String]) -> InstallerResult<()> {
+    match arguments
+        .iter()
+        .find(|a| a.contains("#{log_arg:") && parse_log_arg(a).is_none())
+    {
+        Some(arg) => Err(InstallerError::Config(format!(
+            "`{arg}`: #{{log_arg:NAME}} has to be an argument of its own"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Where a `[[run]]` entry uses `#{log_arg:NAME}`, check when the config is
+/// read what [`resolve_command`] would refuse at install time: anywhere but
+/// in the arguments, or as part of a longer argument.
+pub fn validate_log_args(
+    command: &str,
+    arguments: Option<&str>,
+    working_dir: Option<&str>,
+) -> Result<(), String> {
+    if command.contains("#{log_arg:") || working_dir.is_some_and(|wd| wd.contains("#{log_arg:")) {
+        return Err("#{log_arg:NAME} can only be used in the arguments".into());
+    }
+    check_log_args(&split_args(arguments.unwrap_or_default())).map_err(|e| match e {
+        InstallerError::Config(message) => message,
+        e => e.to_string(),
+    })
+}
+
+/// `cmd` as it runs now, each `#{log_arg:NAME}` argument replaced by
+/// `/LOG=<the child log next to log>`, or dropped when nothing is logged.
+fn with_log_args(cmd: &UninstallHook, log: Option<&Path>) -> UninstallHook {
+    let arguments = cmd
+        .arguments
+        .iter()
+        .filter_map(|arg| match parse_log_arg(arg) {
+            Some(name) => log.map(|log| {
+                format!(
+                    "/LOG={}",
+                    crate::logfile::child_log_path(log, name).display()
+                )
+            }),
+            None => Some(arg.clone()),
+        })
+        .collect();
+    UninstallHook {
+        arguments,
+        ..cmd.clone()
+    }
 }
 
 /// The `before_uninstall` and `after_uninstall` entries of `entries`, in
@@ -107,6 +163,7 @@ pub fn run_uninstall_hooks(
         return;
     };
     for hook in hooks.iter().filter(|h| &h.phase == phase) {
+        let hook = &with_log_args(hook, crate::logfile::path());
         log_executing(phase_str, hook, callbacks);
         match run_program(hook, callbacks) {
             Ok(Ran::Exited { code, stderr }) => {
@@ -253,7 +310,7 @@ where
     A: From<CoreAction>,
 {
     let phase_str = phase_name(&entry.phase);
-    let cmd = resolve_command(entry, resolver)?;
+    let cmd = with_log_args(&resolve_command(entry, resolver)?, crate::logfile::path());
     log_executing(phase_str, &cmd, callbacks);
 
     match run_program(&cmd, callbacks)? {
@@ -449,6 +506,75 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn log_args_are_kept_until_the_command_runs() {
+        let entries = [entry(
+            RunPhase::BeforeUninstall,
+            "#{pf}/Divvun/Text Service/uninstall.exe",
+            Some("/VERYSILENT #{log_arg:text-service} /SUPPRESSMSGBOXES"),
+        )];
+        let hooks = resolve_uninstall_hooks(&entries, &windows_resolver()).unwrap();
+        assert_eq!(
+            hooks[0].arguments,
+            [
+                "/VERYSILENT",
+                "#{log_arg:text-service}",
+                "/SUPPRESSMSGBOXES"
+            ]
+        );
+
+        let logged = with_log_args(&hooks[0], Some(Path::new("/logs/uninstall.log")));
+        assert_eq!(
+            logged.arguments,
+            [
+                "/VERYSILENT".to_string(),
+                format!(
+                    "/LOG={}",
+                    Path::new("/logs")
+                        .join("uninstall.text-service.log")
+                        .display()
+                ),
+                "/SUPPRESSMSGBOXES".to_string(),
+            ]
+        );
+        assert_eq!(logged.command, hooks[0].command);
+
+        let unlogged = with_log_args(&hooks[0], None);
+        assert_eq!(unlogged.arguments, ["/VERYSILENT", "/SUPPRESSMSGBOXES"]);
+    }
+
+    #[test]
+    fn log_arg_must_be_an_argument_of_its_own() {
+        for arguments in [
+            "/LOG=#{log_arg:x}",
+            "\"a #{log_arg:x}\"",
+            "#{log_arg:x}#{app}",
+        ] {
+            let entries = [entry(
+                RunPhase::AfterInstall,
+                "#{sys}/cmd.exe",
+                Some(arguments),
+            )];
+            assert!(
+                resolve_command(&entries[0], &windows_resolver()).is_err(),
+                "{arguments}"
+            );
+        }
+        let quoted = entry(
+            RunPhase::AfterInstall,
+            "#{sys}/cmd.exe",
+            Some("\"#{log_arg:x}\""),
+        );
+        assert_eq!(
+            resolve_command(&quoted, &windows_resolver())
+                .unwrap()
+                .arguments,
+            ["#{log_arg:x}"]
+        );
+        let in_command = entry(RunPhase::AfterInstall, "#{log_arg:x}", None);
+        assert!(resolve_command(&in_command, &windows_resolver()).is_err());
     }
 
     #[test]

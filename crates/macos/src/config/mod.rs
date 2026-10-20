@@ -98,6 +98,15 @@ fn validate(config: &Config) -> InstallerResult<()> {
         )));
     }
 
+    for (i, r) in config.run.iter().enumerate() {
+        outto_core::actions::run::validate_log_args(
+            &r.command,
+            r.arguments.as_deref(),
+            r.working_dir.as_deref(),
+        )
+        .map_err(|e| InstallerError::Validation(format!("run[{i}]: {e}")))?;
+    }
+
     // Duplicate component names.
     let mut seen = std::collections::HashSet::new();
     for c in &config.components {

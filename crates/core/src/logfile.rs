@@ -63,6 +63,9 @@ pub fn resolve_log_path(value: Option<&str>, kind: &str) -> PathBuf {
 /// elevated child continuing the log its parent started. Only the first call
 /// in a process takes effect.
 pub fn init(path: &Path, append: bool) -> io::Result<()> {
+    // Absolute, so that what is passed on in /LOG still names it after a
+    // change of directory, and in a child running elsewhere.
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
@@ -71,8 +74,8 @@ pub fn init(path: &Path, append: bool) -> io::Result<()> {
         .write(true)
         .append(append)
         .truncate(!append)
-        .open(path)?;
-    let _ = LOG.set((path.to_path_buf(), Mutex::new(file)));
+        .open(&path)?;
+    let _ = LOG.set((path, Mutex::new(file)));
     Ok(())
 }
 
@@ -84,6 +87,7 @@ pub fn start(value: Option<&str>, kind: &str, append: bool) {
     let path = resolve_log_path(value, kind);
     match init(&path, append) {
         Ok(()) => {
+            let path = self::path().unwrap_or(&path);
             eprintln!("Logging to {}", path.display());
             write(LogLevel::Info, &format!("Log file: {}", path.display()));
         }
@@ -94,6 +98,18 @@ pub fn start(value: Option<&str>, kind: &str, append: bool) {
 /// The file being logged to, if [`init`] has been called.
 pub fn path() -> Option<&'static Path> {
     LOG.get().map(|(path, _)| path.as_path())
+}
+
+/// The log of another installer that this one runs, `name` added to the name
+/// of `log` before its extension: `C:\logs\install.log` gives
+/// `C:\logs\install.<name>.log`.
+pub fn child_log_path(log: &Path, name: &str) -> PathBuf {
+    let stem = log.file_stem().unwrap_or_default().to_string_lossy();
+    let file_name = match log.extension() {
+        Some(ext) => format!("{stem}.{name}.{}", ext.to_string_lossy()),
+        None => format!("{stem}.{name}"),
+    };
+    log.with_file_name(file_name)
 }
 
 /// Append one timestamped line to the log, if logging is enabled. Each line
@@ -271,6 +287,26 @@ mod tests {
                 "2026-10-07 20:24:32.250Z WARN  Run: exited with 1{eol}\
                  2026-10-07 20:24:32.250Z WARN      stderr{eol}"
             )
+        );
+    }
+
+    #[test]
+    fn child_logs_sit_next_to_the_log() {
+        assert_eq!(
+            child_log_path(Path::new("/var/log/install.log"), "text-service"),
+            Path::new("/var/log/install.text-service.log")
+        );
+        assert_eq!(
+            child_log_path(Path::new("/tmp/Setup Log 2026-10-07 #001.txt"), "tip"),
+            Path::new("/tmp/Setup Log 2026-10-07 #001.tip.txt")
+        );
+        assert_eq!(
+            child_log_path(Path::new("/tmp/a.b.log"), "c"),
+            Path::new("/tmp/a.b.c.log")
+        );
+        assert_eq!(
+            child_log_path(Path::new("/tmp/install"), "tip"),
+            Path::new("/tmp/install.tip")
         );
     }
 
