@@ -446,11 +446,26 @@ pub struct FontEntry {
     pub component: Option<String>,
 }
 
+/// Which `regsvr32.exe` registers a COM server, and so which registry view
+/// it writes.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComHost {
+    /// System32's, of the architecture of Windows itself.
+    #[default]
+    Native,
+    /// The x86 one: SysWOW64's on 64-bit Windows, System32's on x86 Windows.
+    X86,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ComEntry {
     pub file: String,
     pub action: ComAction,
     pub component: Option<String>,
+    pub arch: Option<Architecture>,
+    #[serde(default)]
+    pub host: ComHost,
 }
 
 // --- Install cleanup (pre-install phase) ---

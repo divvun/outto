@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use outto_core::callbacks::{InstallerCallbacks, LogLevel};
-use outto_core::config::types::UninstallBehavior;
+use outto_core::config::types::{ComHost, UninstallBehavior};
 use outto_core::error::{InstallerError, InstallerResult};
 use outto_core::manifest::CoreAction;
 use outto_core::manifest::rollback::{
@@ -79,6 +79,9 @@ pub enum Action {
     ComRegistered {
         file: PathBuf,
         action: String,
+        /// Manifests from before hosts existed registered with System32's.
+        #[serde(default)]
+        host: ComHost,
     },
     FontInstalled {
         file: PathBuf,
@@ -255,7 +258,7 @@ impl RollbackAction for Action {
             Action::AssociationCreated { extension, prog_id } => {
                 associations::remove_association(extension, prog_id)
             }
-            Action::ComRegistered { file, action } => com::unregister(file, action),
+            Action::ComRegistered { file, action, host } => com::unregister(file, action, host),
             Action::FontInstalled { file, font_name } => fonts::uninstall_font(file, font_name),
         }
     }

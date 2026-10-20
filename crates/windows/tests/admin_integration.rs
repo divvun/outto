@@ -485,6 +485,8 @@ fn test_admin_com_register_nonexistent_dll() {
         file: "C:\\nonexistent_outto_test.dll".to_string(),
         action: ComAction::Regserver,
         component: None,
+        arch: None,
+        host: ComHost::Native,
     };
 
     let result = com::register_com(&entry, &resolver, &mut manifest, &callbacks);

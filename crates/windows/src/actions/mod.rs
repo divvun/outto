@@ -161,6 +161,9 @@ fn execute_install_inner(
         if !should_include(com_entry.component.as_deref(), selected_components) {
             continue;
         }
+        if !arch_matches_entry(com_entry.arch.as_ref()) {
+            continue;
+        }
         com::register_com(com_entry, resolver, manifest, callbacks)?;
         callbacks.on_progress("com", (i + 1) as u64, total_com as u64);
     }
