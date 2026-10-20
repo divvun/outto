@@ -76,6 +76,8 @@ TOML values accept `#{…}` placeholders that are resolved at install time:
 | `#{sys}` | `%WINDIR%\System32` |
 | `#{userappdata}` | Current user's `%APPDATA%` |
 | `#{commonappdata}` | `%PROGRAMDATA%` |
+| `#{startmenu}`, `#{desktop}`, `#{startup}` | The current user's Start Menu programs, desktop and Startup folders |
+| `#{commonstartmenu}`, `#{commondesktop}`, `#{commonstartup}` | All users' (`C:\ProgramData\Microsoft\Windows\Start Menu\Programs`, `C:\Users\Public\Desktop`, `...\Programs\Startup`) |
 | `#{package.name}` | From `[package].name` |
 | `#{package.version}` | From `[package].version` |
 
@@ -93,6 +95,23 @@ wait = true
 
 When the installer or uninstaller runs with `/LOG`, `#{log_arg:NAME}` becomes the single argument `/LOG=<path>`, a log next to the current one with `.NAME` added before the extension: with `/LOG=C:\logs\install.log` the command above gets `/LOG=C:\logs\install.text-service.log`. Without `/LOG` it becomes no argument at all. It is expanded when the command runs, so a `before_uninstall` or `after_uninstall` command passes on the uninstaller's log. `NAME` is letters, digits, `-`, `_` and `.`; `#{log_arg:…}` can't be used anywhere else, or inside a longer argument.
 
+### Shortcuts
+
+A `[[shortcuts]]` entry puts a `.lnk` in the Start Menu, on the desktop or in the Startup folder (`location = "start_menu"`, `"desktop"` or `"startup"`), in its `subfolder` if it has one, which is created if missing and removed on uninstall once empty:
+
+```toml
+[[shortcuts]]
+name = "My Application"
+target = "#{app}/bin/myapp.exe"
+location = "start_menu"
+subfolder = "#{package.name}"
+# scope = "current_user"
+```
+
+As with Inno Setup, the folder is all users' when the package has `privileges = "admin"` (`#{commonstartmenu}`, `#{commondesktop}`, `#{commonstartup}`), and the current user's otherwise (`#{startmenu}`, `#{desktop}`, `#{startup}`). `scope = "all_users"` or `scope = "current_user"` overrides that for one shortcut; `all_users` needs an elevated install, so a package with `privileges = "user"` can't use it. The current user is the account the installer runs as: an install elevated with another administrator's credentials puts a `current_user` shortcut in that administrator's Start Menu, not in the signed-in user's.
+
+Uninstall removes each shortcut from where it was created. An upgrade removes the ones the installed version created that the new version doesn't create again, such as one that moved to another scope, and the folders created for them once they are empty.
+
 ## Configuration sections
 
 | Section | Purpose |
@@ -101,7 +120,7 @@ When the installer or uninstaller runs with `/LOG`, `#{log_arg:NAME}` becomes th
 | `[[files]]` | Copy files/globs into `dest`, per-file `overwrite` policy |
 | `[[dirs]]` | Create directories (optionally preserved on uninstall) |
 | `[[registry]]` | HKLM/HKCU/HKCR keys and values |
-| `[[shortcuts]]` | Start Menu / Desktop / Quick Launch shortcuts |
+| `[[shortcuts]]` | Start Menu, desktop or Startup shortcuts, for all users or the current user (see above) |
 | `[[environment]]` | System or user environment variables (`set` / `append` / `prepend`) |
 | `[[services]]` | Windows service install/start |
 | `[[associations]]` | File-type associations |

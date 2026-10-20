@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::config::types::{Privileges, ShortcutScope};
 use crate::error::{InstallerError, InstallerResult};
 
 pub fn validate_config(config: &Config) -> InstallerResult<()> {
@@ -197,6 +198,26 @@ fn validate_shortcuts(config: &Config) -> InstallerResult<()> {
             return Err(InstallerError::Validation(format!(
                 "shortcuts[{i}].target must not be empty"
             )));
+        }
+        // A package that never elevates can't write to the all-users folders.
+        if s.scope == Some(ShortcutScope::AllUsers) && config.package.privileges == Privileges::User
+        {
+            return Err(InstallerError::Validation(format!(
+                "shortcuts[{i}]: scope = \"all_users\" needs administrator privileges, \
+                 and the package has privileges = \"user\""
+            )));
+        }
+        if let Some(subfolder) = &s.subfolder {
+            let relative = !subfolder.contains(':')
+                && subfolder
+                    .split(['/', '\\'])
+                    .all(|part| !part.is_empty() && part != "." && part != "..");
+            if !relative {
+                return Err(InstallerError::Validation(format!(
+                    "shortcuts[{i}].subfolder must be a relative path without `.` or `..`, \
+                     not {subfolder:?}"
+                )));
+            }
         }
     }
     Ok(())
@@ -426,6 +447,120 @@ arch = "arm64"
         assert!(parse("[upgrade.installed_version]\nregistry_key = 'HKXX\\Foo'\n").is_err());
         assert!(parse("[upgrade]\nprune = [\"\"]\n").is_err());
         assert!(parse("[[uninstall.refuse_while]]\nregistry_key = 'HKCU\\Foo\\*'\n").is_ok());
+    }
+
+    fn with_privileges(privileges: &str, section: &str) -> InstallerResult<Config> {
+        Config::from_toml(&format!(
+            "{}privileges = \"{privileges}\"\n{section}",
+            minimal_toml()
+        ))
+    }
+
+    #[test]
+    fn test_shortcut_scope_defaults_to_the_package_privileges() {
+        use crate::config::types::*;
+        let shortcut = "[[shortcuts]]\nname = \"App\"\ntarget = \"#{app}/app.exe\"\n\
+                        location = \"start_menu\"\n";
+        for (privileges, want) in [
+            ("admin", ShortcutScope::AllUsers),
+            ("user", ShortcutScope::CurrentUser),
+            ("auto", ShortcutScope::CurrentUser),
+        ] {
+            let config = with_privileges(privileges, shortcut).unwrap();
+            let entry = &config.shortcuts[0];
+            assert_eq!(entry.scope, None);
+            assert_eq!(
+                entry.scope(&config.package.privileges),
+                want,
+                "{privileges}"
+            );
+        }
+        let unset = Config::from_toml(&format!("{}{shortcut}", minimal_toml())).unwrap();
+        assert_eq!(unset.package.privileges, Privileges::Auto);
+        assert_eq!(
+            unset.shortcuts[0].scope(&unset.package.privileges),
+            ShortcutScope::CurrentUser
+        );
+    }
+
+    #[test]
+    fn test_shortcut_scope_override() {
+        use crate::config::types::*;
+        let shortcut = |scope: &str| {
+            format!(
+                "[[shortcuts]]\nname = \"App\"\ntarget = \"#{{app}}/app.exe\"\n\
+                 location = \"desktop\"\nscope = \"{scope}\"\n"
+            )
+        };
+        let admin = with_privileges("admin", &shortcut("current_user")).unwrap();
+        assert_eq!(admin.shortcuts[0].scope, Some(ShortcutScope::CurrentUser));
+        assert_eq!(
+            admin.shortcuts[0].scope(&admin.package.privileges),
+            ShortcutScope::CurrentUser
+        );
+        let auto = with_privileges("auto", &shortcut("all_users")).unwrap();
+        assert_eq!(
+            auto.shortcuts[0].scope(&auto.package.privileges),
+            ShortcutScope::AllUsers
+        );
+        assert!(with_privileges("user", &shortcut("current_user")).is_ok());
+
+        let err = with_privileges("user", &shortcut("all_users")).unwrap_err();
+        assert!(err.to_string().contains("shortcuts[0]"), "{err}");
+        assert!(with_privileges("admin", &shortcut("everyone")).is_err());
+    }
+
+    #[test]
+    fn test_shortcut_folder_variables() {
+        use crate::config::types::*;
+        let all = ShortcutScope::AllUsers;
+        let user = ShortcutScope::CurrentUser;
+        assert_eq!(
+            ShortcutLocation::StartMenu.folder_variable(all),
+            "commonstartmenu"
+        );
+        assert_eq!(
+            ShortcutLocation::Desktop.folder_variable(all),
+            "commondesktop"
+        );
+        assert_eq!(
+            ShortcutLocation::Startup.folder_variable(all),
+            "commonstartup"
+        );
+        assert_eq!(
+            ShortcutLocation::StartMenu.folder_variable(user),
+            "startmenu"
+        );
+        assert_eq!(ShortcutLocation::Desktop.folder_variable(user), "desktop");
+        assert_eq!(ShortcutLocation::Startup.folder_variable(user), "startup");
+    }
+
+    #[test]
+    fn test_shortcut_subfolder_is_relative() {
+        let shortcut = |subfolder: &str| {
+            format!(
+                "[[shortcuts]]\nname = \"App\"\ntarget = \"#{{app}}/app.exe\"\n\
+                 location = \"start_menu\"\nsubfolder = '{subfolder}'\n"
+            )
+        };
+        for ok in ["#{package.name}", "Divvun/Keyboards", r"Divvun\Keyboards"] {
+            let config = with_privileges("admin", &shortcut(ok)).unwrap();
+            assert_eq!(config.shortcuts[0].subfolder.as_deref(), Some(ok));
+        }
+        for bad in [
+            "",
+            "/Divvun",
+            r"\Divvun",
+            "C:/Divvun",
+            "Divvun/../..",
+            "./Divvun",
+            "a//b",
+        ] {
+            let err = with_privileges("admin", &shortcut(bad))
+                .err()
+                .unwrap_or_else(|| panic!("{bad:?} accepted"));
+            assert!(err.to_string().contains("shortcuts[0].subfolder"), "{err}");
+        }
     }
 
     #[test]

@@ -245,6 +245,7 @@ pub fn install(
             );
 
             if let Some(old) = &old_manifest {
+                remove_orphaned_shortcuts(old, &install_manifest, &resolver, callbacks);
                 inherit_kept(&mut install_manifest, old);
                 inherit_created(&mut install_manifest, old);
             }
@@ -624,6 +625,81 @@ fn prune(
     );
 }
 
+/// Remove the shortcuts the previous install created that this one did not
+/// create again, such as one in a user's Start Menu that is now in all
+/// users', and the folders the previous install created for them once
+/// they are empty.
+fn remove_orphaned_shortcuts(
+    old: &InstallManifest<WindowsAction>,
+    new: &InstallManifest<WindowsAction>,
+    resolver: &VariableResolver,
+    callbacks: &dyn InstallerCallbacks,
+) {
+    use outto_core::manifest::orphans::{orphaned_files, path_key};
+    use outto_core::manifest::rollback::{is_protected_dir, protected_dirs};
+    let key = |p: &std::path::Path| path_key(p, None, true);
+    let shortcuts = |m: &InstallManifest<WindowsAction>| -> Vec<PathBuf> {
+        m.actions
+            .iter()
+            .filter_map(|a| match a {
+                WindowsAction::ShortcutCreated { path } => Some(path.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let created = |m: &InstallManifest<WindowsAction>| -> std::collections::HashSet<String> {
+        m.actions
+            .iter()
+            .filter_map(|a| match a {
+                WindowsAction::DirectoryCreated { path } => Some(key(path)),
+                _ => None,
+            })
+            .collect()
+    };
+    let (old_shortcuts, new_shortcuts) = (shortcuts(old), shortcuts(new));
+    let orphans = orphaned_files(
+        old_shortcuts.iter().map(PathBuf::as_path),
+        new_shortcuts.iter().map(PathBuf::as_path),
+        Some(resolver),
+        true,
+    );
+    if orphans.is_empty() {
+        return;
+    }
+    let (old_dirs, new_dirs) = (created(old), created(new));
+    let protected = protected_dirs();
+
+    for shortcut in orphans {
+        if shortcut.exists() {
+            callbacks.on_log(
+                LogLevel::Info,
+                &format!("Upgrade: removing old shortcut {}", shortcut.display()),
+            );
+            if let Err(e) = std::fs::remove_file(&shortcut) {
+                callbacks.on_log(
+                    LogLevel::Warn,
+                    &format!("Upgrade: could not remove {}: {e}", shortcut.display()),
+                );
+                continue;
+            }
+        }
+        for dir in shortcut.ancestors().skip(1) {
+            let k = key(dir);
+            if !old_dirs.contains(&k) || new_dirs.contains(&k) || is_protected_dir(dir, &protected)
+            {
+                break;
+            }
+            if std::fs::remove_dir(dir).is_err() {
+                break;
+            }
+            callbacks.on_log(
+                LogLevel::Info,
+                &format!("Upgrade: removed empty folder {}", dir.display()),
+            );
+        }
+    }
+}
+
 /// Every file the install wrote.
 fn written_after_install(manifest: &InstallManifest<WindowsAction>) -> Vec<&std::path::Path> {
     manifest
@@ -708,11 +784,11 @@ fn inherit_created(new: &mut InstallManifest<WindowsAction>, old: &InstallManife
     let inherited: Vec<WindowsAction> = old
         .actions
         .iter()
-        .filter(|a| {
-            matches!(
-                a,
-                WindowsAction::DirectoryCreated { .. } | WindowsAction::RegistryKeyCreated { .. }
-            )
+        .filter(|a| match a {
+            // Gone with what was in it, such as an old shortcut's folder.
+            WindowsAction::DirectoryCreated { path } => path.exists(),
+            WindowsAction::RegistryKeyCreated { .. } => true,
+            _ => false,
         })
         .filter(|a| !new.actions.iter().any(|b| same(a, b)))
         .cloned()

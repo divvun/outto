@@ -863,6 +863,7 @@ fn test_shortcut_creation_basic() {
         name: "TestApp".to_string(),
         target: "#{app}/app.exe".to_string(),
         location: ShortcutLocation::Desktop,
+        scope: None,
         icon: None,
         working_dir: None,
         arguments: None,
@@ -876,7 +877,14 @@ fn test_shortcut_creation_basic() {
         run_maximized: false,
     };
 
-    shortcuts::create_shortcut(&entry, &resolver, &mut manifest, &callbacks).unwrap();
+    shortcuts::create_shortcut(
+        &entry,
+        &Privileges::User,
+        &resolver,
+        &mut manifest,
+        &callbacks,
+    )
+    .unwrap();
 
     let lnk_path = dir.join("TestApp.lnk");
     assert!(lnk_path.exists(), "Shortcut .lnk file should exist");
@@ -907,6 +915,7 @@ fn test_shortcut_with_all_fields() {
         name: "FullShortcut".to_string(),
         target: "#{app}/app.exe".to_string(),
         location: ShortcutLocation::Desktop,
+        scope: None,
         icon: Some("#{app}/app.exe,0".to_string()),
         working_dir: Some("#{app}".to_string()),
         arguments: Some("--verbose".to_string()),
@@ -920,7 +929,14 @@ fn test_shortcut_with_all_fields() {
         run_maximized: false,
     };
 
-    shortcuts::create_shortcut(&entry, &resolver, &mut manifest, &callbacks).unwrap();
+    shortcuts::create_shortcut(
+        &entry,
+        &Privileges::User,
+        &resolver,
+        &mut manifest,
+        &callbacks,
+    )
+    .unwrap();
     assert!(dir.join("FullShortcut.lnk").exists());
 }
 
@@ -1848,6 +1864,7 @@ fn test_shortcut_startmenu_location() {
         name: "StartMenuApp".to_string(),
         target: "#{app}/app.exe".to_string(),
         location: ShortcutLocation::StartMenu,
+        scope: None,
         icon: None,
         working_dir: None,
         arguments: None,
@@ -1861,8 +1878,211 @@ fn test_shortcut_startmenu_location() {
         run_maximized: false,
     };
 
-    shortcuts::create_shortcut(&entry, &resolver, &mut manifest, &callbacks).unwrap();
+    shortcuts::create_shortcut(
+        &entry,
+        &Privileges::User,
+        &resolver,
+        &mut manifest,
+        &callbacks,
+    )
+    .unwrap();
     assert!(dir.join("StartMenuApp.lnk").exists());
+}
+
+fn shortcut_entry(name: &str, location: ShortcutLocation) -> ShortcutEntry {
+    ShortcutEntry {
+        name: name.to_string(),
+        target: "#{app}/app.exe".to_string(),
+        location,
+        scope: None,
+        icon: None,
+        working_dir: None,
+        arguments: None,
+        description: None,
+        component: None,
+        hotkey: None,
+        app_user_model_id: None,
+        subfolder: None,
+        icon_index: None,
+        arch: None,
+        run_maximized: false,
+    }
+}
+
+/// Each shortcut goes in the folder of its location for its scope, the
+/// package's privileges choosing when it sets none, inside its subfolder;
+/// undoing the install removes the shortcuts and the subfolders, and leaves
+/// the location folders.
+#[test]
+fn test_shortcut_scope_and_subfolder() {
+    let mut cleanup = TestCleanup::new();
+    let dir = std::env::temp_dir().join("outto_test_shortcut_scope");
+    let _ = std::fs::remove_dir_all(&dir);
+    cleanup.track_dir(dir.clone());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("app.exe"), "fake").unwrap();
+
+    let mut resolver = path_resolver_new(&dir, "Test", "1.0.0");
+    let mut folders = Vec::new();
+    for variable in [
+        "startmenu",
+        "desktop",
+        "startup",
+        "commonstartmenu",
+        "commondesktop",
+        "commonstartup",
+    ] {
+        let folder = dir.join(variable);
+        std::fs::create_dir_all(&folder).unwrap();
+        resolver.set_variable(variable, folder.to_string_lossy());
+        folders.push(folder);
+    }
+
+    let mut grouped = shortcut_entry("Grouped", ShortcutLocation::StartMenu);
+    grouped.subfolder = Some("#{package.name} Group/Nested".to_string());
+    let mut mine = shortcut_entry("Mine", ShortcutLocation::StartMenu);
+    mine.scope = Some(ShortcutScope::CurrentUser);
+    let cases = [
+        (
+            grouped.clone(),
+            Privileges::Admin,
+            r"commonstartmenu\Test Group\Nested\Grouped.lnk",
+        ),
+        (
+            grouped,
+            Privileges::User,
+            r"startmenu\Test Group\Nested\Grouped.lnk",
+        ),
+        (mine.clone(), Privileges::Admin, r"startmenu\Mine.lnk"),
+        (
+            ShortcutEntry {
+                scope: Some(ShortcutScope::AllUsers),
+                ..mine
+            },
+            Privileges::Auto,
+            r"commonstartmenu\Mine.lnk",
+        ),
+        (
+            shortcut_entry("Desk", ShortcutLocation::Desktop),
+            Privileges::Admin,
+            r"commondesktop\Desk.lnk",
+        ),
+        (
+            shortcut_entry("Desk", ShortcutLocation::Desktop),
+            Privileges::Auto,
+            r"desktop\Desk.lnk",
+        ),
+        (
+            shortcut_entry("Boot", ShortcutLocation::Startup),
+            Privileges::Admin,
+            r"commonstartup\Boot.lnk",
+        ),
+        (
+            shortcut_entry("Boot", ShortcutLocation::Startup),
+            Privileges::User,
+            r"startup\Boot.lnk",
+        ),
+    ];
+
+    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &dir, vec![]);
+    for (entry, privileges, want) in &cases {
+        shortcuts::create_shortcut(entry, privileges, &resolver, &mut manifest, &NoOpCallbacks)
+            .unwrap();
+        let lnk = dir.join(want);
+        assert!(lnk.is_file(), "{} missing", lnk.display());
+        assert!(
+            matches!(
+                manifest.actions.last(),
+                Some(ActionRecord::ShortcutCreated { path }) if path == &lnk
+            ),
+            "{:?}",
+            manifest.actions.last()
+        );
+    }
+
+    // Each subfolder is recorded once, outermost first, before its shortcut.
+    let created: Vec<PathBuf> = manifest
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            ActionRecord::DirectoryCreated { path } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        created,
+        [
+            dir.join(r"commonstartmenu\Test Group"),
+            dir.join(r"commonstartmenu\Test Group\Nested"),
+            dir.join(r"startmenu\Test Group"),
+            dir.join(r"startmenu\Test Group\Nested"),
+        ]
+    );
+
+    rollback::rollback_actions(&manifest.actions, &NoOpCallbacks, false).unwrap();
+    for folder in &folders {
+        let left: Vec<_> = std::fs::read_dir(folder).unwrap().flatten().collect();
+        assert!(left.is_empty(), "{}: {left:?}", folder.display());
+    }
+}
+
+#[test]
+fn test_shortcut_folder_variable_not_set() {
+    let dir = std::env::temp_dir().join("outto_test_shortcut_unset");
+    let resolver = path_resolver_new(&dir, "Test", "1.0.0");
+    let mut manifest = InstallManifest::new("test", "Test", "1.0.0", &dir, vec![]);
+    let err = shortcuts::create_shortcut(
+        &shortcut_entry("App", ShortcutLocation::StartMenu),
+        &Privileges::Admin,
+        &resolver,
+        &mut manifest,
+        &NoOpCallbacks,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("#{commonstartmenu}"), "{err}");
+    assert!(manifest.actions.is_empty());
+}
+
+/// The shell-folder variables are the known folders: all users' under
+/// ProgramData and the public profile, the current user's under APPDATA.
+#[test]
+fn test_shell_folder_variables() {
+    let config = Config::from_toml(
+        r#"
+[package]
+id = "com.test.shell-folders"
+name = "ShellFolders"
+version = "1.0.0"
+"#,
+    )
+    .unwrap();
+    let resolver = outto_windows::make_resolver(&config, None);
+    let env = |name: &str| PathBuf::from(std::env::var_os(name).unwrap());
+    let common = env("ProgramData").join(r"Microsoft\Windows\Start Menu\Programs");
+    let user = env("APPDATA").join(r"Microsoft\Windows\Start Menu\Programs");
+    for (variable, want) in [
+        ("commonstartmenu", common.clone()),
+        ("commonstartup", common.join("Startup")),
+        ("commondesktop", env("PUBLIC").join("Desktop")),
+        ("startmenu", user.clone()),
+        ("startup", user.join("Startup")),
+    ] {
+        let got = resolver
+            .get_variable(variable)
+            .unwrap_or_else(|| panic!("#{{{variable}}} not set"));
+        assert!(
+            got.eq_ignore_ascii_case(&want.to_string_lossy()),
+            "#{{{variable}}} = {got}, want {}",
+            want.display()
+        );
+    }
+    // The desktop may be redirected (to OneDrive, say), but it is a folder.
+    let desktop = PathBuf::from(resolver.get_variable("desktop").unwrap());
+    assert!(
+        desktop.is_absolute() && desktop.is_dir(),
+        "{}",
+        desktop.display()
+    );
 }
 
 // ---------------------------------------------------------------------------

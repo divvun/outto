@@ -125,7 +125,13 @@ fn execute_install_inner(
         if !should_include(shortcut.component.as_deref(), selected_components) {
             continue;
         }
-        shortcuts::create_shortcut(shortcut, resolver, manifest, callbacks)?;
+        shortcuts::create_shortcut(
+            shortcut,
+            &config.package.privileges,
+            resolver,
+            manifest,
+            callbacks,
+        )?;
         callbacks.on_progress("shortcuts", (i + 1) as u64, total_shortcuts as u64);
     }
 

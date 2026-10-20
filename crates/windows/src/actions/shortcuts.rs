@@ -5,12 +5,16 @@ use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use crate::manifest::Action;
 use outto_core::callbacks::{InstallerCallbacks, LogLevel};
-use outto_core::config::{ShortcutEntry, ShortcutLocation, VariableResolver};
+use outto_core::config::{Privileges, ShortcutEntry, VariableResolver};
 use outto_core::error::{InstallerError, InstallerResult};
 use outto_core::manifest::InstallManifest;
 
+/// Create `entry`'s shortcut in the folder of its location for its scope,
+/// all users' by default when the package has `privileges` = `admin`, and
+/// record it with any folders it created.
 pub fn create_shortcut(
     entry: &ShortcutEntry,
+    privileges: &Privileges,
     resolver: &VariableResolver,
     manifest: &mut InstallManifest<Action>,
     callbacks: &dyn InstallerCallbacks,
@@ -18,38 +22,27 @@ pub fn create_shortcut(
     let target = resolver.resolve(&entry.target)?;
     let name = resolver.resolve(&entry.name)?;
 
-    let location_dir = match entry.location {
-        ShortcutLocation::StartMenu => resolver
-            .get_variable("startmenu")
-            .ok_or_else(|| InstallerError::Shortcut {
-                name: name.clone(),
-                message: "startmenu path variable not set".into(),
-            })?
-            .to_string(),
-        ShortcutLocation::Desktop => resolver
-            .get_variable("desktop")
-            .ok_or_else(|| InstallerError::Shortcut {
-                name: name.clone(),
-                message: "desktop path variable not set".into(),
-            })?
-            .to_string(),
-        ShortcutLocation::Startup => resolver
-            .get_variable("startup")
-            .ok_or_else(|| InstallerError::Shortcut {
-                name: name.clone(),
-                message: "startup path variable not set".into(),
-            })?
-            .to_string(),
-    };
-
-    let shortcut_path = PathBuf::from(&location_dir).join(format!("{name}.lnk"));
+    let scope = entry.scope(privileges);
+    let variable = entry.location.folder_variable(scope);
+    let mut dir =
+        PathBuf::from(
+            resolver
+                .get_variable(variable)
+                .ok_or_else(|| InstallerError::Shortcut {
+                    name: name.clone(),
+                    message: format!("#{{{variable}}} is not set"),
+                })?,
+        );
+    if let Some(subfolder) = &entry.subfolder {
+        dir.push(resolver.resolve_path(subfolder)?);
+    }
+    let shortcut_path = dir.join(format!("{name}.lnk"));
 
     callbacks.on_log(
         LogLevel::Info,
         &format!(
-            "Shortcuts: creating {} -> {}",
+            "Shortcuts: creating {} -> {target} ({scope:?})",
             shortcut_path.display(),
-            target
         ),
     );
 

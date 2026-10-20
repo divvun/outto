@@ -720,3 +720,231 @@ overwrite = "always"
             .unwrap();
     }
 }
+
+// ---------------------------------------------------------------------------
+// Shortcuts in the all-users and the current user's Start Menu (needs admin)
+// ---------------------------------------------------------------------------
+
+mod shortcut_scopes {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    use outto_core::callbacks::{
+        InstallOptions, InstallerCallbacks, LogLevel, Prompt, PromptResponse,
+    };
+    use outto_core::error::{ErrorAction, InstallerError};
+
+    const ID: &str = "no.divvun.outto-test.shortcut-scopes";
+
+    #[derive(Default)]
+    struct Logs(Mutex<Vec<String>>);
+
+    impl InstallerCallbacks for Logs {
+        fn on_progress(&self, _phase: &str, _current: u64, _total: u64) {}
+        fn on_prompt(&self, _prompt: Prompt) -> PromptResponse {
+            PromptResponse::Yes
+        }
+        fn on_log(&self, _level: LogLevel, message: &str) {
+            self.0.lock().unwrap().push(message.to_string());
+        }
+        fn on_error(&self, _error: &InstallerError) -> ErrorAction {
+            ErrorAction::Abort
+        }
+    }
+
+    impl Logs {
+        fn text(&self) -> String {
+            self.0.lock().unwrap().join("\n")
+        }
+    }
+
+    /// Removes whatever a failed run left: the install, its Add/Remove
+    /// Programs entry and the test's Start Menu entries.
+    struct Cleanup {
+        test_dir: PathBuf,
+        install_dir: PathBuf,
+        paths: Vec<PathBuf>,
+    }
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            if let Ok(Some(_)) = outto_windows::detect::detect_existing_install(ID) {
+                let _ = outto_windows::uninstall_package(&self.install_dir, ID, &Logs::default());
+                let _ = outto_windows::detect::remove_uninstall_registry(ID);
+            }
+            for path in &self.paths {
+                if path.is_dir() {
+                    let _ = std::fs::remove_dir_all(path);
+                } else {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.test_dir);
+        }
+    }
+
+    fn config(version: &str, shortcuts: &str) -> outto_core::Config {
+        outto_core::Config::from_toml(&format!(
+            r##"
+[package]
+id = "{ID}"
+name = "OuttoShortcutScopesTest"
+version = "{version}"
+privileges = "admin"
+
+[reboot]
+restart_manager = false
+
+[[files]]
+source = "app.exe"
+dest = "#{{app}}"
+overwrite = "always"
+{shortcuts}
+"##
+        ))
+        .unwrap()
+    }
+
+    fn shortcut(name: &str, subfolder: Option<&str>, scope: Option<&str>) -> String {
+        let mut s = format!(
+            "\n[[shortcuts]]\nname = \"{name}\"\ntarget = \"#{{app}}/app.exe\"\n\
+             location = \"start_menu\"\n"
+        );
+        if let Some(subfolder) = subfolder {
+            s.push_str(&format!("subfolder = \"{subfolder}\"\n"));
+        }
+        if let Some(scope) = scope {
+            s.push_str(&format!("scope = \"{scope}\"\n"));
+        }
+        s
+    }
+
+    fn install(config: &outto_core::Config, cleanup: &Cleanup, logs: &Logs) {
+        let uninstaller = cleanup.test_dir.join("uninstall.exe");
+        std::fs::write(&uninstaller, b"MZ").unwrap();
+        outto_windows::install(
+            config,
+            &InstallOptions {
+                source_dir: cleanup.test_dir.join("source"),
+                install_dir: Some(cleanup.install_dir.clone()),
+                selected_components: None,
+                uninstall_exe: Some(uninstaller),
+            },
+            logs,
+        )
+        .unwrap_or_else(|e| panic!("{e}\n{}", logs.text()));
+    }
+
+    fn assert_exists(path: &Path, logs: &Logs) {
+        assert!(path.exists(), "{} missing\n{}", path.display(), logs.text());
+    }
+
+    fn assert_gone(path: &Path, logs: &Logs) {
+        assert!(
+            !path.exists(),
+            "{} left behind\n{}",
+            path.display(),
+            logs.text()
+        );
+    }
+
+    /// An admin package's shortcuts go to all users' Start Menu unless they
+    /// say otherwise. An upgrade from an install that put them in the
+    /// current user's removes those and the folder it made for them, and
+    /// uninstall removes the new ones and their folders.
+    #[test]
+    #[ignore]
+    fn test_admin_shortcut_scopes_upgrade_and_uninstall() {
+        super::assert_admin();
+        let test_dir = std::env::temp_dir().join("outto_test_shortcut_scopes");
+        let _ = std::fs::remove_dir_all(&test_dir);
+        std::fs::create_dir_all(test_dir.join("source")).unwrap();
+        std::fs::write(test_dir.join("source").join("app.exe"), "app").unwrap();
+
+        let probe = config("1.0.0", "");
+        let resolver = outto_windows::make_resolver(&probe, None);
+        let common = PathBuf::from(resolver.get_variable("commonstartmenu").unwrap());
+        let user = PathBuf::from(resolver.get_variable("startmenu").unwrap());
+        assert!(
+            common
+                .to_string_lossy()
+                .eq_ignore_ascii_case(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs"),
+            "{}",
+            common.display()
+        );
+
+        let group = format!("Outto Test Group {}", std::process::id());
+        let mine = format!("Outto Test Mine {}", std::process::id());
+        let flat = format!("Outto Test Flat {}", std::process::id());
+        let cleanup = Cleanup {
+            install_dir: test_dir.join("installed"),
+            paths: vec![
+                common.join(&group),
+                common.join(&mine),
+                common.join(format!("{flat}.lnk")),
+                user.join(&group),
+                user.join(&mine),
+                user.join(format!("{flat}.lnk")),
+            ],
+            test_dir,
+        };
+        let logs = Logs::default();
+
+        // 1.0.0 puts both in the current user's Start Menu, the way outto
+        // did before shortcuts had a scope; "Flat" straight in Programs.
+        install(
+            &config(
+                "1.0.0",
+                &[
+                    shortcut("App", Some(&group), Some("current_user")),
+                    shortcut(&flat, None, Some("current_user")),
+                ]
+                .concat(),
+            ),
+            &cleanup,
+            &logs,
+        );
+        assert_exists(&user.join(&group).join("App.lnk"), &logs);
+        assert_exists(&user.join(format!("{flat}.lnk")), &logs);
+        assert_gone(&common.join(&group), &logs);
+
+        // 2.0.0 leaves them to the default, all users, and adds one that
+        // stays the current user's.
+        install(
+            &config(
+                "2.0.0",
+                &[
+                    shortcut("App", Some(&group), None),
+                    shortcut(&flat, None, None),
+                    shortcut("Mine", Some(&mine), Some("current_user")),
+                ]
+                .concat(),
+            ),
+            &cleanup,
+            &logs,
+        );
+        assert_exists(&common.join(&group).join("App.lnk"), &logs);
+        assert_exists(&common.join(format!("{flat}.lnk")), &logs);
+        assert_exists(&user.join(&mine).join("Mine.lnk"), &logs);
+        assert_gone(&user.join(&group), &logs);
+        assert_gone(&user.join(format!("{flat}.lnk")), &logs);
+        assert_gone(&common.join(&mine), &logs);
+
+        // The receipt no longer names the folder the upgrade removed.
+        let manifest = outto_core::manifest::InstallManifest::<outto_windows::WindowsAction>::load(
+            &cleanup.install_dir,
+            ID,
+        )
+        .unwrap();
+        let recorded = serde_json::to_string(&manifest.actions).unwrap();
+        let user_group = user.join(&group).to_string_lossy().replace('\\', "\\\\");
+        assert!(!recorded.contains(&user_group), "{recorded}");
+
+        outto_windows::uninstall_package(&cleanup.install_dir, ID, &logs)
+            .unwrap_or_else(|e| panic!("{e}\n{}", logs.text()));
+        assert_gone(&common.join(&group), &logs);
+        assert_gone(&common.join(format!("{flat}.lnk")), &logs);
+        assert_gone(&user.join(&mine), &logs);
+        assert!(common.is_dir() && user.is_dir());
+    }
+}

@@ -129,6 +129,42 @@ pub enum ShortcutLocation {
     Startup,
 }
 
+impl ShortcutLocation {
+    pub fn folder_variable(&self, scope: ShortcutScope) -> &'static str {
+        match (self, scope) {
+            (Self::StartMenu, ShortcutScope::AllUsers) => "commonstartmenu",
+            (Self::Desktop, ShortcutScope::AllUsers) => "commondesktop",
+            (Self::Startup, ShortcutScope::AllUsers) => "commonstartup",
+            (Self::StartMenu, ShortcutScope::CurrentUser) => "startmenu",
+            (Self::Desktop, ShortcutScope::CurrentUser) => "desktop",
+            (Self::Startup, ShortcutScope::CurrentUser) => "startup",
+        }
+    }
+}
+
+/// Whose Start Menu, desktop or Startup folder a shortcut goes in.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShortcutScope {
+    /// Every user's: `C:\ProgramData\Microsoft\Windows\Start Menu\Programs`,
+    /// the public desktop and the common Startup folder.
+    AllUsers,
+    /// Those of the user the installer runs as, which for an elevated
+    /// install is the administrator who elevated it.
+    CurrentUser,
+}
+
+impl ShortcutScope {
+    /// Inno Setup's choice: all users for a package that requires
+    /// administrator privileges, the current user otherwise.
+    pub fn default_for(privileges: &Privileges) -> Self {
+        match privileges {
+            Privileges::Admin => Self::AllUsers,
+            Privileges::User | Privileges::Auto => Self::CurrentUser,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvAction {
@@ -437,6 +473,8 @@ pub struct ShortcutEntry {
     pub name: String,
     pub target: String,
     pub location: ShortcutLocation,
+    /// Whose folder `location` is; see [`ShortcutEntry::scope`].
+    pub scope: Option<ShortcutScope>,
     pub icon: Option<String>,
     pub working_dir: Option<String>,
     pub arguments: Option<String>,
@@ -444,11 +482,23 @@ pub struct ShortcutEntry {
     pub component: Option<String>,
     pub hotkey: Option<String>,
     pub app_user_model_id: Option<String>,
+    /// A folder, or folders separated by `/`, inside `location` to put the
+    /// shortcut in, as Inno Setup's `{group}`. Created if missing, and
+    /// removed on uninstall once empty.
     pub subfolder: Option<String>,
     pub icon_index: Option<i32>,
     pub arch: Option<Architecture>,
     #[serde(default)]
     pub run_maximized: bool,
+}
+
+impl ShortcutEntry {
+    /// The `scope` the entry sets, else the default for a package with
+    /// `privileges` ([`ShortcutScope::default_for`]).
+    pub fn scope(&self, privileges: &Privileges) -> ShortcutScope {
+        self.scope
+            .unwrap_or_else(|| ShortcutScope::default_for(privileges))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
