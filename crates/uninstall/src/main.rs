@@ -136,6 +136,7 @@ fn main() {
     if let Err(e) = app::run(state) {
         fatal_error(&format!("Failed to start uninstaller: {e}"));
     }
+    restore_self();
 }
 
 /// Run the headless uninstall with the right callbacks: when `--progress-file`
@@ -270,32 +271,87 @@ pub fn relocate_self() {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let in_outto = exe
-        .parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .is_some_and(|name| name.eq_ignore_ascii_case(".outto"));
-    if !in_outto {
+    if !in_outto_dir(&exe) {
         return;
     }
-    let temp_path =
-        std::env::temp_dir().join(format!("outto-uninstall-{}.exe", std::process::id()));
-    if std::fs::rename(&exe, &temp_path).is_ok() {
-        let _ = RELOCATED_EXE.set(temp_path);
+    let temp = std::env::temp_dir().join(outto_windows::self_delete::relocated_name(
+        std::process::id(),
+    ));
+    if std::fs::rename(&exe, &temp).is_ok()
+        && let Ok(mut relocated) = RELOCATED.lock()
+    {
+        *relocated = Some(Relocated {
+            temp,
+            original: exe,
+        });
     }
 }
 
-/// Where [`relocate_self`] moved the running exe. `current_exe()` keeps
-/// reporting the original path after the rename, so this is the only record
-/// of the copy left in the temp directory.
+/// Whether `exe` is the uninstaller kept in `.outto\<package id>\`.
 #[cfg(windows)]
-static RELOCATED_EXE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+fn in_outto_dir(exe: &std::path::Path) -> bool {
+    exe.parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(".outto"))
+}
+
+/// Where [`relocate_self`] moved the running exe, and from where.
+/// `current_exe()` keeps reporting the original path after the rename, so
+/// this is the only record of the copy in the temp directory.
+#[cfg(windows)]
+struct Relocated {
+    temp: PathBuf,
+    original: PathBuf,
+}
+
+#[cfg(windows)]
+static RELOCATED: std::sync::Mutex<Option<Relocated>> = std::sync::Mutex::new(None);
+
+#[cfg(windows)]
+fn take_relocated() -> Option<Relocated> {
+    RELOCATED.lock().ok().and_then(|mut r| r.take())
+}
+
+/// After an uninstall that did not finish, put the exe back where Add/Remove
+/// Programs runs it from, or failing that, delete the temp copy.
+#[cfg(windows)]
+pub fn restore_self() {
+    use outto_core::LogLevel;
+    use outto_core::logfile::write as log;
+
+    let Some(relocated) = take_relocated() else {
+        return;
+    };
+    match std::fs::rename(&relocated.temp, &relocated.original) {
+        Ok(()) => log(
+            LogLevel::Info,
+            &format!(
+                "Moved the uninstaller back to {}",
+                relocated.original.display()
+            ),
+        ),
+        Err(e) => {
+            log(
+                LogLevel::Warn,
+                &format!(
+                    "Could not move the uninstaller back to {}: {e}",
+                    relocated.original.display()
+                ),
+            );
+            delete_after_exit(&relocated.temp);
+        }
+    }
+}
 
 #[cfg(not(windows))]
 pub fn relocate_self() {
     // No-op on macOS; posix is happy to delete a running binary.
 }
+
+#[cfg(not(windows))]
+pub fn restore_self() {}
 
 /// Clean up after uninstall finishes: on Windows, the `.outto` dir under the
 /// install directory; on macOS, the receipt dir at
@@ -333,22 +389,56 @@ pub fn cleanup_after_uninstall(install_dir: &std::path::Path) {
         }
     }
 
-    // A running exe can't be deleted, only scheduled for deletion at restart.
-    if let Some(exe) = RELOCATED_EXE
-        .get()
-        .cloned()
-        .or_else(|| std::env::current_exe().ok())
-    {
-        match schedule_delete_on_reboot(&exe) {
-            Ok(()) => log(
-                LogLevel::Info,
-                &format!("Scheduled {} for deletion at reboot", exe.display()),
+    if let Some(relocated) = take_relocated() {
+        delete_after_exit(&relocated.temp);
+        return;
+    }
+    // Not moved out of `.outto`, so still in it: a running exe can't be
+    // deleted, only scheduled for deletion at restart.
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    if !in_outto_dir(&exe) {
+        return;
+    }
+    match schedule_delete_on_reboot(&exe) {
+        Ok(()) => log(
+            LogLevel::Info,
+            &format!("Scheduled {} for deletion at reboot", exe.display()),
+        ),
+        Err(e) => log(
+            LogLevel::Warn,
+            &format!("Could not schedule {} for deletion: {e}", exe.display()),
+        ),
+    }
+}
+
+/// Have the temp copy of the exe deleted once this process has exited.
+#[cfg(windows)]
+fn delete_after_exit(temp: &std::path::Path) {
+    use outto_core::LogLevel;
+    use outto_core::logfile::write as log;
+    use outto_windows::self_delete::{Removal, delete_after_exit};
+
+    match delete_after_exit(temp) {
+        Ok(Removal::AfterExit { helper_pid }) => log(
+            LogLevel::Info,
+            &format!(
+                "Deleting {} once the uninstaller has exited (cmd.exe, process {helper_pid})",
+                temp.display()
             ),
-            Err(e) => log(
-                LogLevel::Warn,
-                &format!("Could not schedule {} for deletion: {e}", exe.display()),
+        ),
+        Ok(Removal::AtRestart(e)) => log(
+            LogLevel::Warn,
+            &format!(
+                "Could not start cmd.exe to delete {} ({e}); scheduled it for deletion at reboot",
+                temp.display()
             ),
-        }
+        ),
+        Err(e) => log(
+            LogLevel::Warn,
+            &format!("Could not delete {}: {e}", temp.display()),
+        ),
     }
 }
 
@@ -490,6 +580,7 @@ fn message_box(text: &str, title: &str, icon: u32) {
 fn fatal_error(msg: &str) -> ! {
     eprintln!("Error: {msg}");
     outto_core::logfile::write(outto_core::LogLevel::Error, msg);
+    restore_self();
 
     #[cfg(windows)]
     if !NO_MESSAGE_BOXES.load(Ordering::Relaxed) {

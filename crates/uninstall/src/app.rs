@@ -256,6 +256,7 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             if state.cancel_locked {
                 return Task::none();
             }
+            crate::restore_self();
             std::process::exit(0);
         }
         Message::BridgeUpdate => {
@@ -267,6 +268,7 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 crate::cleanup_after_uninstall(&state.install_dir);
                 std::process::exit(0);
             } else {
+                crate::restore_self();
                 std::process::exit(1);
             }
         }

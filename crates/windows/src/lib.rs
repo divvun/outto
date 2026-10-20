@@ -18,6 +18,7 @@ pub mod paths;
 pub mod pe;
 pub mod pending_renames;
 pub mod restart_manager;
+pub mod self_delete;
 pub mod uninstall;
 
 use std::path::PathBuf;
