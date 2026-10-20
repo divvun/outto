@@ -83,7 +83,7 @@ TOML values accept `#{…}` placeholders that are resolved at install time:
 
 | Section | Purpose |
 |---|---|
-| `[package]` | id, name, version, publisher, default_dir, privileges, architecture |
+| `[package]` | id, name, version, publisher, default_dir, privileges, architecture (`x86`, `x64`, `arm64`, `any`), `legacy_inno_app_id` and `legacy_inno_mode` (`uninstall` or `adopt`) |
 | `[[files]]` | Copy files/globs into `dest`, per-file `overwrite` policy |
 | `[[dirs]]` | Create directories (optionally preserved on uninstall) |
 | `[[registry]]` | HKLM/HKCU/HKCR keys and values |
@@ -91,13 +91,13 @@ TOML values accept `#{…}` placeholders that are resolved at install time:
 | `[[environment]]` | System or user environment variables (`set` / `append` / `prepend`) |
 | `[[services]]` | Windows service install/start |
 | `[[associations]]` | File-type associations |
-| `[[com]]` | COM server registration |
+| `[[com]]` | COM server registration with regsvr32; `host = "x86"` uses SysWOW64's, `arch` limits it to one architecture |
 | `[[fonts]]` | Font installation |
 | `[[prerequisites]]` | Detect and require prior installs |
 | `[[run]]` | Run commands in `before_install` / `after_install` / `before_uninstall` phases |
 | `[[components]]` | Optional/required component groups; each entry may set `component = "foo"` |
-| `[upgrade]` | `policy = "overwrite" \| "side_by_side" \| "fail"` |
-| `[uninstall]` | Display icon, whether to remove `#{app}` on uninstall, extra dirs |
+| `[upgrade]` | `policy = "overwrite" \| "side_by_side" \| "fail"`; `downgrade = "refuse"` with an optional `[upgrade.installed_version]` registry probe; `prune`, directories emptied of everything the install did not record |
+| `[uninstall]` | Display icon, whether to remove `#{app}` on uninstall, extra dirs; `[[uninstall.refuse_while]]` registry keys (with `*` segments) that make the uninstaller refuse, exiting 2 |
 | `[reboot]` | `never` / `if_needed` / `always`, Restart Manager integration |
 | `[logging]` | Install log path |
 

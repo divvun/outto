@@ -11,6 +11,10 @@ privileges = "admin"
 default_dir = "#{pf}/#{package.name}"
 # AppId of the Inno Setup installer this replaces (bare GUID, no braces).
 # legacy_inno_app_id = "8A3F2C1D-0B4E-4F6A-9C7D-1E2F3A4B5C6D"
+# Run its uninstaller first ("uninstall", the default), or take its install
+# over without running it ("adopt"): its Add/Remove Programs entry and unins*
+# files go, its other files are left to this install (see [upgrade] prune).
+# legacy_inno_mode = "adopt"
 
 [logging]
 enabled = true
@@ -28,6 +32,23 @@ extra_dirs = ["#{userappdata}/MyApp"]
 [upgrade]
 policy = "overwrite"
 preserve = ["config/*.toml", "data/**"]
+# Refuse to replace an installed version of higher SemVer precedence, before
+# changing anything. The installed version is the existing install's, or:
+# downgrade = "refuse"
+# [upgrade.installed_version]
+# registry_key = 'HKLM\SOFTWARE\Classes\CLSID\{...}\InprocServer32'
+# from = "parent_dir_name"   # the value names a file in a version directory
+#
+# After a successful install, remove everything in these directories that
+# the install did not record, such as earlier versions' side-by-side
+# directories. Files in use are moved aside and deleted at the next restart.
+# prune = ["#{app}"]
+#
+# The uninstaller refuses, changing nothing and exiting 2, while a matching
+# registry key exists; `*` matches any one subkey.
+# [[uninstall.refuse_while]]
+# registry_key = 'HKLM\SOFTWARE\Microsoft\CTF\TIP\{...}\LanguageProfile\*\*'
+# message = "Uninstall the keyboards that use it first."
 
 [[components]]
 name = "core"
@@ -116,3 +137,5 @@ source = "assets/CustomFont.ttf"
 [[com]]
 file = "#{app}/mylib.dll"
 action = "regserver"
+# host = "x86"   # register a 32-bit DLL with SysWOW64's regsvr32
+# arch = "x64"   # only on this architecture (x86, x64, arm64)
