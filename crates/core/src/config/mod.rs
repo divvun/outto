@@ -7,7 +7,7 @@ use serde::Deserialize;
 use crate::error::{InstallerError, InstallerResult};
 pub use paths::VariableResolver;
 pub use types::*;
-pub use validate::validate_config;
+pub use validate::{split_registry_key, validate_config};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {

@@ -9,6 +9,59 @@ pub fn validate_config(config: &Config) -> InstallerResult<()> {
     validate_shortcuts(config)?;
     validate_services(config)?;
     validate_associations(config)?;
+    validate_upgrade(config)?;
+    validate_uninstall(config)?;
+    Ok(())
+}
+
+/// Split a registry path such as `HKLM\SOFTWARE\Foo` into its root, as
+/// `HKLM`, `HKCU` or `HKCR`, and the key under it. The long root names
+/// (`HKEY_LOCAL_MACHINE`, ...) are accepted too; `None` for anything else.
+pub fn split_registry_key(path: &str) -> Option<(&'static str, &str)> {
+    let (root, key) = path.split_once('\\')?;
+    let root = match root.to_ascii_uppercase().as_str() {
+        "HKLM" | "HKEY_LOCAL_MACHINE" => "HKLM",
+        "HKCU" | "HKEY_CURRENT_USER" => "HKCU",
+        "HKCR" | "HKEY_CLASSES_ROOT" => "HKCR",
+        _ => return None,
+    };
+    (!key.is_empty()).then_some((root, key))
+}
+
+fn check_registry_key(path: &str, context: &str) -> InstallerResult<()> {
+    if split_registry_key(path).is_none() {
+        return Err(InstallerError::Validation(format!(
+            "{context} '{path}' must be a registry key under HKLM, HKCU or HKCR, \
+             e.g. HKLM\\SOFTWARE\\Example"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_upgrade(config: &Config) -> InstallerResult<()> {
+    if let Some(probe) = &config.upgrade.installed_version {
+        check_registry_key(
+            &probe.registry_key,
+            "upgrade.installed_version.registry_key",
+        )?;
+    }
+    for (i, dir) in config.upgrade.prune.iter().enumerate() {
+        if dir.trim().is_empty() {
+            return Err(InstallerError::Validation(format!(
+                "upgrade.prune[{i}] must not be empty"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_uninstall(config: &Config) -> InstallerResult<()> {
+    for (i, refusal) in config.uninstall.refuse_while.iter().enumerate() {
+        check_registry_key(
+            &refusal.registry_key,
+            &format!("uninstall.refuse_while[{i}].registry_key"),
+        )?;
+    }
     Ok(())
 }
 
@@ -245,6 +298,92 @@ version = "1.0.0-beta.1"
         assert!(validate_config(&parse("{8A3F2C1D-0B4E-4F6A-9C7D-1E2F3A4B5C6D}")).is_err());
         assert!(validate_config(&parse("8A3F2C1D-0B4E-4F6A-9C7D")).is_err());
         assert!(validate_config(&parse("MyApp")).is_err());
+    }
+
+    #[test]
+    fn test_split_registry_key() {
+        assert_eq!(
+            split_registry_key(r"HKLM\SOFTWARE\Classes"),
+            Some(("HKLM", r"SOFTWARE\Classes"))
+        );
+        assert_eq!(
+            split_registry_key(r"hkey_current_user\Software"),
+            Some(("HKCU", "Software"))
+        );
+        assert_eq!(split_registry_key(r"HKCR\.txt"), Some(("HKCR", ".txt")));
+        assert_eq!(split_registry_key(r"HKLM\"), None);
+        assert_eq!(split_registry_key("HKLM"), None);
+        assert_eq!(split_registry_key(r"HKU\S-1-5-18"), None);
+        assert_eq!(split_registry_key("SOFTWARE/Foo"), None);
+    }
+
+    #[test]
+    fn test_upgrade_and_uninstall_sections() {
+        let config = Config::from_toml(
+            r##"
+[package]
+id = "com.test"
+name = "TestApp"
+version = "1.0.0"
+legacy_inno_app_id = "8A3F2C1D-0B4E-4F6A-9C7D-1E2F3A4B5C6D"
+legacy_inno_mode = "adopt"
+
+[upgrade]
+downgrade = "refuse"
+prune = ["#{app}"]
+
+[upgrade.installed_version]
+registry_key = 'HKLM\SOFTWARE\Classes\CLSID\{4F600265-E72D-4131-8FBC-D56D08E17227}\InprocServer32'
+from = "parent_dir_name"
+
+[[uninstall.refuse_while]]
+registry_key = 'HKLM\SOFTWARE\Microsoft\CTF\TIP\{4F600265-E72D-4131-8FBC-D56D08E17227}\LanguageProfile\*\*'
+message = "Keyboards still use it."
+
+[[com]]
+file = "#{app}/x86.dll"
+action = "regserver"
+host = "x86"
+
+[[com]]
+file = "#{app}/arm64.dll"
+action = "regserver"
+arch = "arm64"
+"##,
+        )
+        .unwrap();
+        use crate::config::types::*;
+        assert_eq!(config.package.legacy_inno_mode, LegacyInnoMode::Adopt);
+        assert_eq!(config.upgrade.downgrade, DowngradePolicy::Refuse);
+        assert_eq!(config.upgrade.prune, ["#{app}"]);
+        let probe = config.upgrade.installed_version.unwrap();
+        assert_eq!(probe.from, InstalledVersionFrom::ParentDirName);
+        assert_eq!(probe.value, None);
+        assert_eq!(config.uninstall.refuse_while.len(), 1);
+        assert!(
+            config.uninstall.refuse_while[0]
+                .registry_key
+                .ends_with(r"\*\*")
+        );
+        assert_eq!(config.com[0].host, ComHost::X86);
+        assert_eq!(config.com[0].arch, None);
+        assert_eq!(config.com[1].host, ComHost::Native);
+        assert_eq!(config.com[1].arch, Some(Architecture::Arm64));
+
+        let defaults = Config::from_toml(minimal_toml()).unwrap();
+        assert_eq!(defaults.package.legacy_inno_mode, LegacyInnoMode::Uninstall);
+        assert_eq!(defaults.upgrade.downgrade, DowngradePolicy::Allow);
+        assert!(defaults.upgrade.prune.is_empty());
+        assert!(defaults.uninstall.refuse_while.is_empty());
+    }
+
+    #[test]
+    fn test_registry_keys_need_a_root() {
+        let parse = |section: &str| Config::from_toml(&format!("{}{section}", minimal_toml()));
+        assert!(parse("[[uninstall.refuse_while]]\nregistry_key = 'SOFTWARE\\Foo'\n").is_err());
+        assert!(parse("[upgrade.installed_version]\nregistry_key = 'HKXX\\Foo'\n").is_err());
+        assert!(parse("[upgrade]\nprune = [\"\"]\n").is_err());
+        assert!(parse("[[uninstall.refuse_while]]\nregistry_key = 'HKCU\\Foo\\*'\n").is_ok());
     }
 
     #[test]

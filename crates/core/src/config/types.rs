@@ -53,6 +53,46 @@ pub enum UpgradePolicy {
     Fail,
 }
 
+/// Whether an install may replace a newer installed version.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DowngradePolicy {
+    #[default]
+    Allow,
+    /// Refuse, before changing anything, when the installed version
+    /// (`[upgrade.installed_version]`, else the existing install's) has
+    /// higher SemVer precedence than this package's. The same version
+    /// installs again.
+    Refuse,
+}
+
+/// What to do with the Inno Setup install that `legacy_inno_app_id` names,
+/// under `[upgrade] policy = "overwrite"`.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum LegacyInnoMode {
+    /// Run its uninstaller silently before installing.
+    #[default]
+    Uninstall,
+    /// Take it over without running its uninstaller, which may refuse or
+    /// undo what this install is about to replace: remove its Add/Remove
+    /// Programs entry and its `unins*` files, and leave its other files to
+    /// this install (see `[upgrade] prune`).
+    Adopt,
+}
+
+/// Where `[upgrade.installed_version]` reads the version from.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum InstalledVersionFrom {
+    /// The value itself.
+    #[default]
+    Value,
+    /// The value is a path; the version is the name of the directory that
+    /// holds it, as for side-by-side version directories.
+    ParentDirName,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RegistryRoot {
@@ -190,6 +230,9 @@ pub struct PackageConfig {
     /// (no braces). An existing `<GUID>_is1` or `{<GUID>}_is1` Add/Remove
     /// Programs entry is treated as a previous install for `[upgrade]`.
     pub legacy_inno_app_id: Option<String>,
+    /// How that install is replaced.
+    #[serde(default)]
+    pub legacy_inno_mode: LegacyInnoMode,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -229,6 +272,21 @@ pub struct UninstallConfig {
     pub extra_dirs: Vec<String>,
     #[serde(default)]
     pub extra_files: Vec<String>,
+    /// Conditions under which the uninstaller refuses to run, checked
+    /// before it changes anything.
+    #[serde(default)]
+    pub refuse_while: Vec<UninstallRefusal>,
+}
+
+/// `[[uninstall.refuse_while]]`: the uninstaller refuses while this holds.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UninstallRefusal {
+    /// A registry key, `HKLM\...`, `HKCU\...` or `HKCR\...`. A `*`
+    /// segment matches any subkey, so `...\Profiles\*\*` holds while any
+    /// subkey of `Profiles` has a subkey.
+    pub registry_key: String,
+    /// What the uninstaller tells the user.
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -237,6 +295,30 @@ pub struct UpgradeConfig {
     pub policy: UpgradePolicy,
     #[serde(default)]
     pub preserve: Vec<String>,
+    #[serde(default)]
+    pub downgrade: DowngradePolicy,
+    /// Where `downgrade = "refuse"` reads the installed version from. Without
+    /// it, the version of the existing install's Add/Remove Programs entry.
+    pub installed_version: Option<InstalledVersionProbe>,
+    /// Directories this package owns outright. After a successful install,
+    /// everything in them that the install did not record is removed: what
+    /// earlier versions left, such as their side-by-side version
+    /// directories. Receipt (`.outto`) directories stay. A file in use is
+    /// moved out of the way and deleted at the next restart.
+    #[serde(default)]
+    pub prune: Vec<String>,
+}
+
+/// `[upgrade.installed_version]`: a registry value naming the installed
+/// version.
+#[derive(Debug, Clone, Deserialize)]
+pub struct InstalledVersionProbe {
+    /// `HKLM\...`, `HKCU\...` or `HKCR\...`.
+    pub registry_key: String,
+    /// The value's name; the key's default value when absent or empty.
+    pub value: Option<String>,
+    #[serde(default)]
+    pub from: InstalledVersionFrom,
 }
 
 #[derive(Debug, Clone, Deserialize)]

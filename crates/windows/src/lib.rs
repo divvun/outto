@@ -22,7 +22,10 @@ pub mod uninstall;
 use std::path::PathBuf;
 
 use outto_core::callbacks::{InstallOptions, InstallerCallbacks, LogLevel};
-use outto_core::config::{RebootPolicy, UpgradePolicy, VariableResolver};
+use outto_core::config::{
+    DowngradePolicy, InstalledVersionFrom, LegacyInnoMode, RebootPolicy, UpgradePolicy,
+    VariableResolver,
+};
 use outto_core::error::{InstallerError, InstallerResult};
 use outto_core::manifest::{CoreAction, InstallManifest, rollback};
 
@@ -109,10 +112,33 @@ pub fn install(
     let resolver = make_resolver(config, Some(&install_dir));
     let uninstall_hooks =
         outto_core::actions::run::resolve_uninstall_hooks(&config.run, &resolver)?;
+    let prune_dirs = config
+        .upgrade
+        .prune
+        .iter()
+        .map(|dir| resolver.resolve_path(dir))
+        .collect::<InstallerResult<Vec<_>>>()?;
+    let declared_dirs = config
+        .dirs
+        .iter()
+        .map(|dir| resolver.resolve_path(&dir.path))
+        .collect::<InstallerResult<Vec<_>>>()?;
+    let uninstall_guards = resolve_uninstall_guards(config, &resolver)?;
+
+    let existing = detect::detect_existing_install(&config.package.id)?;
+    let legacy_inno = match &config.package.legacy_inno_app_id {
+        Some(guid) => detect::detect_legacy_inno_install(guid),
+        None => None,
+    };
+    let existing_version = existing
+        .as_ref()
+        .and_then(|e| e.version.clone())
+        .or_else(|| legacy_inno.as_ref().and_then(|i| i.version.clone()));
+    check_downgrade(config, &resolver, existing_version, callbacks)?;
 
     let mut old_manifest: Option<InstallManifest<WindowsAction>> = None;
     let mut old_install_dir: Option<PathBuf> = None;
-    if let Some(existing) = detect::detect_existing_install(&config.package.id)? {
+    if let Some(existing) = existing {
         callbacks.on_log(
             LogLevel::Info,
             &format!(
@@ -141,10 +167,6 @@ pub fn install(
         }
     }
 
-    let legacy_inno = match &config.package.legacy_inno_app_id {
-        Some(guid) => detect::detect_legacy_inno_install(guid),
-        None => None,
-    };
     if let Some(inno) = legacy_inno {
         callbacks.on_log(
             LogLevel::Info,
@@ -166,7 +188,10 @@ pub fn install(
             }
             UpgradePolicy::SideBySide => {}
             // We install over it, so it has to be gone before anything else runs.
-            UpgradePolicy::Overwrite => uninstall::uninstall_legacy_inno(&inno, callbacks)?,
+            UpgradePolicy::Overwrite => match config.package.legacy_inno_mode {
+                LegacyInnoMode::Uninstall => uninstall::uninstall_legacy_inno(&inno, callbacks)?,
+                LegacyInnoMode::Adopt => uninstall::adopt_legacy_inno(&inno, callbacks)?,
+            },
         }
     }
 
@@ -187,6 +212,7 @@ pub fn install(
         });
     }
     install_manifest.uninstall_hooks = Some(uninstall_hooks);
+    install_manifest.refuse_uninstall_while = uninstall_guards;
 
     let result = actions::execute_install(
         config,
@@ -200,6 +226,7 @@ pub fn install(
     match result {
         Ok(()) => {
             if let Some(old) = &old_manifest {
+                inherit_kept(&mut install_manifest, old);
                 inherit_created(&mut install_manifest, old);
             }
             let backups = take_backups(&mut install_manifest);
@@ -272,6 +299,10 @@ pub fn install(
                         let _ = std::fs::remove_dir(old_dir);
                     }
                 }
+            }
+
+            for dir in &prune_dirs {
+                prune(dir, &install_manifest, &declared_dirs, callbacks);
             }
 
             let pkg_dir =
@@ -363,6 +394,218 @@ pub fn install(
             }
         }
     }
+}
+
+/// With `[upgrade] downgrade = "refuse"`, fail before anything changes when
+/// the installed version has higher precedence than this package's. The
+/// installed version is `[upgrade.installed_version]`'s when set, else
+/// `existing_version`, the version of the install being replaced.
+fn check_downgrade(
+    config: &Config,
+    resolver: &VariableResolver,
+    existing_version: Option<String>,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()> {
+    if config.upgrade.downgrade != DowngradePolicy::Refuse {
+        return Ok(());
+    }
+    let installed = match &config.upgrade.installed_version {
+        Some(probe) => {
+            let key = resolver.resolve(&probe.registry_key)?;
+            let value = actions::registry::read_string(&key, probe.value.as_deref().unwrap_or(""))?;
+            let version = value.and_then(|v| match probe.from {
+                InstalledVersionFrom::Value => Some(v),
+                InstalledVersionFrom::ParentDirName => installed_version_dir(&v),
+            });
+            callbacks.on_log(
+                LogLevel::Info,
+                &format!(
+                    "Installed version from {key}: {}",
+                    version.as_deref().unwrap_or("none")
+                ),
+            );
+            version
+        }
+        None => existing_version,
+    };
+    let Some(installed) = installed else {
+        return Ok(());
+    };
+    match is_downgrade(&installed, &config.package.version) {
+        Some(true) => Err(InstallerError::UpgradeConflict(format!(
+            "{} {installed} is installed, which is newer than {}; not downgrading",
+            config.package.name, config.package.version
+        ))),
+        Some(false) => Ok(()),
+        None => {
+            callbacks.on_log(
+                LogLevel::Warn,
+                &format!("Installed version {installed} is not SemVer; installing over it"),
+            );
+            Ok(())
+        }
+    }
+}
+
+/// The name of the directory holding the file `path` names.
+fn installed_version_dir(path: &str) -> Option<String> {
+    let path = path.trim().trim_matches('"');
+    let dir = path.rsplit_once(['\\', '/'])?.0;
+    let name = dir.rsplit(['\\', '/']).next()?;
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Whether installing `new` over `installed` goes back to a version of lower
+/// SemVer precedence (build metadata does not count); `None` if either is
+/// not SemVer.
+fn is_downgrade(installed: &str, new: &str) -> Option<bool> {
+    let installed = semver::Version::parse(installed.trim()).ok()?;
+    let new = semver::Version::parse(new.trim()).ok()?;
+    Some(installed.cmp_precedence(&new) == std::cmp::Ordering::Greater)
+}
+
+/// `[[uninstall.refuse_while]]` with its variables expanded, for the receipt.
+fn resolve_uninstall_guards(
+    config: &Config,
+    resolver: &VariableResolver,
+) -> InstallerResult<Vec<outto_core::manifest::UninstallGuard>> {
+    config
+        .uninstall
+        .refuse_while
+        .iter()
+        .map(|refusal| {
+            Ok(outto_core::manifest::UninstallGuard {
+                registry_key: resolver.resolve(&refusal.registry_key)?,
+                message: match &refusal.message {
+                    Some(message) => resolver.resolve(message)?,
+                    None => format!("{} is still in use.", config.package.name),
+                },
+            })
+        })
+        .collect()
+}
+
+/// Keep owning the files the previous install recorded that this one found
+/// in place and left alone (an overwrite policy such as `never`), so the
+/// upgrade does not remove them as orphans and uninstall still does. They go
+/// before everything but directories, where the file phase records them.
+fn inherit_kept(new: &mut InstallManifest<WindowsAction>, old: &InstallManifest<WindowsAction>) {
+    use outto_core::manifest::orphans::path_key;
+    let key = |p: &std::path::Path| path_key(p, None, true);
+    let kept: std::collections::HashSet<String> = new.kept_files.iter().map(|p| key(p)).collect();
+    let mut owned: std::collections::HashSet<String> =
+        written_after_install(new).into_iter().map(key).collect();
+    let inherited: Vec<WindowsAction> = old
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            WindowsAction::FileCopied {
+                dest,
+                preserve_on_uninstall,
+                uninst_remove_readonly,
+                uninst_restart_delete,
+                restart_replace,
+                ..
+            } if kept.contains(&key(dest)) && owned.insert(key(dest)) => {
+                Some(WindowsAction::FileCopied {
+                    dest: dest.clone(),
+                    backup: None,
+                    preserve_on_uninstall: *preserve_on_uninstall,
+                    uninst_remove_readonly: *uninst_remove_readonly,
+                    uninst_restart_delete: *uninst_restart_delete,
+                    restart_replace: *restart_replace,
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    new.actions.splice(0..0, inherited);
+}
+
+/// Remove everything under `dir` that is not this install's: a file
+/// `manifest` does not record as copied, a directory that is neither one of
+/// `declared_dirs` (`[[dirs]]`) nor holds one of those or a copied file.
+/// Directories an earlier install created are not this install's, so an
+/// earlier version's directory goes. Receipt (`.outto`) directories and
+/// files staged to replace others at the next restart stay. A protected
+/// directory such as `%ProgramFiles%` is never pruned.
+fn prune(
+    dir: &std::path::Path,
+    manifest: &InstallManifest<WindowsAction>,
+    declared_dirs: &[PathBuf],
+    callbacks: &dyn InstallerCallbacks,
+) {
+    use outto_core::manifest::orphans::path_key;
+    use outto_core::manifest::rollback::{is_protected_dir, protected_dirs};
+    let key = |p: &std::path::Path| path_key(p, None, true);
+
+    if is_protected_dir(dir, &protected_dirs()) {
+        callbacks.on_log(
+            LogLevel::Warn,
+            &format!("Upgrade: not pruning {}, a system directory", dir.display()),
+        );
+        return;
+    }
+    let files: std::collections::HashSet<String> = written_after_install(manifest)
+        .into_iter()
+        .map(key)
+        .collect();
+    let dirs: std::collections::HashSet<String> = declared_dirs.iter().map(|d| key(d)).collect();
+    let holds_recorded = |d: &std::path::Path| {
+        let prefix = format!("{}\\", key(d));
+        dirs.contains(&key(d))
+            || files
+                .iter()
+                .chain(dirs.iter())
+                .any(|k| k.starts_with(&prefix))
+    };
+
+    fn walk(
+        dir: &std::path::Path,
+        keep_file: &dyn Fn(&std::path::Path) -> bool,
+        keep_dir: &dyn Fn(&std::path::Path) -> bool,
+        callbacks: &dyn InstallerCallbacks,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                if name == ".outto" {
+                    continue;
+                }
+                if keep_dir(&path) {
+                    walk(&path, keep_file, keep_dir, callbacks);
+                } else {
+                    callbacks.on_log(
+                        LogLevel::Info,
+                        &format!("Upgrade: removing {}", path.display()),
+                    );
+                    discard::discard_tree(&path, callbacks);
+                }
+            } else if !keep_file(&path) && !name.ends_with(".outto-pending") {
+                callbacks.on_log(
+                    LogLevel::Info,
+                    &format!("Upgrade: removing {}", path.display()),
+                );
+                if let Err(e) = discard::discard_file_logged(&path, callbacks) {
+                    callbacks.on_log(
+                        LogLevel::Warn,
+                        &format!("Upgrade: could not remove {}: {e}", path.display()),
+                    );
+                }
+            }
+        }
+    }
+
+    walk(
+        dir,
+        &|f| files.contains(&key(f)),
+        &holds_recorded,
+        callbacks,
+    );
 }
 
 /// Every file the install wrote.
@@ -946,5 +1189,354 @@ values = [{{ name = "Version", type = "string", data = "#{{package.version}}" }}
             callbacks.on_error(&InstallerError::Other("test".into())),
             ErrorAction::Abort
         );
+    }
+
+    #[test]
+    fn test_is_downgrade_uses_semver_precedence() {
+        assert_eq!(is_downgrade("0.2.0", "0.1.0"), Some(true));
+        assert_eq!(is_downgrade("0.1.0", "0.1.0"), Some(false));
+        assert_eq!(is_downgrade("0.1.0", "0.2.0"), Some(false));
+        assert_eq!(
+            is_downgrade("0.1.0-dev.20261020T120000Z", "0.1.0-dev.20261007T180918Z"),
+            Some(true)
+        );
+        assert_eq!(
+            is_downgrade("0.1.0", "0.1.0-dev.20261020T120000Z"),
+            Some(true)
+        );
+        assert_eq!(is_downgrade("1.0.0+build.2", "1.0.0+build.1"), Some(false));
+        assert_eq!(is_downgrade("not a version", "1.0.0"), None);
+    }
+
+    #[test]
+    fn test_installed_version_dir() {
+        assert_eq!(
+            installed_version_dir(
+                r"C:\Program Files\Divvun\Text Service\0.1.0-dev.20261007T180918Z\divvun_tip_x64.dll"
+            )
+            .as_deref(),
+            Some("0.1.0-dev.20261007T180918Z")
+        );
+        assert_eq!(
+            installed_version_dir(r#""C:/Apps/X/2.0.0/x.dll""#).as_deref(),
+            Some("2.0.0")
+        );
+        assert_eq!(installed_version_dir("x.dll"), None);
+    }
+
+    fn system_dll() -> PathBuf {
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\msimg32.dll")
+    }
+
+    fn load_library(path: &std::path::Path) -> *mut std::ffi::c_void {
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let module =
+            unsafe { windows_sys::Win32::System::LibraryLoader::LoadLibraryW(wide.as_ptr()) };
+        assert!(!module.is_null(), "{}", std::io::Error::last_os_error());
+        module
+    }
+
+    /// The text service's layout: every version in its own directory under
+    /// `#{app}`, a registry value naming the installed one (as
+    /// `InprocServer32` does), `[upgrade] prune` taking away the others even
+    /// while one of their files is loaded, a same-version re-run keeping the
+    /// files it left alone, a refused downgrade that changes nothing, and an
+    /// uninstall refused while a guard key holds.
+    #[test]
+    fn test_versioned_install_prune_downgrade_and_uninstall_guard() {
+        let test_dir = std::env::temp_dir().join("outto_test_versioned");
+        let install_dir = test_dir.join("installed");
+        let probe_key = r"Software\OuttoTest_versioned";
+        let guard_key = r"Software\OuttoTest_versioned_guard";
+        let _ = fs::remove_dir_all(&test_dir);
+        let _ = actions::registry::delete_key("HKCU", probe_key);
+        let _ = delete_hkcu_tree(guard_key);
+
+        let make = |version: &str| {
+            let source = test_dir.join(format!("source-{version}"));
+            fs::create_dir_all(&source).unwrap();
+            fs::copy(system_dll(), source.join("a.dll")).unwrap();
+            fs::write(source.join("b.dat"), version).unwrap();
+            let toml = format!(
+                r##"
+[package]
+id = "com.test.versioned"
+name = "VersionedTest"
+version = "{version}"
+
+[reboot]
+restart_manager = false
+
+[upgrade]
+downgrade = "refuse"
+prune = ["#{{app}}"]
+
+[upgrade.installed_version]
+registry_key = 'HKCU\{probe_key}'
+from = "parent_dir_name"
+
+[[uninstall.refuse_while]]
+registry_key = 'HKCU\{guard_key}\*\*'
+message = "Something still uses VersionedTest."
+
+[[files]]
+source = "*"
+dest = "#{{app}}/#{{package.version}}"
+overwrite = "never"
+
+[[registry]]
+root = "hkcu"
+key = '{probe_key}'
+values = [{{ name = "", type = "string", data = '#{{app}}\#{{package.version}}\a.dll' }}]
+"##
+            );
+            (Config::from_toml(&toml).unwrap(), source)
+        };
+        let callbacks = TestCallbacks::default();
+        let install_version = |version: &str| {
+            let (config, source_dir) = make(version);
+            install(
+                &config,
+                &InstallOptions {
+                    source_dir,
+                    install_dir: Some(install_dir.clone()),
+                    selected_components: None,
+                    uninstall_exe: Some(fake_uninstaller()),
+                },
+                &callbacks,
+            )
+        };
+        let probe = || {
+            actions::registry::read_string(&format!(r"HKCU\{probe_key}"), "")
+                .unwrap()
+                .unwrap_or_default()
+        };
+
+        // What an older installer left: another version and its uninstaller.
+        fs::create_dir_all(install_dir.join("0.9.0")).unwrap();
+        fs::write(install_dir.join(r"0.9.0\a.dll"), "old").unwrap();
+        fs::write(install_dir.join("unins000.dat"), "old").unwrap();
+
+        install_version("1.0.0").unwrap();
+        assert!(install_dir.join(r"1.0.0\a.dll").is_file());
+        assert!(!install_dir.join("0.9.0").exists());
+        assert!(!install_dir.join("unins000.dat").exists());
+        assert!(probe().ends_with(r"\1.0.0\a.dll"), "{}", probe());
+
+        // A process keeps 1.0.0's DLL loaded through the upgrade.
+        let module = load_library(&install_dir.join(r"1.0.0\a.dll"));
+        install_version("2.0.0").unwrap();
+        assert!(!install_dir.join("1.0.0").exists(), "{:?}", callbacks.logs);
+        assert!(install_dir.join(r"2.0.0\a.dll").is_file());
+        assert!(probe().ends_with(r"\2.0.0\a.dll"));
+        unsafe { windows_sys::Win32::Foundation::FreeLibrary(module) };
+
+        // The same version again keeps its files, and owns them still.
+        let module = load_library(&install_dir.join(r"2.0.0\a.dll"));
+        install_version("2.0.0").unwrap();
+        assert!(install_dir.join(r"2.0.0\a.dll").is_file());
+        let manifest =
+            InstallManifest::<WindowsAction>::load(&install_dir, "com.test.versioned").unwrap();
+        let copied: Vec<String> = manifest
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                WindowsAction::FileCopied { dest, .. } => Some(dest.display().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(copied.len(), 2, "{copied:?}");
+
+        // An older version is refused before anything changes.
+        let err = install_version("1.0.0").unwrap_err();
+        assert!(matches!(err, InstallerError::UpgradeConflict(_)), "{err}");
+        assert!(!install_dir.join("1.0.0").exists());
+        assert!(probe().ends_with(r"\2.0.0\a.dll"));
+        assert_eq!(
+            InstallManifest::<WindowsAction>::load(&install_dir, "com.test.versioned")
+                .unwrap()
+                .package_version,
+            "2.0.0"
+        );
+
+        // Uninstall is refused while a key matches the guard.
+        create_hkcu_key(&format!(
+            r"{guard_key}\0x00000409\{{2CC0C11A-EFB4-5241-A262-330A9475C109}}"
+        ));
+        let err = uninstall_package(&install_dir, "com.test.versioned", &callbacks).unwrap_err();
+        assert!(
+            matches!(&err, InstallerError::UninstallRefused(m) if m == "Something still uses VersionedTest."),
+            "{err}"
+        );
+        assert!(install_dir.join(r"2.0.0\a.dll").is_file());
+        delete_hkcu_tree(guard_key).unwrap();
+        uninstall::check_uninstall_allowed(&install_dir, "com.test.versioned").unwrap();
+
+        // The loaded DLL is moved aside on uninstall too.
+        uninstall_package(&install_dir, "com.test.versioned", &callbacks).unwrap();
+        assert!(!install_dir.join("2.0.0").exists(), "{:?}", callbacks.logs);
+        assert!(
+            actions::registry::read_string(&format!(r"HKCU\{probe_key}"), "")
+                .unwrap()
+                .is_none()
+        );
+        unsafe { windows_sys::Win32::Foundation::FreeLibrary(module) };
+
+        let _ = actions::registry::delete_key("HKCU", probe_key);
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    /// `legacy_inno_mode = "adopt"` takes over an Inno Setup install
+    /// without running its uninstaller, which here is not even a program.
+    #[test]
+    fn test_adopt_legacy_inno_install() {
+        let test_dir = std::env::temp_dir().join("outto_test_adopt_inno");
+        let install_dir = test_dir.join("installed");
+        let source_dir = test_dir.join("source");
+        let guid = "7B1F5C0E-2D3A-4E8B-9C6D-0A1B2C3D4E5F";
+        let entry = format!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{{{guid}}}_is1");
+        let _ = fs::remove_dir_all(&test_dir);
+        let _ = actions::registry::delete_key("HKCU", &entry);
+        fs::create_dir_all(install_dir.join("0.9.0")).unwrap();
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("a.dll"), "new").unwrap();
+        for name in [
+            "unins000.exe",
+            "unins000.dat",
+            "unins000.msg",
+            r"0.9.0\a.dll",
+        ] {
+            fs::write(install_dir.join(name), "not a program").unwrap();
+        }
+        create_hkcu_key(&entry);
+        let uninstaller = install_dir.join("unins000.exe");
+        actions::registry::set_string_value(
+            "HKCU",
+            &entry,
+            "UninstallString",
+            &format!("\"{}\"", uninstaller.display()),
+        )
+        .unwrap();
+        actions::registry::set_string_value("HKCU", &entry, "DisplayVersion", "0.9.0").unwrap();
+        actions::registry::set_string_value(
+            "HKCU",
+            &entry,
+            "InstallLocation",
+            &install_dir.display().to_string(),
+        )
+        .unwrap();
+
+        let config = Config::from_toml(&format!(
+            r##"
+[package]
+id = "com.test.adopt"
+name = "AdoptTest"
+version = "1.0.0"
+legacy_inno_app_id = "{guid}"
+legacy_inno_mode = "adopt"
+
+[upgrade]
+downgrade = "refuse"
+prune = ["#{{app}}"]
+
+[[files]]
+source = "*"
+dest = "#{{app}}/#{{package.version}}"
+"##
+        ))
+        .unwrap();
+        let callbacks = TestCallbacks::default();
+        install(
+            &config,
+            &InstallOptions {
+                source_dir,
+                install_dir: Some(install_dir.clone()),
+                selected_components: None,
+                uninstall_exe: Some(fake_uninstaller()),
+            },
+            &callbacks,
+        )
+        .unwrap();
+        assert!(!hkcu_key_exists(&entry));
+        for name in ["unins000.exe", "unins000.dat", "unins000.msg", "0.9.0"] {
+            assert!(
+                !install_dir.join(name).exists(),
+                "{name}: {:?}",
+                callbacks.logs
+            );
+        }
+        assert!(install_dir.join(r"1.0.0\a.dll").is_file());
+
+        uninstall_package(&install_dir, "com.test.adopt", &callbacks).unwrap();
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    /// An Inno Setup install newer than the package refuses it under
+    /// `downgrade = "refuse"` without the installed-version probe.
+    #[test]
+    fn test_newer_legacy_inno_install_is_not_downgraded() {
+        let guid = "1C2D3E4F-5A6B-4C7D-8E9F-A0B1C2D3E4F5";
+        let entry = format!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{guid}_is1");
+        let test_dir = std::env::temp_dir().join("outto_test_inno_newer");
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir_all(&test_dir).unwrap();
+        create_hkcu_key(&entry);
+        actions::registry::set_string_value("HKCU", &entry, "DisplayVersion", "2.0.0").unwrap();
+        let config = Config::from_toml(&format!(
+            "[package]\nid = \"com.test.inno-newer\"\nname = \"InnoNewer\"\nversion = \"1.0.0\"\n\
+             legacy_inno_app_id = \"{guid}\"\n[upgrade]\ndowngrade = \"refuse\"\n"
+        ))
+        .unwrap();
+        let err = install(
+            &config,
+            &InstallOptions {
+                source_dir: test_dir.clone(),
+                install_dir: Some(test_dir.join("installed")),
+                selected_components: None,
+                uninstall_exe: Some(fake_uninstaller()),
+            },
+            &TestCallbacks::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, InstallerError::UpgradeConflict(_)), "{err}");
+        assert!(hkcu_key_exists(&entry));
+        assert!(!test_dir.join("installed").exists());
+        actions::registry::delete_key("HKCU", &entry).unwrap();
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    fn create_hkcu_key(key: &str) {
+        use windows_sys::Win32::System::Registry::*;
+        let wide: Vec<u16> = key.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut hkey: HKEY = std::ptr::null_mut();
+        let r = unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                wide.as_ptr(),
+                0,
+                std::ptr::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_ALL_ACCESS,
+                std::ptr::null(),
+                &mut hkey,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(r, 0);
+        unsafe { RegCloseKey(hkey) };
+    }
+
+    fn delete_hkcu_tree(key: &str) -> Result<(), u32> {
+        use windows_sys::Win32::System::Registry::*;
+        let wide: Vec<u16> = key.encode_utf16().chain(std::iter::once(0)).collect();
+        match unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, wide.as_ptr()) } {
+            0 => Ok(()),
+            e => Err(e),
+        }
     }
 }

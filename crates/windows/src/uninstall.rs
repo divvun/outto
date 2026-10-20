@@ -27,6 +27,8 @@ pub fn uninstall(
             ))
         })?;
 
+    check_guards(&manifest)?;
+
     let target_id = &manifest.package_id;
 
     let dependents = collect_cascade_order(target_id);
@@ -95,6 +97,27 @@ fn uninstall_single(
     );
 
     remove_package(&manifest, callbacks)
+}
+
+/// Fail with [`InstallerError::UninstallRefused`] while one of the package's
+/// `[[uninstall.refuse_while]]` conditions holds. The uninstaller checks this
+/// before it changes anything, itself included.
+pub fn check_uninstall_allowed(install_dir: &Path, package_id: &str) -> InstallerResult<()> {
+    match InstallManifest::<WindowsAction>::load(install_dir, package_id) {
+        Ok(manifest) => check_guards(&manifest),
+        // Without a receipt there is nothing to check, and uninstall itself
+        // reports the missing manifest.
+        Err(_) => Ok(()),
+    }
+}
+
+fn check_guards(manifest: &InstallManifest<WindowsAction>) -> InstallerResult<()> {
+    for guard in &manifest.refuse_uninstall_while {
+        if crate::actions::registry::key_pattern_exists(&guard.registry_key)? {
+            return Err(InstallerError::UninstallRefused(guard.message.clone()));
+        }
+    }
+    Ok(())
 }
 
 /// `before_uninstall` hooks, then undo every recorded action, drop the ARP
@@ -249,4 +272,36 @@ pub fn uninstall_legacy_inno(
 
     callbacks.on_log(LogLevel::Info, "Inno Setup installation removed");
     Ok(())
+}
+
+/// Take over an installation made by the Inno Setup installer this package
+/// replaces without running its uninstaller: remove its Add/Remove Programs
+/// entry and its uninstaller (`unins000.exe` with its `.dat` and `.msg`),
+/// and leave its other files to the install about to run.
+pub fn adopt_legacy_inno(
+    existing: &detect::LegacyInnoInstall,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()> {
+    callbacks.on_log(
+        LogLevel::Info,
+        &format!(
+            "Adopting the Inno Setup installation; removing {}\\{}",
+            existing.root, existing.key
+        ),
+    );
+    if let Some(exe) = &existing.uninstaller {
+        for extension in ["exe", "dat", "msg"] {
+            let file = exe.with_extension(extension);
+            if file.exists() {
+                callbacks.on_log(LogLevel::Info, &format!("Removing {}", file.display()));
+                crate::discard::discard_file_logged(&file, callbacks).map_err(|e| {
+                    InstallerError::FileOp {
+                        path: file.clone(),
+                        source: e,
+                    }
+                })?;
+            }
+        }
+    }
+    crate::actions::registry::delete_key(existing.root, &existing.key)
 }

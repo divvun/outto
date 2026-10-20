@@ -185,6 +185,7 @@ where
             LogLevel::Debug,
             &format!("Files: skipping {} (overwrite policy)", dest.display()),
         );
+        manifest.kept_files.push(normalize_path(dest));
         return Ok(());
     }
 

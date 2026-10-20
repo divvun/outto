@@ -53,7 +53,7 @@ fn main() {
             silent = true;
         } else if upper == "/SUPPRESSMSGBOXES" {
             // Prompts are always auto-answered in this binary; this only
-            // silences the error boxes (NO_MESSAGE_BOXES).
+            // silences the error and refusal boxes (NO_MESSAGE_BOXES).
         } else if upper == "/NORESTART" {
             // Accepted for parity with Inno Setup's uninstaller: this one
             // never restarts the machine.
@@ -94,6 +94,17 @@ fn main() {
     let (install_dir, package_id) = infer_target(install_dir);
 
     let (app_name, app_version) = load_manifest_info(&install_dir, &package_id);
+
+    // Before anything changes, the uninstaller's own place included: a
+    // refused uninstall must leave it where Add/Remove Programs points.
+    #[cfg(windows)]
+    match outto_windows::uninstall::check_uninstall_allowed(&install_dir, &package_id) {
+        Ok(()) => {}
+        Err(outto_core::InstallerError::UninstallRefused(reason)) => refuse(&app_name, &reason),
+        Err(e) => fatal_error(&format!(
+            "Could not check whether {app_name} may be uninstalled: {e}"
+        )),
+    }
 
     // /VERYSILENT: no GUI
     if very_silent {
@@ -429,6 +440,28 @@ fn parse_name_and_version(manifest_path: &std::path::Path) -> (String, String) {
 /// in the log only. A silent uninstaller usually runs from another program
 /// that waits for it, and a message box would block that program for good.
 static NO_MESSAGE_BOXES: AtomicBool = AtomicBool::new(false);
+
+/// The exit code when an `[[uninstall.refuse_while]]` condition holds and
+/// nothing was changed.
+#[cfg(windows)]
+const REFUSED_EXIT_CODE: i32 = 2;
+
+#[cfg(windows)]
+fn refuse(app_name: &str, reason: &str) -> ! {
+    eprintln!("Uninstall refused: {reason}");
+    outto_core::logfile::write(
+        outto_core::LogLevel::Warn,
+        &format!("Uninstall refused: {reason}"),
+    );
+    if !NO_MESSAGE_BOXES.load(Ordering::Relaxed) {
+        message_box(
+            reason,
+            &format!("{app_name} Uninstall"),
+            windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION,
+        );
+    }
+    std::process::exit(REFUSED_EXIT_CODE);
+}
 
 #[cfg(windows)]
 fn message_box(text: &str, title: &str, icon: u32) {

@@ -419,9 +419,172 @@ pub fn set_string_value(
     Ok(())
 }
 
+/// Open `key` under `root` for reading; `None` if it does not exist.
+fn open_for_read(root: HKEY, key: &str) -> Option<HKEY> {
+    let key_wide = to_wide(key);
+    let mut hkey: HKEY = std::ptr::null_mut();
+    let result = unsafe { RegOpenKeyExW(root, key_wide.as_ptr(), 0, KEY_READ, &mut hkey) };
+    (result == 0).then_some(hkey)
+}
+
+/// The string value `value` of `key` (`HKLM\...`), or its default value
+/// when `value` is empty; `None` if the key or value does not exist.
+pub fn read_string(path: &str, value: &str) -> InstallerResult<Option<String>> {
+    let (root, key) = split(path)?;
+    let Some(hkey) = open_for_read(root_from_str(root)?, key) else {
+        return Ok(None);
+    };
+    let data = read_existing_value(hkey, value);
+    unsafe { RegCloseKey(hkey) };
+    Ok(data)
+}
+
+/// Whether a key matching `pattern` (`HKLM\...`) exists, where a `*`
+/// segment matches any one subkey.
+pub fn key_pattern_exists(pattern: &str) -> InstallerResult<bool> {
+    let (root, key) = split(pattern)?;
+    let segments: Vec<&str> = key.split('\\').filter(|s| !s.is_empty()).collect();
+    let root = root_from_str(root)?;
+    // The root itself is never closed; every other handle is.
+    Ok(matches(root, &segments, false))
+}
+
+fn split(path: &str) -> InstallerResult<(&'static str, &str)> {
+    outto_core::config::split_registry_key(path).ok_or_else(|| InstallerError::Registry {
+        key: path.to_string(),
+        message: "not a key under HKLM, HKCU or HKCR".into(),
+    })
+}
+
+fn matches(parent: HKEY, segments: &[&str], close: bool) -> bool {
+    let found = match segments.split_first() {
+        None => true,
+        Some((&"*", rest)) => subkeys(parent).iter().any(|name| {
+            open_for_read(parent, name).is_some_and(|child| matches(child, rest, true))
+        }),
+        Some((name, rest)) => {
+            open_for_read(parent, name).is_some_and(|child| matches(child, rest, true))
+        }
+    };
+    if close {
+        unsafe { RegCloseKey(parent) };
+    }
+    found
+}
+
+fn subkeys(hkey: HKEY) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut index = 0;
+    loop {
+        let mut name = [0u16; 256];
+        let mut len = name.len() as u32;
+        let result = unsafe {
+            RegEnumKeyExW(
+                hkey,
+                index,
+                name.as_mut_ptr(),
+                &mut len,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if result != 0 {
+            break;
+        }
+        names.push(String::from_utf16_lossy(&name[..len as usize]));
+        index += 1;
+    }
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_patterns_match_any_subkey_at_a_star() {
+        let base = format!(r"Software\OuttoTest_key_pattern_{}", std::process::id());
+        let _ = delete_tree("HKCU", &base);
+        let pattern = format!(r"HKCU\{base}\LanguageProfile\*\*");
+        assert!(!key_pattern_exists(&pattern).unwrap());
+
+        create_key("HKCU", &format!(r"{base}\LanguageProfile\0x00000409"));
+        assert!(
+            !key_pattern_exists(&pattern).unwrap(),
+            "an empty language matches"
+        );
+        assert!(key_pattern_exists(&format!(r"HKCU\{base}\LanguageProfile\*")).unwrap());
+
+        create_key(
+            "HKCU",
+            &format!(r"{base}\LanguageProfile\0x00000409\{{2CC0C11A-EFB4-5241-A262-330A9475C109}}"),
+        );
+        assert!(key_pattern_exists(&pattern).unwrap());
+        assert!(key_pattern_exists(&format!(r"hkcu\{base}\languageprofile\*\*")).unwrap());
+
+        delete_tree("HKCU", &base).unwrap();
+        assert!(!key_pattern_exists(&pattern).unwrap());
+        assert!(key_pattern_exists(r"HKXX\Software").is_err());
+    }
+
+    #[test]
+    fn read_string_reads_named_and_default_values() {
+        let base = format!(r"Software\OuttoTest_read_string_{}", std::process::id());
+        let _ = delete_tree("HKCU", &base);
+        assert_eq!(read_string(&format!(r"HKCU\{base}"), "").unwrap(), None);
+        create_key("HKCU", &base);
+        set_string_value("HKCU", &base, "", r"C:\Program Files\X\1.2.3\x.dll").unwrap();
+        set_string_value("HKCU", &base, "Named", "value").unwrap();
+        assert_eq!(
+            read_string(&format!(r"HKCU\{base}"), "")
+                .unwrap()
+                .as_deref(),
+            Some(r"C:\Program Files\X\1.2.3\x.dll")
+        );
+        assert_eq!(
+            read_string(&format!(r"HKCU\{base}"), "Named")
+                .unwrap()
+                .as_deref(),
+            Some("value")
+        );
+        assert_eq!(
+            read_string(&format!(r"HKCU\{base}"), "Missing").unwrap(),
+            None
+        );
+        delete_tree("HKCU", &base).unwrap();
+    }
+
+    fn create_key(root: &str, key: &str) {
+        let key_wide = to_wide(key);
+        let mut hkey: HKEY = std::ptr::null_mut();
+        let result = unsafe {
+            RegCreateKeyExW(
+                root_from_str(root).unwrap(),
+                key_wide.as_ptr(),
+                0,
+                std::ptr::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_ALL_ACCESS,
+                std::ptr::null(),
+                &mut hkey,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(result, 0);
+        unsafe { RegCloseKey(hkey) };
+    }
+
+    fn delete_tree(root: &str, key: &str) -> InstallerResult<()> {
+        let key_wide = to_wide(key);
+        let result = unsafe { RegDeleteTreeW(root_from_str(root)?, key_wide.as_ptr()) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(InstallerError::Other(format!("{result}")))
+        }
+    }
 
     #[test]
     fn test_hex_to_bytes_simple() {

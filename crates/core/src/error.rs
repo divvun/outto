@@ -63,6 +63,10 @@ pub enum InstallerError {
     #[error("upgrade conflict: {0}")]
     UpgradeConflict(String),
 
+    /// An `[[uninstall.refuse_while]]` condition holds; nothing was changed.
+    #[error("uninstall refused: {0}")]
+    UninstallRefused(String),
+
     #[error("glob pattern error: {0}")]
     GlobPattern(String),
 

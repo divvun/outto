@@ -2108,6 +2108,7 @@ name = "outto-windows"
 version = "0.1.0"
 dependencies = [
  "outto-core",
+ "semver",
  "serde",
  "serde_json",
  "toml 0.8.23",

@@ -79,6 +79,14 @@ pub struct UninstallHook {
     pub run_as_original_user: bool,
 }
 
+/// An `[[uninstall.refuse_while]]` condition with every variable already
+/// expanded, for the uninstaller to check.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct UninstallGuard {
+    pub registry_key: String,
+    pub message: String,
+}
+
 /// Generic install manifest parameterised over the platform's action enum.
 ///
 /// The on-disk JSON stores `actions` as a flat array of whatever `A` serialises
@@ -100,11 +108,21 @@ pub struct InstallManifest<A> {
     #[serde(default)]
     pub uninstall_hooks: Option<Vec<UninstallHook>>,
 
+    /// The `[[uninstall.refuse_while]]` conditions, resolved at install time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refuse_uninstall_while: Vec<UninstallGuard>,
+
     /// Transient: set during install when an action signals that a reboot is
     /// needed (e.g. a `[[run]]` command exits 3010). Not part of the persisted
     /// receipt.
     #[serde(skip)]
     pub reboot_needed: bool,
+
+    /// Transient: destinations that already existed and that a `[[files]]`
+    /// overwrite policy left alone. An upgrade keeps owning those its
+    /// previous install recorded. Not part of the persisted receipt.
+    #[serde(skip)]
+    pub kept_files: Vec<PathBuf>,
 }
 
 impl<A> InstallManifest<A> {
@@ -123,7 +141,9 @@ impl<A> InstallManifest<A> {
             depends_on,
             actions: Vec::new(),
             uninstall_hooks: Some(Vec::new()),
+            refuse_uninstall_while: Vec::new(),
             reboot_needed: false,
+            kept_files: Vec::new(),
         }
     }
 
