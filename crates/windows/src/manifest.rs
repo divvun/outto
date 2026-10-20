@@ -124,7 +124,7 @@ impl RollbackAction for Action {
     fn rollback(
         &self,
         restore_backups: bool,
-        _callbacks: &dyn InstallerCallbacks,
+        callbacks: &dyn InstallerCallbacks,
     ) -> InstallerResult<()> {
         match self {
             Action::FileCopied {
@@ -159,17 +159,14 @@ impl RollbackAction for Action {
                     return Ok(());
                 }
 
-                // Try straightforward remove first; fall back to delete-on-reboot if locked.
-                if dest.exists() {
-                    if let Err(e) = std::fs::remove_file(dest) {
-                        if schedule_delete_on_reboot(dest).is_err() {
-                            return Err(InstallerError::FileOp {
-                                path: dest.clone(),
-                                source: e,
-                            });
-                        }
+                // A file in use is moved aside, so a backup can take its
+                // place now and a reinstall before the restart is not undone.
+                crate::discard::discard_file_logged(dest, callbacks).map_err(|e| {
+                    InstallerError::FileOp {
+                        path: dest.clone(),
+                        source: e,
                     }
-                }
+                })?;
 
                 if let Some(backup_path) = backup {
                     if restore_backups {

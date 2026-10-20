@@ -11,6 +11,7 @@
 
 pub mod actions;
 pub mod detect;
+pub mod discard;
 pub mod elevation;
 pub mod manifest;
 pub mod paths;
@@ -230,7 +231,7 @@ pub fn install(
                         LogLevel::Info,
                         &format!("Upgrade: removing orphaned file {}", dest.display()),
                     );
-                    if let Err(e) = std::fs::remove_file(dest) {
+                    if let Err(e) = discard::discard_file_logged(dest, callbacks) {
                         callbacks.on_log(
                             LogLevel::Warn,
                             &format!("Upgrade: could not remove {}: {e}", dest.display()),
