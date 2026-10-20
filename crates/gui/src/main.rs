@@ -40,6 +40,10 @@ fn main() {
             windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
         );
     }
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("outto-gui {}", outto_core::VERSION);
+        return;
+    }
     // Before parsing, which can itself fail with a fatal error.
     QUIET.store(
         std::env::args().skip(1).any(|arg| {
@@ -66,7 +70,7 @@ fn main() {
             outto_core::LogLevel::Info,
             &format!(
                 "outto {} started: {}",
-                env!("CARGO_PKG_VERSION"),
+                outto_core::VERSION,
                 std::env::args().collect::<Vec<_>>().join(" ")
             ),
         );

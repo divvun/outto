@@ -17,6 +17,11 @@ pub mod error;
 pub mod logfile;
 pub mod manifest;
 
+/// The version of this outto build: CI's full build version
+/// (`0.1.0-dev.20261020T143317Z+build.12`) when it set `OUTTO_BUILD_VERSION`,
+/// else the crate version.
+pub const VERSION: &str = env!("OUTTO_VERSION");
+
 pub use callbacks::{
     ExistingInstall, InstallOptions, InstallerCallbacks, LogLevel, NoOpCallbacks, Prompt,
     PromptResponse,

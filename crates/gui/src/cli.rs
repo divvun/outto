@@ -262,7 +262,8 @@ fn usage() -> String {
     "Usage:\n  \
      outto-gui install [--config <file> --source <dir>] [/SILENT] [/VERYSILENT] ...\n  \
      outto-gui uninstall --dir <path> [/SILENT] [/VERYSILENT] ...\n  \
-     outto-gui [/FLAGS]  (embedded installer mode)\n\n\
+     outto-gui [/FLAGS]  (embedded installer mode)\n  \
+     outto-gui --version\n\n\
      Inno Setup-compatible flags:\n  \
      /SILENT /VERYSILENT /SUPPRESSMSGBOXES /SP- /DIR=\"...\" /COMPONENTS=\"a,b\"\n  \
      /LOG /LOG=\"path\" /NORESTART /NOCANCEL"

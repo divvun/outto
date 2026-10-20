@@ -120,6 +120,8 @@ cargo +nightly build --workspace
 cargo +nightly test
 ```
 
+`outto --version`, `outto-gui --version` and `outto-uninstall --version` print the build's version, which is also logged at start-up and is the ProductVersion of the Windows binaries (their FileVersion stays numeric). It is the crate version unless the build sets `OUTTO_BUILD_VERSION`, as CI does (`0.1.0-dev.20261020T143317Z+build.12`); that has to be semver with the crate's `major.minor.patch`.
+
 Admin-scoped integration tests must be run from an elevated shell:
 
 ```

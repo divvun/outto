@@ -26,10 +26,16 @@ struct PkgOptions {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
+    if args.get(1).is_some_and(|arg| arg == "--version") {
+        println!("outto {}", outto_core::VERSION);
+        return;
+    }
+
     if args.len() < 2 || args[1] != "build" {
         eprintln!(
             "Usage: outto build --config <file> --source <dir> --output <exe> [--compress] [--compression-level <0-22>] [-S|--sign <command>]\n\
-             macOS .pkg: [--pkg] [--pkg-identifier <id>] [--pkg-version <v>] [--pkg-sign <Developer ID Installer identity>]"
+             macOS .pkg: [--pkg] [--pkg-identifier <id>] [--pkg-version <v>] [--pkg-sign <Developer ID Installer identity>]\n\
+             outto --version"
         );
         std::process::exit(2);
     }

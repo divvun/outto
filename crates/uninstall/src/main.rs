@@ -24,6 +24,10 @@ fn main() {
 
     // Parse arguments
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "--version") {
+        println!("outto-uninstall {}", outto_core::VERSION);
+        return;
+    }
 
     let mut install_dir: Option<PathBuf> = None;
     let mut silent = false;
@@ -71,7 +75,7 @@ fn main() {
             progress_file = args.get(i).map(PathBuf::from);
         } else {
             fatal_error(&format!(
-                "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT] [/SUPPRESSMSGBOXES] [/NORESTART] [/LOG[=path]]"
+                "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT] [/SUPPRESSMSGBOXES] [/NORESTART] [/LOG[=path]]\n       outto-uninstall --version"
             ));
         }
 
@@ -85,7 +89,7 @@ fn main() {
             outto_core::LogLevel::Info,
             &format!(
                 "outto-uninstall {} started: {}",
-                env!("CARGO_PKG_VERSION"),
+                outto_core::VERSION,
                 args.join(" ")
             ),
         );
