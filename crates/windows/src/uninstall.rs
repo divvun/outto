@@ -127,10 +127,10 @@ fn remove_package(
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
     let hooks = manifest.uninstall_hooks.as_deref();
-    run_uninstall_hooks(hooks, &RunPhase::BeforeUninstall, callbacks);
+    run_uninstall_hooks(hooks, &RunPhase::BeforeUninstall, callbacks)?;
     rollback_actions(&manifest.actions, callbacks, false)?;
     detect::remove_uninstall_registry(&manifest.package_id)?;
-    run_uninstall_hooks(hooks, &RunPhase::AfterUninstall, callbacks);
+    run_uninstall_hooks(hooks, &RunPhase::AfterUninstall, callbacks)?;
     Ok(())
 }
 

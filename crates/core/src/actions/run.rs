@@ -69,7 +69,23 @@ pub fn resolve_command(
         wait: entry.wait,
         show: entry.show.clone(),
         run_as_original_user: entry.run_as_original_user,
+        required: entry.required,
     })
+}
+
+/// A `required` command has to be waited for, since its exit code decides the
+/// outcome, and can't run after uninstall: the package is gone by then, so its
+/// failure could neither stop nor undo anything.
+pub fn validate_required(phase: &RunPhase, wait: bool, required: bool) -> Result<(), String> {
+    if !required {
+        Ok(())
+    } else if !wait {
+        Err("a required command needs wait = true".into())
+    } else if *phase == RunPhase::AfterUninstall {
+        Err("after_uninstall commands can't be required".into())
+    } else {
+        Ok(())
+    }
 }
 
 /// `#{log_arg:NAME}` stands for a whole argument or for nothing, so it can't
@@ -144,13 +160,14 @@ pub fn resolve_uninstall_hooks(
 }
 
 /// Run the recorded uninstall hooks of `phase`, in order. A hook that can't be
-/// started or exits non-zero is logged and the uninstall carries on, as with
-/// install-time commands. `None` means the manifest predates recorded hooks.
+/// started or exits non-zero is logged and the uninstall carries on, unless it
+/// is `required`, when the uninstall stops there with the error. `None` means
+/// the manifest predates recorded hooks.
 pub fn run_uninstall_hooks(
     hooks: Option<&[UninstallHook]>,
     phase: &RunPhase,
     callbacks: &dyn InstallerCallbacks,
-) {
+) -> InstallerResult<()> {
     let phase_str = phase_name(phase);
     let Some(hooks) = hooks else {
         callbacks.on_log(
@@ -160,30 +177,22 @@ pub fn run_uninstall_hooks(
                  any {phase_str} commands it had cannot be run"
             ),
         );
-        return;
+        return Ok(());
     };
     for hook in hooks.iter().filter(|h| &h.phase == phase) {
         let hook = &with_log_args(hook, crate::logfile::path());
         log_executing(phase_str, hook, callbacks);
         match run_program(hook, callbacks) {
             Ok(Ran::Exited { code, stderr }) => {
-                if code == 0 {
-                    callbacks.on_log(
-                        LogLevel::Info,
-                        &format!("Run: {} exited with 0", hook.command),
-                    );
-                } else {
-                    callbacks.on_log(
-                        LogLevel::Warn,
-                        &format!("Run: {} exited with {code}: {stderr}", hook.command),
-                    );
-                }
+                check_exit(hook, code, &stderr, callbacks)?;
             }
             Ok(Ran::Spawned) => log_spawned(hook, callbacks),
             Ok(Ran::Unavailable(_)) => unreachable!("run_program falls back itself"),
+            Err(e) if hook.required => return Err(e),
             Err(e) => callbacks.on_log(LogLevel::Warn, &format!("Run: {e}")),
         }
     }
+    Ok(())
 }
 
 fn log_executing(phase_str: &str, cmd: &UninstallHook, callbacks: &dyn InstallerCallbacks) {
@@ -315,7 +324,9 @@ where
 
     match run_program(&cmd, callbacks)? {
         Ran::Exited { code, stderr } => {
-            handle_exit(&cmd.command, code, &stderr, manifest, callbacks)
+            if check_exit(&cmd, code, &stderr, callbacks)? {
+                manifest.reboot_needed = true;
+            }
         }
         Ran::Spawned => log_spawned(&cmd, callbacks),
         Ran::Unavailable(_) => unreachable!("run_program falls back itself"),
@@ -335,28 +346,36 @@ where
     });
 }
 
-/// A command's exit code is never fatal: a reboot request is noted, any other
-/// failure is logged with its stderr. Every exit code is logged.
-fn handle_exit<A>(
-    command: &str,
+/// Log a command's exit code and return whether it asked for a restart. Any
+/// other non-zero code fails a `required` command and is only logged, with
+/// its stderr, for the rest.
+fn check_exit(
+    cmd: &UninstallHook,
     code: i32,
     stderr: &str,
-    manifest: &mut InstallManifest<A>,
     callbacks: &dyn InstallerCallbacks,
-) {
+) -> InstallerResult<bool> {
+    let command = &cmd.command;
     if is_reboot_exit_code(code) {
         callbacks.on_log(
             LogLevel::Info,
             &format!("Run: {command} exited with {code}, requesting a system restart"),
         );
-        manifest.reboot_needed = true;
-    } else if code != 0 {
+        Ok(true)
+    } else if code == 0 {
+        callbacks.on_log(LogLevel::Info, &format!("Run: {command} exited with 0"));
+        Ok(false)
+    } else if cmd.required {
+        Err(InstallerError::CommandExec {
+            command: command.clone(),
+            message: format!("exited with {code}: {stderr}"),
+        })
+    } else {
         callbacks.on_log(
             LogLevel::Warn,
             &format!("Run: {command} exited with {code}: {stderr}"),
         );
-    } else {
-        callbacks.on_log(LogLevel::Info, &format!("Run: {command} exited with 0"));
+        Ok(false)
     }
 }
 
@@ -420,6 +439,7 @@ mod tests {
             working_dir: Some("#{app}/bin".into()),
             arch: None,
             run_as_original_user: false,
+            required: false,
         }
     }
 
@@ -602,7 +622,7 @@ mod tests {
     #[test]
     fn missing_hooks_are_reported_as_unknown() {
         let logs = Logs::default();
-        run_uninstall_hooks(None, &RunPhase::BeforeUninstall, &logs);
+        run_uninstall_hooks(None, &RunPhase::BeforeUninstall, &logs).unwrap();
         let logs = logs.0.into_inner().unwrap();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].0, LogLevel::Warn);
@@ -622,6 +642,7 @@ mod tests {
             wait: true,
             show: ShowWindow::Hidden,
             run_as_original_user: false,
+            required: false,
         };
         let hooks = vec![
             sh(
@@ -643,7 +664,7 @@ mod tests {
             },
         ];
         let logs = Logs::default();
-        run_uninstall_hooks(Some(&hooks), &RunPhase::BeforeUninstall, &logs);
+        run_uninstall_hooks(Some(&hooks), &RunPhase::BeforeUninstall, &logs).unwrap();
 
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "one\ntwo\n");
         let logs = logs.0.into_inner().unwrap();
@@ -663,6 +684,106 @@ mod tests {
             "{text:?}"
         );
         assert!(!text.iter().any(|m| m.contains("after")), "{text:?}");
+    }
+
+    #[cfg(unix)]
+    fn sh_hook(phase: RunPhase, script: &str, required: bool) -> UninstallHook {
+        UninstallHook {
+            phase,
+            command: "/bin/sh".into(),
+            arguments: vec!["-c".into(), script.into()],
+            working_dir: None,
+            wait: true,
+            show: ShowWindow::Hidden,
+            run_as_original_user: false,
+            required,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn required_uninstall_hook_failure_stops_the_hooks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("out.txt");
+        let hooks = vec![
+            sh_hook(RunPhase::BeforeUninstall, "echo nope >&2; exit 4", true),
+            sh_hook(
+                RunPhase::BeforeUninstall,
+                &format!("echo later >> '{}'", out.display()),
+                false,
+            ),
+        ];
+        let err = run_uninstall_hooks(Some(&hooks), &RunPhase::BeforeUninstall, &Logs::default())
+            .unwrap_err();
+        assert!(err.to_string().contains("exited with 4: nope"), "{err}");
+        assert!(!out.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn required_uninstall_hook_that_cannot_start_fails() {
+        let hook = UninstallHook {
+            command: "/nonexistent/outto-hook".into(),
+            ..sh_hook(RunPhase::BeforeUninstall, "", true)
+        };
+        assert!(
+            run_uninstall_hooks(Some(&[hook]), &RunPhase::BeforeUninstall, &Logs::default())
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn required_install_command_fails_the_install() {
+        let mut manifest = InstallManifest::<CoreAction>::new(
+            "no.divvun.test",
+            "Test",
+            "1.0.0",
+            Path::new("/tmp/outto-run-test"),
+            vec![],
+        );
+        let run = |script: &str, required: bool| RunEntry {
+            phase: RunPhase::AfterInstall,
+            command: "/bin/sh".into(),
+            arguments: Some(format!("-c \"{script}\"")),
+            working_dir: None,
+            required,
+            ..entry(RunPhase::AfterInstall, "", None)
+        };
+        let resolver = VariableResolver::new();
+        let logs = Logs::default();
+
+        let optional = [run("exit 4", false)];
+        execute_phase_commands(
+            &optional,
+            &RunPhase::AfterInstall,
+            &resolver,
+            &mut manifest,
+            &logs,
+        )
+        .unwrap();
+        assert_eq!(manifest.actions.len(), 1);
+
+        let required = [run("exit 4", true)];
+        let err = execute_phase_commands(
+            &required,
+            &RunPhase::AfterInstall,
+            &resolver,
+            &mut manifest,
+            &logs,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("exited with 4"), "{err}");
+        assert_eq!(manifest.actions.len(), 1);
+    }
+
+    #[test]
+    fn required_needs_wait_and_an_undoable_phase() {
+        assert!(validate_required(&RunPhase::AfterInstall, false, false).is_ok());
+        assert!(validate_required(&RunPhase::AfterInstall, true, true).is_ok());
+        assert!(validate_required(&RunPhase::BeforeUninstall, true, true).is_ok());
+        assert!(validate_required(&RunPhase::AfterInstall, false, true).is_err());
+        assert!(validate_required(&RunPhase::AfterUninstall, true, true).is_err());
     }
 
     #[test]

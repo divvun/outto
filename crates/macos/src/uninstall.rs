@@ -59,10 +59,10 @@ pub fn uninstall(package_id: &str, callbacks: &dyn InstallerCallbacks) -> Instal
     );
 
     let hooks = manifest.uninstall_hooks.as_deref();
-    run_uninstall_hooks(hooks, &RunPhase::BeforeUninstall, callbacks);
+    run_uninstall_hooks(hooks, &RunPhase::BeforeUninstall, callbacks)?;
     rollback_actions(&manifest.actions, callbacks, false)?;
     detect::remove_receipt(&base, package_id)?;
-    run_uninstall_hooks(hooks, &RunPhase::AfterUninstall, callbacks);
+    run_uninstall_hooks(hooks, &RunPhase::AfterUninstall, callbacks)?;
 
     let _ = scope; // retained for future logging
     callbacks.on_log(LogLevel::Info, "Uninstallation complete");

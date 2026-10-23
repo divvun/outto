@@ -24,6 +24,8 @@ fn validate_run(config: &Config) -> InstallerResult<()> {
             r.working_dir.as_deref(),
         )
         .map_err(|e| InstallerError::Validation(format!("run[{i}]: {e}")))?;
+        crate::actions::run::validate_required(&r.phase, r.wait, r.required)
+            .map_err(|e| InstallerError::Validation(format!("run[{i}]: {e}")))?;
     }
     Ok(())
 }

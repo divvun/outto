@@ -1087,6 +1087,7 @@ fn test_execute_phase_before_install() {
         working_dir: None,
         arch: None,
         run_as_original_user: false,
+        required: false,
     }];
 
     run::execute_phase_commands(
@@ -1126,6 +1127,7 @@ fn test_execute_phase_filtering() {
         working_dir: None,
         arch: None,
         run_as_original_user: false,
+        required: false,
     }];
 
     // Call with BeforeInstall phase — the AfterInstall entry should be skipped
@@ -1166,6 +1168,7 @@ fn test_execute_command_nonzero_exit() {
         working_dir: None,
         arch: None,
         run_as_original_user: false,
+        required: false,
     }];
 
     // Should succeed (non-fatal) even though command exits with 1
@@ -1823,6 +1826,7 @@ fn test_execute_command_no_wait() {
         working_dir: None,
         arch: None,
         run_as_original_user: false,
+        required: false,
     }];
 
     run::execute_phase_commands(

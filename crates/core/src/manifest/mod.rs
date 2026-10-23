@@ -77,6 +77,10 @@ pub struct UninstallHook {
     pub show: ShowWindow,
     #[serde(default)]
     pub run_as_original_user: bool,
+    /// See `RunEntry::required`. Manifests written before the field existed
+    /// read it as false, which is how their hooks ran.
+    #[serde(default)]
+    pub required: bool,
 }
 
 /// An `[[uninstall.refuse_while]]` condition with every variable already

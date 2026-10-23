@@ -112,16 +112,19 @@ pub fn execute_install(
     Ok(())
 }
 
-/// A macOS `[[run]]` entry in core's shape.
-fn core_run_entry(entry: &RunEntry) -> outto_core::config::RunEntry {
-    let phase = match entry.phase {
+pub(crate) fn core_run_phase(phase: &RunPhase) -> CoreRunPhase {
+    match phase {
         RunPhase::BeforeInstall => CoreRunPhase::BeforeInstall,
         RunPhase::AfterInstall => CoreRunPhase::AfterInstall,
         RunPhase::BeforeUninstall => CoreRunPhase::BeforeUninstall,
         RunPhase::AfterUninstall => CoreRunPhase::AfterUninstall,
-    };
+    }
+}
+
+/// A macOS `[[run]]` entry in core's shape.
+fn core_run_entry(entry: &RunEntry) -> outto_core::config::RunEntry {
     outto_core::config::RunEntry {
-        phase,
+        phase: core_run_phase(&entry.phase),
         command: entry.command.clone(),
         arguments: entry.arguments.clone(),
         wait: entry.wait,
@@ -130,6 +133,7 @@ fn core_run_entry(entry: &RunEntry) -> outto_core::config::RunEntry {
         working_dir: entry.working_dir.clone(),
         arch: None,
         run_as_original_user: false,
+        required: entry.required,
     }
 }
 

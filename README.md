@@ -123,6 +123,21 @@ wait = true
 
 When the installer or uninstaller runs with `/LOG`, `#{log_arg:NAME}` becomes the single argument `/LOG=<path>`, a log next to the current one with `.NAME` added before the extension: with `/LOG=C:\logs\install.log` the command above gets `/LOG=C:\logs\install.text-service.log`. Without `/LOG` it becomes no argument at all. It is expanded when the command runs, so a `before_uninstall` or `after_uninstall` command passes on the uninstaller's log. `NAME` is letters, digits, `-`, `_` and `.`; `#{log_arg:…}` can't be used anywhere else, or inside a longer argument.
 
+### Required commands
+
+By default a `[[run]]` command's exit code is only logged. `required = true` makes its failure the operation's failure:
+
+```toml
+[[run]]
+phase = "after_install"
+command = "#{app}/register.exe"
+arguments = "--all"
+wait = true
+required = true
+```
+
+If a required command can't be started, or exits with anything but 0 or a restart request (3010, 1641), the install fails and what outto recorded is rolled back (exit code 1). Rollback doesn't undo what earlier commands did. A failing required `before_uninstall` command stops the uninstall before anything is removed. `required` needs `wait = true`, and `after_uninstall` commands can't be required, since the package is already gone when they run.
+
 ### Shortcuts
 
 A `[[shortcuts]]` entry puts a `.lnk` in the Start Menu, on the desktop or in the Startup folder (`location = "start_menu"`, `"desktop"` or `"startup"`), in its `subfolder` if it has one, which is created if missing and removed on uninstall once empty:
@@ -155,7 +170,7 @@ Uninstall removes each shortcut from where it was created. An upgrade removes th
 | `[[com]]` | COM server registration with regsvr32; `host = "x86"` uses SysWOW64's, `arch` limits it to one architecture |
 | `[[fonts]]` | Font installation |
 | `[[prerequisites]]` | Detect and require prior installs |
-| `[[run]]` | Run commands in `before_install` / `after_install` / `before_uninstall` / `after_uninstall` phases; `#{log_arg:NAME}` passes `/LOG` on (see above) |
+| `[[run]]` | Run commands in `before_install` / `after_install` / `before_uninstall` / `after_uninstall` phases; `#{log_arg:NAME}` passes `/LOG` on; `required = true` makes a failure fail the operation (see above) |
 | `[[components]]` | Optional/required component groups; each entry may set `component = "foo"` |
 | `[upgrade]` | `policy = "overwrite" \| "side_by_side" \| "fail"`; `downgrade = "refuse"` with an optional `[upgrade.installed_version]` registry probe; `prune`, directories emptied of everything the install did not record |
 | `[uninstall]` | Display icon, whether to remove `#{app}` on uninstall, extra dirs; `[[uninstall.refuse_while]]` registry keys (with `*` segments) that make the uninstaller refuse, exiting 2 |

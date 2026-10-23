@@ -105,6 +105,9 @@ fn validate(config: &Config) -> InstallerResult<()> {
             r.working_dir.as_deref(),
         )
         .map_err(|e| InstallerError::Validation(format!("run[{i}]: {e}")))?;
+        let phase = crate::actions::core_run_phase(&r.phase);
+        outto_core::actions::run::validate_required(&phase, r.wait, r.required)
+            .map_err(|e| InstallerError::Validation(format!("run[{i}]: {e}")))?;
     }
 
     // Duplicate component names.

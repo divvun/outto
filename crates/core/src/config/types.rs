@@ -570,6 +570,10 @@ pub struct RunEntry {
     pub arch: Option<Architecture>,
     #[serde(default)]
     pub run_as_original_user: bool,
+    /// Fail the install, and roll it back, when the command can't be started
+    /// or exits with anything but 0 or a restart request (3010, 1641).
+    #[serde(default)]
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

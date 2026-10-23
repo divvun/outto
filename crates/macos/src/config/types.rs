@@ -376,6 +376,10 @@ pub struct RunEntry {
     pub component: Option<String>,
     pub working_dir: Option<String>,
     pub arch: Option<Architecture>,
+    /// Fail the install, and roll it back, when the command can't be started
+    /// or exits with anything but 0 or a restart request (3010, 1641).
+    #[serde(default)]
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default, Serialize)]
