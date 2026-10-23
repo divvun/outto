@@ -60,6 +60,16 @@ pub enum InstallerError {
         rollback_error: String,
     },
 
+    /// Reversing recorded actions failed for some of them; the rest were
+    /// reversed. Install wraps this in `RollbackFailed`; on uninstall it
+    /// means the package is partly removed.
+    #[error("{0}")]
+    PartialRollback(String),
+
+    /// The elevated child process failed. It already decided the exit code.
+    #[error("{0}")]
+    Elevated(crate::exit::Failure),
+
     #[error("upgrade conflict: {0}")]
     UpgradeConflict(String),
 

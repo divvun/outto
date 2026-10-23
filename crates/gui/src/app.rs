@@ -220,7 +220,7 @@ pub struct AppState {
 
     // Progress
     pub progress: ProgressState,
-    pub result: Option<Result<(), String>>,
+    pub result: Option<Result<(), outto_core::Failure>>,
 
     // Prompt handling
     pub pending_prompt: Option<PendingPrompt>,
@@ -359,6 +359,18 @@ impl AppState {
     /// Whether the completion screen should offer an interactive restart.
     pub fn offer_restart(&self) -> bool {
         self.reboot_required && !self.flags.no_restart
+    }
+
+    /// The code to exit with when leaving the completion screen without
+    /// restarting.
+    fn exit_code(&self) -> outto_core::ExitCode {
+        use outto_core::ExitCode;
+        match &self.result {
+            Some(Ok(())) if self.reboot_required => ExitCode::RebootRequired,
+            Some(Ok(())) => ExitCode::Success,
+            Some(Err(failure)) => failure.exit,
+            None => ExitCode::Failed,
+        }
     }
 
     fn start_install(&mut self) {
@@ -698,11 +710,7 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::Finish => {
-            crate::cleanup::exit(if state.result.as_ref().is_some_and(|r| r.is_ok()) {
-                0
-            } else {
-                1
-            });
+            crate::cleanup::exit(state.exit_code().code());
         }
         Message::RestartNow => {
             // If the reboot is initiated the OS tears us down; if it fails we
@@ -1000,11 +1008,7 @@ fn activate_button(state: &mut AppState, button_idx: usize) -> Task<Message> {
             if state.step == WizardStep::Complete && state.offer_restart() && button_idx == 0 {
                 return Task::done(Message::RestartNow);
             }
-            crate::cleanup::exit(if state.result.as_ref().is_some_and(|r| r.is_ok()) {
-                0
-            } else {
-                1
-            });
+            crate::cleanup::exit(state.exit_code().code());
         }
         WizardStep::UninstallConfirm => match button_idx {
             0 => {

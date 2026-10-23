@@ -27,6 +27,7 @@ use outto_macos as platform;
 #[cfg(windows)]
 use outto_windows as platform;
 
+use outto_core::{ExitCode, Failure};
 use platform::Config;
 
 use app::{AppMode, AppState};
@@ -55,7 +56,7 @@ fn main() {
     let args = match cli::parse_args() {
         Ok(a) => a,
         Err(e) => {
-            fatal_error(&e);
+            fatal_error(&e, ExitCode::InvalidInvocation);
         }
     };
 
@@ -95,10 +96,14 @@ fn run_embedded_install(flags: cli::CliFlags) {
             fatal_error(
                 "No embedded payload found.\n\n\
                  Use outto-cli to build a self-contained installer.",
+                ExitCode::InvalidInvocation,
             );
         }
         Err(e) => {
-            fatal_error(&format!("Failed to extract embedded payload: {e}"));
+            fatal_error(
+                &format!("Failed to extract embedded payload: {e}"),
+                ExitCode::InvalidInvocation,
+            );
         }
     };
 
@@ -114,7 +119,10 @@ fn run_embedded_install(flags: cli::CliFlags) {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn run_embedded_install(_flags: cli::CliFlags) {
-    fatal_error("Embedded payload extraction is only supported on Windows and macOS.");
+    fatal_error(
+        "Embedded payload extraction is only supported on Windows and macOS.",
+        ExitCode::InvalidInvocation,
+    );
 }
 
 fn run_install(flags: cli::CliFlags, config_path: PathBuf, source_dir: PathBuf) {
@@ -122,7 +130,7 @@ fn run_install(flags: cli::CliFlags, config_path: PathBuf, source_dir: PathBuf) 
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to load config: {e}");
-            crate::cleanup::exit(2);
+            crate::cleanup::exit(ExitCode::InvalidInvocation.code());
         }
     };
 
@@ -158,23 +166,27 @@ fn run_install(flags: cli::CliFlags, config_path: PathBuf, source_dir: PathBuf) 
 fn run_headless(
     progress_file: Option<&std::path::Path>,
     op: impl FnOnce(&dyn outto_core::InstallerCallbacks) -> Result<(), outto_core::InstallerError>,
-) -> Result<bool, String> {
+) -> Result<bool, Failure> {
     #[cfg(target_os = "macos")]
     if let Some(path) = progress_file {
         let cb = match platform::elevation::FileProgressCallbacks::create(path) {
             Ok(cb) => cb,
-            Err(e) => return Err(format!("can't open progress file {}: {e}", path.display())),
+            Err(e) => {
+                return Err(Failure::failed(format!(
+                    "can't open progress file {}: {e}",
+                    path.display()
+                )));
+            }
         };
-        let result =
-            op(&outto_core::logfile::LoggingCallbacks::new(&cb)).map_err(|e| e.to_string());
-        cb.write_finished(result.as_ref().map(|_| ()).map_err(|e| e.as_str()));
+        let result = op(&outto_core::logfile::LoggingCallbacks::new(&cb)).map_err(Failure::from);
+        cb.write_finished(result.as_ref().map(|_| ()));
         // The macOS config has no reboot policy, so the elevated child never
         // requests one through this path.
         return result.map(|()| false);
     }
     let _ = progress_file;
     let cb = SilentCallbacks::default();
-    op(&outto_core::logfile::LoggingCallbacks::new(&cb)).map_err(|e| e.to_string())?;
+    op(&outto_core::logfile::LoggingCallbacks::new(&cb)).map_err(Failure::from)?;
     Ok(cb.reboot_required.load(std::sync::atomic::Ordering::SeqCst))
 }
 
@@ -195,7 +207,12 @@ fn run_install_inner(
         .as_ref()
         .map(|d| resolver.resolve_path(d))
         .transpose()
-        .unwrap_or_else(|e| fatal_error(&format!("Invalid default_dir: {e}")));
+        .unwrap_or_else(|e| {
+            fatal_error(
+                &format!("Invalid default_dir: {e}"),
+                ExitCode::InvalidInvocation,
+            )
+        });
 
     if flags.very_silent {
         let install_dir = flags
@@ -221,22 +238,27 @@ fn run_install_inner(
         });
         outto_core::logfile::write_result("Installation", &result.as_ref().map(|_| ()));
         match result {
-            Ok(reboot) => {
+            Ok(false) => {
                 println!("Installation complete.");
-                // Inno semantics: a silent install restarts automatically when
-                // needed, unless /NORESTART was passed.
-                if reboot && !flags.no_restart {
-                    println!("Restarting system...");
-                    if let Err(e) = platform::reboot_system() {
-                        eprintln!("Could not restart automatically: {e}");
-                        crate::cleanup::exit(1);
-                    }
-                }
-                crate::cleanup::exit(0);
+                crate::cleanup::exit(ExitCode::Success.code());
             }
-            Err(e) => {
-                eprintln!("Installation failed: {e}");
-                crate::cleanup::exit(1);
+            // Inno semantics: a silent install restarts automatically when
+            // needed, unless /NORESTART was passed.
+            Ok(true) if flags.no_restart => {
+                println!("Installation complete. A restart is required.");
+                crate::cleanup::exit(ExitCode::RebootRequired.code());
+            }
+            Ok(true) => {
+                println!("Installation complete. Restarting system...");
+                if let Err(e) = platform::reboot_system() {
+                    eprintln!("Could not restart automatically: {e}");
+                    crate::cleanup::exit(ExitCode::RebootRequired.code());
+                }
+                crate::cleanup::exit(ExitCode::Success.code());
+            }
+            Err(failure) => {
+                eprintln!("Installation failed: {failure}");
+                crate::cleanup::exit(failure.exit.code());
             }
         }
     }
@@ -259,7 +281,7 @@ fn run_install_inner(
     );
 
     if let Err(e) = app::run(state) {
-        fatal_error(&format!("Failed to start installer: {e}"));
+        fatal_error(&format!("Failed to start installer: {e}"), ExitCode::Failed);
     }
 }
 
@@ -274,11 +296,11 @@ fn run_uninstall(flags: cli::CliFlags, install_dir: PathBuf) {
         match result {
             Ok(_) => {
                 println!("Uninstall complete.");
-                crate::cleanup::exit(0);
+                crate::cleanup::exit(ExitCode::Success.code());
             }
-            Err(e) => {
-                eprintln!("Uninstall failed: {e}");
-                crate::cleanup::exit(1);
+            Err(failure) => {
+                eprintln!("Uninstall failed: {failure}");
+                crate::cleanup::exit(failure.exit.code());
             }
         }
     }
@@ -297,7 +319,7 @@ fn run_uninstall(flags: cli::CliFlags, install_dir: PathBuf) {
 
     if let Err(e) = app::run(state) {
         eprintln!("GUI error: {e}");
-        crate::cleanup::exit(1);
+        crate::cleanup::exit(ExitCode::Failed.code());
     }
 }
 
@@ -336,7 +358,7 @@ fn load_config_for_uninstall(install_dir: &std::path::Path) -> Config {
 /// block for good.
 static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn fatal_error(msg: &str) -> ! {
+fn fatal_error(msg: &str, exit: ExitCode) -> ! {
     eprintln!("Error: {msg}");
     outto_core::logfile::write(outto_core::LogLevel::Error, msg);
 
@@ -366,7 +388,7 @@ fn fatal_error(msg: &str) -> ! {
         }
     }
 
-    crate::cleanup::exit(1);
+    crate::cleanup::exit(exit.code());
 }
 
 fn find_uninstaller() -> Option<PathBuf> {

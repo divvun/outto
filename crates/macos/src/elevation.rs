@@ -26,6 +26,7 @@ use core_foundation::number::CFNumber;
 use core_foundation::string::{CFString, CFStringRef};
 use outto_core::callbacks::{InstallerCallbacks, LogLevel, Prompt, PromptResponse};
 use outto_core::error::{ErrorAction, InstallerError, InstallerResult};
+use outto_core::exit::{ExitCode, Failure};
 
 use crate::config::RequiredPrivileges;
 
@@ -491,7 +492,7 @@ pub fn elevate_self(
     })?;
     match outcome {
         ElevatedOutcome::Completed(Ok(())) => Ok(()),
-        ElevatedOutcome::Completed(Err(e)) => Err(InstallerError::Other(e)),
+        ElevatedOutcome::Completed(Err(failure)) => Err(InstallerError::Elevated(failure)),
         ElevatedOutcome::AuthCancelled => Err(InstallerError::ElevationRequired(
             "the administrator authorization prompt was cancelled".into(),
         )),
@@ -524,7 +525,7 @@ pub enum StreamEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ElevatedOutcome {
     /// The child ran; the result is the install/uninstall result.
-    Completed(Result<(), String>),
+    Completed(Result<(), Failure>),
     /// The user dismissed the macOS authorization prompt; nothing ran.
     AuthCancelled,
 }
@@ -532,7 +533,7 @@ pub enum ElevatedOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StreamLine {
     Event(StreamEvent),
-    Finished(Result<(), String>),
+    Finished(Result<(), Failure>),
 }
 
 fn level_str(level: LogLevel) -> &'static str {
@@ -573,10 +574,17 @@ fn parse_stream_line(line: &str) -> Option<StreamLine> {
             if v["ok"].as_bool().unwrap_or(false) {
                 Ok(())
             } else {
-                Err(v["error"]
-                    .as_str()
-                    .unwrap_or("operation failed")
-                    .to_string())
+                Err(Failure {
+                    exit: v["exit_code"]
+                        .as_i64()
+                        .and_then(|code| i32::try_from(code).ok())
+                        .and_then(ExitCode::from_code)
+                        .unwrap_or(ExitCode::Failed),
+                    message: v["error"]
+                        .as_str()
+                        .unwrap_or("operation failed")
+                        .to_string(),
+                })
             },
         )),
         _ => None,
@@ -611,10 +619,15 @@ impl FileProgressCallbacks {
 
     /// Write the terminal `finished` event. Call exactly once, right before
     /// the child exits.
-    pub fn write_finished(&self, result: Result<(), &str>) {
+    pub fn write_finished(&self, result: Result<(), &Failure>) {
         self.write_line(match result {
             Ok(()) => serde_json::json!({"type": "finished", "ok": true}),
-            Err(e) => serde_json::json!({"type": "finished", "ok": false, "error": e}),
+            Err(failure) => serde_json::json!({
+                "type": "finished",
+                "ok": false,
+                "error": failure.message,
+                "exit_code": failure.exit.code(),
+            }),
         });
     }
 }
@@ -728,10 +741,10 @@ pub fn run_elevated_with_progress(
     submit_job(&auth, &label, &program_args, &stderr_path)?;
 
     let mut tail = Tail::new();
-    let mut finished: Option<Result<(), String>> = None;
+    let mut finished: Option<Result<(), Failure>> = None;
 
     let pump = |tail: &mut Tail,
-                finished: &mut Option<Result<(), String>>,
+                finished: &mut Option<Result<(), Failure>>,
                 on_event: &mut dyn FnMut(StreamEvent)| {
         tail.drain(progress_path, |line| match line {
             StreamLine::Event(ev) => on_event(ev),
@@ -790,10 +803,10 @@ pub fn run_elevated_with_progress(
         (true, Some(status)) => format!("elevated process exited with status {status}"),
         (true, None) => "elevated process exited".to_string(),
     };
-    Ok(ElevatedOutcome::Completed(Err(format!(
+    Ok(ElevatedOutcome::Completed(Err(Failure::failed(format!(
         "{how}: {}",
         stderr_text.trim()
-    ))))
+    )))))
 }
 
 #[cfg(test)]
@@ -858,7 +871,11 @@ mod tests {
         cb.on_progress("copy files", 3, 10);
         cb.on_log(LogLevel::Warn, "skipped \"weird\" påth\nwith newline");
         cb.on_error(&InstallerError::Other("boom".into()));
-        cb.write_finished(Err("it broke"));
+        let failure = Failure {
+            exit: ExitCode::Incomplete,
+            message: "it broke".into(),
+        };
+        cb.write_finished(Err(&failure));
 
         let mut lines: Vec<StreamLine> = Vec::new();
         let mut tail = Tail::new();
@@ -881,7 +898,7 @@ mod tests {
                     level: LogLevel::Error,
                     message: "boom".into(),
                 }),
-                StreamLine::Finished(Err("it broke".into())),
+                StreamLine::Finished(Err(failure)),
             ]
         );
     }
@@ -923,7 +940,18 @@ mod tests {
         );
         assert_eq!(
             parse_stream_line("{\"type\":\"finished\",\"ok\":false}"),
-            Some(StreamLine::Finished(Err("operation failed".into())))
+            Some(StreamLine::Finished(Err(Failure::failed(
+                "operation failed"
+            ))))
+        );
+        assert_eq!(
+            parse_stream_line(
+                "{\"type\":\"finished\",\"ok\":false,\"error\":\"x\",\"exit_code\":2}"
+            ),
+            Some(StreamLine::Finished(Err(Failure {
+                exit: ExitCode::Refused,
+                message: "x".into(),
+            })))
         );
     }
 }

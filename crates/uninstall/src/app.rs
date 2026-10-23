@@ -95,7 +95,7 @@ pub struct AppState {
     pub package_id: String,
     pub cascade_names: Vec<String>,
     pub progress: ProgressState,
-    pub result: Option<Result<(), String>>,
+    pub result: Option<Result<(), outto_core::Failure>>,
     pub bridge_queue: BridgeQueue,
     pub no_cancel: bool,
     /// True while an elevated child is doing the work — the unprivileged
@@ -263,15 +263,20 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             state.drain_bridge_queue();
             Task::none()
         }
-        Message::Finish => {
-            if state.result.as_ref().is_some_and(|r| r.is_ok()) {
+        Message::Finish => match &state.result {
+            Some(Ok(())) => {
                 crate::cleanup_after_uninstall(&state.install_dir);
-                std::process::exit(0);
-            } else {
-                crate::restore_self();
-                std::process::exit(1);
+                std::process::exit(outto_core::ExitCode::Success.code());
             }
-        }
+            result => {
+                crate::restore_self();
+                let exit = match result {
+                    Some(Err(failure)) => failure.exit,
+                    _ => outto_core::ExitCode::Failed,
+                };
+                std::process::exit(exit.code());
+            }
+        },
     }
 }
 

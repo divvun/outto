@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use outto_core::{
-    ErrorAction, InstallerCallbacks, InstallerError, LogLevel, Prompt, PromptResponse,
+    ErrorAction, Failure, InstallerCallbacks, InstallerError, LogLevel, Prompt, PromptResponse,
 };
 
 #[cfg(target_os = "macos")]
@@ -38,7 +38,7 @@ pub enum BridgeEvent {
         error_message: String,
         response_tx: std::sync::mpsc::SyncSender<ErrorAction>,
     },
-    Finished(Result<(), String>),
+    Finished(Result<(), Failure>),
     /// The user dismissed the macOS password prompt before anything ran;
     /// the GUI should return to the step it came from.
     ElevationCancelled,
@@ -187,7 +187,7 @@ pub fn spawn_install(
         );
         outto_core::logfile::write_result("Installation", &result);
         let mut q = queue.lock().unwrap();
-        q.push_back(BridgeEvent::Finished(result.map_err(|e| e.to_string())));
+        q.push_back(BridgeEvent::Finished(result.map_err(Failure::from)));
     });
 }
 
@@ -210,7 +210,7 @@ pub fn spawn_uninstall(
         );
         outto_core::logfile::write_result("Uninstallation", &result);
         let mut q = queue.lock().unwrap();
-        q.push_back(BridgeEvent::Finished(result.map_err(|e| e.to_string())));
+        q.push_back(BridgeEvent::Finished(result.map_err(Failure::from)));
     });
 }
 
@@ -366,7 +366,7 @@ fn spawn_elevated_with_args(
         let event = match run() {
             Ok(ElevatedOutcome::Completed(result)) => BridgeEvent::Finished(result),
             Ok(ElevatedOutcome::AuthCancelled) => BridgeEvent::ElevationCancelled,
-            Err(e) => BridgeEvent::Finished(Err(e)),
+            Err(e) => BridgeEvent::Finished(Err(Failure::failed(e))),
         };
         let mut q = queue.lock().unwrap();
         q.push_back(event);

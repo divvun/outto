@@ -64,6 +64,21 @@ A Windows installer/uninstaller framework — a modern, declarative replacement 
 
 The resulting `myapp-setup.exe` is self-contained — double-click to run the GUI installer, or call it with `/S` for a silent install.
 
+## Exit codes
+
+The installer and the uninstaller exit with the same codes, on Windows and macOS:
+
+| Code | Meaning |
+|---|---|
+| 0 | Succeeded. |
+| 1 | Failed, and the machine is as it was before. |
+| 2 | Refused: an `[[uninstall.refuse_while]]` condition holds and nothing changed. Retrying once it passes can succeed. |
+| 3 | Failed, and outto could not undo everything it had done. |
+| 4 | The command line, configuration or payload is unusable, and nothing changed. |
+| 3010 | Succeeded, but the machine must restart, and outto did not restart it (with `/NORESTART`, or when the restart could not be started). This is Windows Installer's `ERROR_SUCCESS_REBOOT_REQUIRED`. |
+
+A silent install restarts the machine itself when a restart is needed, unless `/NORESTART` is passed. Callers that schedule restarts themselves pass `/NORESTART` and act on 3010.
+
 ## Path variables
 
 TOML values accept `#{…}` placeholders that are resolved at install time:

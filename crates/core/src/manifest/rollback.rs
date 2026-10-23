@@ -53,7 +53,7 @@ pub fn rollback_actions<A: RollbackAction>(
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(InstallerError::Other(format!(
+        Err(InstallerError::PartialRollback(format!(
             "Rollback completed with {} errors: {}",
             errors.len(),
             errors.join("; ")

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bridge::SilentCallbacks;
+use outto_core::{ExitCode, Failure};
 
 #[cfg(target_os = "macos")]
 use outto_macos as platform;
@@ -70,9 +71,10 @@ fn main() {
     match outto_windows::uninstall::check_uninstall_allowed(&install_dir, &package_id) {
         Ok(()) => {}
         Err(outto_core::InstallerError::UninstallRefused(reason)) => refuse(&app_name, &reason),
-        Err(e) => fatal_error(&format!(
-            "Could not check whether {app_name} may be uninstalled: {e}"
-        )),
+        Err(e) => fail(
+            &format!("Could not check whether {app_name} may be uninstalled: {e}"),
+            ExitCode::Failed,
+        ),
     }
 
     // /VERYSILENT: no GUI
@@ -86,8 +88,8 @@ fn main() {
                 println!("Uninstall complete.");
                 std::process::exit(0);
             }
-            Err(e) => {
-                fatal_error(&format!("Uninstall failed: {e}"));
+            Err(failure) => {
+                fail(&format!("Uninstall failed: {failure}"), failure.exit);
             }
         }
     }
@@ -103,7 +105,10 @@ fn main() {
     );
 
     if let Err(e) = app::run(state) {
-        fatal_error(&format!("Failed to start uninstaller: {e}"));
+        fail(
+            &format!("Failed to start uninstaller: {e}"),
+            ExitCode::Failed,
+        );
     }
     restore_self();
 }
@@ -176,20 +181,25 @@ fn run_headless(
     progress_file: Option<&std::path::Path>,
     install_dir: &std::path::Path,
     package_id: &str,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     #[cfg(target_os = "macos")]
     if let Some(path) = progress_file {
         let cb = match outto_macos::elevation::FileProgressCallbacks::create(path) {
             Ok(cb) => cb,
-            Err(e) => return Err(format!("can't open progress file {}: {e}", path.display())),
+            Err(e) => {
+                return Err(Failure::failed(format!(
+                    "can't open progress file {}: {e}",
+                    path.display()
+                )));
+            }
         };
         let result = platform::uninstall_package(
             install_dir,
             package_id,
             &outto_core::logfile::LoggingCallbacks::new(&cb),
         )
-        .map_err(|e| e.to_string());
-        cb.write_finished(result.as_ref().map(|_| ()).map_err(|e| e.as_str()));
+        .map_err(Failure::from);
+        cb.write_finished(result.as_ref().map(|_| ()));
         return result;
     }
     let _ = progress_file;
@@ -198,7 +208,7 @@ fn run_headless(
         package_id,
         &outto_core::logfile::LoggingCallbacks::new(&SilentCallbacks),
     )
-    .map_err(|e| e.to_string())
+    .map_err(Failure::from)
 }
 
 /// Derive `(install_dir, package_id)` from either the `--dir` flag or the
@@ -561,11 +571,6 @@ fn parse_name_and_version(manifest_path: &std::path::Path) -> (String, String) {
 /// that waits for it, and a message box would block that program for good.
 static NO_MESSAGE_BOXES: AtomicBool = AtomicBool::new(false);
 
-/// The exit code when an `[[uninstall.refuse_while]]` condition holds and
-/// nothing was changed.
-#[cfg(windows)]
-const REFUSED_EXIT_CODE: i32 = 2;
-
 #[cfg(windows)]
 fn refuse(app_name: &str, reason: &str) -> ! {
     eprintln!("Uninstall refused: {reason}");
@@ -580,7 +585,7 @@ fn refuse(app_name: &str, reason: &str) -> ! {
             windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION,
         );
     }
-    std::process::exit(REFUSED_EXIT_CODE);
+    std::process::exit(ExitCode::Refused.code());
 }
 
 #[cfg(windows)]
@@ -607,7 +612,13 @@ fn message_box(text: &str, title: &str, icon: u32) {
     }
 }
 
+/// Exit because the command line or the uninstaller's own location doesn't
+/// say what to uninstall.
 fn fatal_error(msg: &str) -> ! {
+    fail(msg, ExitCode::InvalidInvocation)
+}
+
+fn fail(msg: &str, exit: ExitCode) -> ! {
     eprintln!("Error: {msg}");
     outto_core::logfile::write(outto_core::LogLevel::Error, msg);
     restore_self();
@@ -621,7 +632,7 @@ fn fatal_error(msg: &str) -> ! {
         );
     }
 
-    std::process::exit(1);
+    std::process::exit(exit.code());
 }
 
 #[cfg(test)]

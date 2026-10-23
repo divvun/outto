@@ -14,6 +14,7 @@ pub mod archive;
 pub mod callbacks;
 pub mod config;
 pub mod error;
+pub mod exit;
 pub mod logfile;
 pub mod manifest;
 
@@ -29,5 +30,6 @@ pub use callbacks::{
 pub use config::Config;
 pub use config::{Architecture, ComponentEntry, OverwritePolicy, Privileges, UpgradePolicy};
 pub use error::{ErrorAction, InstallerError, InstallerResult};
+pub use exit::{ExitCode, Failure};
 pub use manifest::rollback::{RollbackAction, rollback_actions};
 pub use manifest::{CoreAction, InstallManifest};
