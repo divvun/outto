@@ -376,8 +376,7 @@ fn build_installer(
         ditto(&inner_app, output)?;
     } else {
         // Tar+zstd the inner .app, then build the outer SFX .app.
-        let sfx_bin =
-            sfx_bin.ok_or("outto-sfx-macos not found (needed when --compress is set)")?;
+        let sfx_bin = sfx_bin.ok_or("outto-sfx-macos not found (needed when --compress is set)")?;
         eprintln!("Tarring inner installer.app...");
         let tarball_path = scratch.path().join("inner.tar");
         tar_directory(&inner_app, &tarball_path)?;
@@ -438,7 +437,13 @@ fn build_installer(
             .version
             .clone()
             .unwrap_or_else(|| config.package.version.clone());
-        build_pkg(&inner_app, &pkg_output, &identifier, &version, pkg.sign.as_deref())?;
+        build_pkg(
+            &inner_app,
+            &pkg_output,
+            &identifier,
+            &version,
+            pkg.sign.as_deref(),
+        )?;
     }
 
     Ok(())

@@ -201,12 +201,7 @@ mod tests {
         let rest: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         let mut flags = CliFlags::default();
         parse_flags(
-            &rest,
-            &mut flags,
-            &mut None,
-            &mut None,
-            &mut None,
-            &mut None,
+            &rest, &mut flags, &mut None, &mut None, &mut None, &mut None,
         )
         .unwrap();
         flags

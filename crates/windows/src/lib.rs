@@ -849,14 +849,8 @@ pub fn reboot_system() -> InstallerResult<()> {
                 Attributes: SE_PRIVILEGE_ENABLED,
             }],
         };
-        let adjusted = AdjustTokenPrivileges(
-            token,
-            0,
-            &tp,
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        );
+        let adjusted =
+            AdjustTokenPrivileges(token, 0, &tp, 0, std::ptr::null_mut(), std::ptr::null_mut());
         let adjust_err = std::io::Error::last_os_error();
         CloseHandle(token);
         // AdjustTokenPrivileges can return success but leave the privilege

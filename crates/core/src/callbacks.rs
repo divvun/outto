@@ -13,12 +13,18 @@ pub enum LogLevel {
 
 #[derive(Debug, Clone)]
 pub enum Prompt {
-    OverwriteFile { path: PathBuf },
-    ExistingInstallDetected { existing: ExistingInstall },
+    OverwriteFile {
+        path: PathBuf,
+    },
+    ExistingInstallDetected {
+        existing: ExistingInstall,
+    },
     /// One or more running applications are holding files we need to replace.
     /// `Yes` closes them (and they're relaunched afterwards); `No` defers the
     /// replacement to the next restart.
-    CloseApplications { apps: Vec<String> },
+    CloseApplications {
+        apps: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -99,7 +99,14 @@ where
             continue;
         }
 
-        copy_file_with_policy(&source_path, &dest_path, entry, manifest, callbacks, unlocker)?;
+        copy_file_with_policy(
+            &source_path,
+            &dest_path,
+            entry,
+            manifest,
+            callbacks,
+            unlocker,
+        )?;
     }
 
     if !matched_any && !entry.skip_if_missing {
@@ -366,7 +373,10 @@ fn schedule_replace_on_reboot(source: &Path, dest: &Path) -> InstallerResult<Pat
     })?;
 
     let wide = |p: &Path| -> Vec<u16> {
-        OsStr::new(p).encode_wide().chain(std::iter::once(0)).collect()
+        OsStr::new(p)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     };
     let from = wide(&staged);
     let to = wide(dest);

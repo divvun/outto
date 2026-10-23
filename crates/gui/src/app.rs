@@ -1362,11 +1362,10 @@ mod tests {
     use super::*;
 
     fn test_state(license: bool) -> AppState {
-        let config =
-            Config::from_toml(
-                "[package]\nid = \"no.divvun.test\"\nname = \"Test\"\nversion = \"1.0.0\"\n",
-            )
-            .unwrap();
+        let config = Config::from_toml(
+            "[package]\nid = \"no.divvun.test\"\nname = \"Test\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
         AppState::new(
             AppMode::Install,
             config,

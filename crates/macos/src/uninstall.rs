@@ -75,8 +75,7 @@ pub fn uninstall(package_id: &str, callbacks: &dyn InstallerCallbacks) -> Instal
 /// system base, meaning it was written by an elevated install and its actions
 /// touch root-owned paths.
 pub fn uninstall_needs_elevation(package_id: &str) -> bool {
-    !crate::elevation::is_root()
-        && matches!(find_receipt_base(package_id), Some((_, "system")))
+    !crate::elevation::is_root() && matches!(find_receipt_base(package_id), Some((_, "system")))
 }
 
 fn find_receipt_base(package_id: &str) -> Option<(PathBuf, &'static str)> {
