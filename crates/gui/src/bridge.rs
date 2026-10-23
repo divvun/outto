@@ -332,7 +332,8 @@ fn spawn_elevated_with_args(
     prompt: platform::elevation::AuthPrompt,
     queue: BridgeQueue,
 ) {
-    use platform::elevation::{ElevatedOutcome, StreamEvent, run_elevated_with_progress};
+    use outto_core::progress::StreamEvent;
+    use platform::elevation::{ElevatedOutcome, run_elevated_with_progress};
 
     std::thread::spawn(move || {
         let mut run = || -> Result<ElevatedOutcome, String> {
@@ -358,6 +359,7 @@ fn spawn_elevated_with_args(
                         total,
                     },
                     StreamEvent::Log { level, message } => BridgeEvent::Log { level, message },
+                    StreamEvent::RebootRequired => BridgeEvent::RebootRequired,
                 });
             })
             .map_err(|e| e.to_string())

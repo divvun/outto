@@ -7,7 +7,8 @@
 fn main() {
     use std::ffi::OsString;
 
-    use outto_macos::elevation::{AuthPrompt, StreamEvent, run_elevated_with_progress};
+    use outto_core::progress::StreamEvent;
+    use outto_macos::elevation::{AuthPrompt, run_elevated_with_progress};
 
     let tmp = tempfile::Builder::new()
         .prefix("outto-elevate-example")
@@ -30,7 +31,7 @@ fn main() {
         &prompt,
         |ev| match ev {
             StreamEvent::Log { message, .. } => println!("child: {message}"),
-            StreamEvent::Progress { .. } => {}
+            StreamEvent::Progress { .. } | StreamEvent::RebootRequired => {}
         },
     );
     println!("outcome: {outcome:?}");

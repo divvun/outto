@@ -165,7 +165,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             options.progress_file = args.get(i).map(PathBuf::from);
         } else {
             return Err(format!(
-                "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT] [/SUPPRESSMSGBOXES] [/NORESTART] [/LOG[=path]]\n       outto-uninstall --version"
+                "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT] [/SUPPRESSMSGBOXES] [/NORESTART] [/LOG[=path]] [--progress-file <path>]\n       outto-uninstall --version"
             ));
         }
 
@@ -174,17 +174,17 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     Ok(options)
 }
 
-/// Run the headless uninstall with the right callbacks: when `--progress-file`
-/// is set we're the elevated child of a GUI parent and stream JSON events to
-/// it; otherwise plain console output.
+/// Run the headless uninstall with the right callbacks: JSON events to the
+/// progress file when `--progress-file` is set (the caller is another
+/// program, or on macOS the GUI parent of an elevated child), otherwise plain
+/// console output.
 fn run_headless(
     progress_file: Option<&std::path::Path>,
     install_dir: &std::path::Path,
     package_id: &str,
 ) -> Result<(), Failure> {
-    #[cfg(target_os = "macos")]
     if let Some(path) = progress_file {
-        let cb = match outto_macos::elevation::FileProgressCallbacks::create(path) {
+        let cb = match outto_core::progress::FileProgressCallbacks::create(path) {
             Ok(cb) => cb,
             Err(e) => {
                 return Err(Failure::failed(format!(
@@ -202,7 +202,6 @@ fn run_headless(
         cb.write_finished(result.as_ref().map(|_| ()));
         return result;
     }
-    let _ = progress_file;
     platform::uninstall_package(
         install_dir,
         package_id,

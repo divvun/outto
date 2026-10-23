@@ -123,7 +123,8 @@ pub fn spawn_elevated_uninstall(
 ) {
     use std::ffi::OsString;
 
-    use platform::elevation::{ElevatedOutcome, StreamEvent, run_elevated_with_progress};
+    use outto_core::progress::StreamEvent;
+    use platform::elevation::{ElevatedOutcome, run_elevated_with_progress};
 
     std::thread::spawn(move || {
         let run = || -> Result<ElevatedOutcome, String> {
@@ -146,8 +147,7 @@ pub fn spawn_elevated_uninstall(
             argv.push(progress_path.clone().into());
 
             run_elevated_with_progress(&exe, &argv, &progress_path, &prompt, |ev| {
-                let mut q = queue.lock().unwrap();
-                q.push_back(match ev {
+                let event = match ev {
                     StreamEvent::Progress {
                         phase,
                         current,
@@ -158,7 +158,10 @@ pub fn spawn_elevated_uninstall(
                         total,
                     },
                     StreamEvent::Log { level, message } => BridgeEvent::Log { level, message },
-                });
+                    // Only an install's reboot policy asks for a restart.
+                    StreamEvent::RebootRequired => return,
+                };
+                queue.lock().unwrap().push_back(event);
             })
             .map_err(|e| e.to_string())
         };

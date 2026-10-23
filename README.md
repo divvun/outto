@@ -79,6 +79,19 @@ The installer and the uninstaller exit with the same codes, on Windows and macOS
 
 A silent install restarts the machine itself when a restart is needed, unless `/NORESTART` is passed. Callers that schedule restarts themselves pass `/NORESTART` and act on 3010.
 
+## Progress file
+
+With `/VERYSILENT`, the installer and the uninstaller append progress to a file given as `--progress-file <path>`, on Windows and macOS. Each line is one JSON object, flushed as it is written:
+
+| `type` | Fields |
+|---|---|
+| `progress` | `phase`, `current`, `total` |
+| `log` | `level` (`debug`, `info`, `warn` or `error`), `message` |
+| `reboot_required` | none: the reboot policy decided a restart is wanted |
+| `finished` | `ok`; when false, also `error` and `exit_code`. Always the last line. |
+
+Readers should ignore types they don't know. The exit code remains the authoritative result.
+
 ## Path variables
 
 TOML values accept `#{…}` placeholders that are resolved at install time:

@@ -159,17 +159,17 @@ fn run_install(flags: cli::CliFlags, config_path: PathBuf, source_dir: PathBuf) 
     );
 }
 
-/// Run a headless (`/VERYSILENT`) operation with the right callbacks: when
-/// `--progress-file` is set we're the elevated child of a GUI parent and
-/// stream JSON events to it; otherwise plain console output. Returns whether
-/// the operation requested a system restart.
+/// Run a headless (`/VERYSILENT`) operation with the right callbacks: JSON
+/// events to the progress file when `--progress-file` is set (the caller is
+/// another program, or on macOS the GUI parent of an elevated child),
+/// otherwise plain console output. Returns whether the operation requested a
+/// system restart.
 fn run_headless(
     progress_file: Option<&std::path::Path>,
     op: impl FnOnce(&dyn outto_core::InstallerCallbacks) -> Result<(), outto_core::InstallerError>,
 ) -> Result<bool, Failure> {
-    #[cfg(target_os = "macos")]
     if let Some(path) = progress_file {
-        let cb = match platform::elevation::FileProgressCallbacks::create(path) {
+        let cb = match outto_core::progress::FileProgressCallbacks::create(path) {
             Ok(cb) => cb,
             Err(e) => {
                 return Err(Failure::failed(format!(
@@ -180,11 +180,8 @@ fn run_headless(
         };
         let result = op(&outto_core::logfile::LoggingCallbacks::new(&cb)).map_err(Failure::from);
         cb.write_finished(result.as_ref().map(|_| ()));
-        // The macOS config has no reboot policy, so the elevated child never
-        // requests one through this path.
-        return result.map(|()| false);
+        return result.map(|()| cb.reboot_required());
     }
-    let _ = progress_file;
     let cb = SilentCallbacks::default();
     op(&outto_core::logfile::LoggingCallbacks::new(&cb)).map_err(Failure::from)?;
     Ok(cb.reboot_required.load(std::sync::atomic::Ordering::SeqCst))

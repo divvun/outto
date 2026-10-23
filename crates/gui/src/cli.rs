@@ -21,8 +21,8 @@ pub struct CliFlags {
     pub no_restart: bool,
     /// /NOCANCEL — disable cancel button
     pub no_cancel: bool,
-    /// --progress-file <path> — internal: stream JSON-line progress events to
-    /// this file (set by the parent GUI when spawning an elevated child)
+    /// --progress-file <path> — with /VERYSILENT, append JSON-line progress
+    /// events to this file (see `outto_core::progress`)
     pub progress_file: Option<PathBuf>,
     /// --uninstall-app <path> — internal: pre-extracted uninstaller to copy
     /// into the receipt (set by the parent GUI when spawning an elevated child)
@@ -261,6 +261,8 @@ fn usage() -> String {
      outto-gui --version\n\n\
      Inno Setup-compatible flags:\n  \
      /SILENT /VERYSILENT /SUPPRESSMSGBOXES /SP- /DIR=\"...\" /COMPONENTS=\"a,b\"\n  \
-     /LOG /LOG=\"path\" /NORESTART /NOCANCEL"
+     /LOG /LOG=\"path\" /NORESTART /NOCANCEL\n\n\
+     With /VERYSILENT:\n  \
+     --progress-file <path>  append JSON-line progress events to <path>"
         .to_string()
 }
