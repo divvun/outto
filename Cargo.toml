@@ -58,7 +58,7 @@ thiserror = "2"
 toml = "0.8"
 walkdir = "2"
 windows-sys = "0.61"
-winres = "0.1"
+tauri-winres = "0.3"
 zstd = { version = "0.13", default-features = false }
 
 [profile.release]

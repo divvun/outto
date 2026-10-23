@@ -19,4 +19,4 @@ outto-macos.workspace = true
 tempfile.workspace = true
 
 [build-dependencies]
-winres.workspace = true
+tauri-winres.workspace = true

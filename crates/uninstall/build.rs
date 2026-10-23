@@ -3,7 +3,7 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=OUTTO_BUILD_VERSION");
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
-        let mut res = winres::WindowsResource::new();
+        let mut res = tauri_winres::WindowsResource::new();
         // CI's full build version (outto-core's build script checks it); the
         // FileVersion stays the crate's numeric version.
         if let Some(version) = std::env::var("OUTTO_BUILD_VERSION")

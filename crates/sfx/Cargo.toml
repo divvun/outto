@@ -19,4 +19,4 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [build-dependencies]
-winres.workspace = true
+tauri-winres.workspace = true

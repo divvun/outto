@@ -36,6 +36,12 @@ Release builds need nightly + `-Zbuild-std=std` because `[profile.release]` sets
 - **Windows**: `./scripts/build-release.ps1` (PowerShell) → `target/release/outto-setup.exe`.
 - **macOS**: `./scripts/build-release.sh` → `target/release/outto-setup.app`. Pass `--sign "codesign --sign 'Developer ID Application: XYZ (TEAMID)' --deep --options runtime #{file}"` to sign each layer, and `--notarize --keychain-profile <name>` to submit to Apple's notary service and staple.
 
+Windows binaries cross-build from macOS with cargo-xwin. The resource step (version info and the UAC manifest) needs MinGW's windres, from Homebrew's `mingw-w64`:
+
+```
+RC=x86_64-w64-mingw32-windres cargo +nightly xwin build -p outto-gui -p outto-uninstall --target x86_64-pc-windows-msvc
+```
+
 Admin-only Windows integration tests live in `crates/windows/tests/admin_integration.rs` (need an elevated shell + `cargo nextest run -P admin --run-ignored ignored-only`).
 
 ## Core ↔ platform contract
