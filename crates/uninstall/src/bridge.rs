@@ -135,7 +135,7 @@ pub fn spawn_elevated_uninstall(
                 .map_err(|e| e.to_string())?;
             let progress_path = tmp.path().join("progress.jsonl");
 
-            let mut argv: Vec<OsString> = vec!["/VERYSILENT".into()];
+            let mut argv: Vec<OsString> = vec!["--very-silent".into()];
             if !install_dir.as_os_str().is_empty() {
                 argv.push("--dir".into());
                 argv.push(install_dir.clone().into());

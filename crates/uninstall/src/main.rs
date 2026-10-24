@@ -33,8 +33,11 @@ fn main() {
     // Before parsing, which can itself fail with a fatal error.
     NO_MESSAGE_BOXES.store(
         args.iter().skip(1).any(|arg| {
-            let arg = arg.to_uppercase();
-            arg == "/VERYSILENT" || arg == "/SUPPRESSMSGBOXES"
+            let upper = arg.to_uppercase();
+            upper == "/VERYSILENT"
+                || upper == "/SUPPRESSMSGBOXES"
+                || arg == "--very-silent"
+                || arg == "--suppress-msgboxes"
         }),
         Ordering::Relaxed,
     );
@@ -124,8 +127,9 @@ struct Options {
     log: Option<Option<String>>,
 }
 
-/// Parse the arguments after the program name. The Inno Setup switches that
-/// package managers pass to an Inno uninstaller are accepted, so a bare
+/// Parse the arguments after the program name. The standard `--flags` match
+/// the installer's. The Inno Setup switches that package managers pass to an
+/// Inno uninstaller are accepted too, so a bare
 /// `uninstall.exe /VERYSILENT /SP- /SUPPRESSMSGBOXES /NORESTART` (pahkat's
 /// Inno uninstall arguments, which replace the ones `QuietUninstallString`
 /// carries) works: without `--dir`, the install is found from the
@@ -137,21 +141,21 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         let arg = &args[i];
         let upper = arg.to_uppercase();
 
-        if upper == "/SILENT" {
+        if upper == "/SILENT" || arg == "--silent" {
             options.silent = true;
-        } else if upper == "/VERYSILENT" {
+        } else if upper == "/VERYSILENT" || arg == "--very-silent" {
             options.very_silent = true;
             options.silent = true;
-        } else if upper == "/SUPPRESSMSGBOXES" {
+        } else if upper == "/SUPPRESSMSGBOXES" || arg == "--suppress-msgboxes" {
             // Prompts are always auto-answered in this binary; this only
             // silences the error and refusal boxes (NO_MESSAGE_BOXES).
-        } else if upper == "/NORESTART" {
-            // Accepted for parity with Inno Setup's uninstaller: this one
-            // never restarts the machine.
+        } else if upper == "/NORESTART" || arg == "--no-restart" {
+            // Accepted for parity with the installer and with Inno Setup's
+            // uninstaller: this one never restarts the machine.
         } else if upper == "/SP-" {
             // Accepted for parity with Inno Setup's switches: this
             // uninstaller asks no startup question to skip.
-        } else if upper == "/NOCANCEL" {
+        } else if upper == "/NOCANCEL" || arg == "--no-cancel" {
             options.no_cancel = true;
         } else if arg == "--dir" {
             i += 1;
@@ -165,7 +169,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             options.progress_file = args.get(i).map(PathBuf::from);
         } else {
             return Err(format!(
-                "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT] [/SUPPRESSMSGBOXES] [/NORESTART] [/LOG[=path]] [--progress-file <path>]\n       outto-uninstall --version"
+                "Unknown argument: {arg}\n\nUsage: outto-uninstall --dir <install_path> [--silent | --very-silent] [--suppress-msgboxes] [--no-cancel] [/LOG[=path]] [--progress-file <path>]\n       outto-uninstall --version\n\nThe Inno Setup switches /SILENT, /VERYSILENT, /SUPPRESSMSGBOXES, /NORESTART, /SP-, /NOCANCEL and /DIR= are accepted too."
             ));
         }
 
@@ -254,7 +258,7 @@ fn infer_target(cli_install_dir: Option<PathBuf>) -> (PathBuf, String) {
         .is_some_and(|name| name.eq_ignore_ascii_case(".outto"))
     {
         fatal_error(
-            "Missing --dir <path>\n\nUsage: outto-uninstall --dir <install_path> [/SILENT] [/VERYSILENT]",
+            "Missing --dir <path>\n\nUsage: outto-uninstall --dir <install_path> [--silent | --very-silent]",
         );
     }
     let Some(install_dir) = outto_dir.parent() else {
@@ -673,6 +677,39 @@ mod tests {
         assert_eq!(
             parse(&[r#"/DIR="C:\App""#]).unwrap().install_dir,
             Some(PathBuf::from(r"C:\App"))
+        );
+    }
+
+    #[test]
+    fn accepts_the_installers_standard_flags() {
+        let options = parse(&[
+            "--dir",
+            "/Applications/App",
+            "--very-silent",
+            "--suppress-msgboxes",
+            "--no-restart",
+            "--no-cancel",
+            "--progress-file",
+            "progress.jsonl",
+        ])
+        .unwrap();
+        assert_eq!(
+            options,
+            Options {
+                install_dir: Some(PathBuf::from("/Applications/App")),
+                silent: true,
+                very_silent: true,
+                no_cancel: true,
+                progress_file: Some(PathBuf::from("progress.jsonl")),
+                ..Options::default()
+            }
+        );
+        assert_eq!(
+            parse(&["--silent"]).unwrap(),
+            Options {
+                silent: true,
+                ..Options::default()
+            }
         );
     }
 
