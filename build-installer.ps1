@@ -3,6 +3,7 @@ $cli = ".\target\$triple\release\outto.exe"
 
 cargo +nightly build --release -p outto-gui -p outto-uninstall -p outto-sfx -p outto-cli `
     -Zbuild-std=std `
+    -Zpanic-immediate-abort --config 'profile.release.panic="immediate-abort"' `
     --target $triple
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

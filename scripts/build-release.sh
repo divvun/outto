@@ -53,7 +53,8 @@ fi
 cd "$ROOT"
 
 echo "==> cargo build --release (nightly + build-std)"
-cargo +nightly build --release --workspace -Zbuild-std=std
+cargo +nightly build --release --workspace -Zbuild-std=std \
+    -Zpanic-immediate-abort --config 'profile.release.panic="immediate-abort"'
 
 STAGE="$ROOT/target/installer-stage"
 rm -rf "$STAGE"

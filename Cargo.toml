@@ -1,5 +1,3 @@
-cargo-features = ["panic-immediate-abort"]
-
 [workspace]
 members = [
     "crates/core",
@@ -66,7 +64,9 @@ lto = "fat"
 codegen-units = 1
 opt-level = "z"
 strip = true
-panic = "immediate-abort"
+# Stable Cargo, which reads this manifest when another project depends on an
+# outto crate, has no "immediate-abort"; the release scripts pass it.
+panic = "abort"
 
 # We vendor iced and cosmic-text so we can fix the variable-font bold
 # rendering bug that affects SFNS.ttf on macOS. See plan file + vendor/*.

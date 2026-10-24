@@ -10,6 +10,7 @@ Write-Host "Building workspace in release mode (nightly + build-std)..." -Foregr
 Push-Location $root
 cargo +nightly build --release --workspace `
     -Zbuild-std=std `
+    -Zpanic-immediate-abort --config 'profile.release.panic="immediate-abort"' `
     --target $triple
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 Pop-Location

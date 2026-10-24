@@ -31,7 +31,7 @@ cargo +nightly test -p outto-core
 cargo +nightly test -p outto-macos      # 49 tests; runs on macOS host
 ```
 
-Release builds need nightly + `-Zbuild-std=std` because `[profile.release]` sets `panic = "immediate-abort"`.
+Release builds need nightly, `-Zbuild-std=std` and `-Zpanic-immediate-abort --config 'profile.release.panic="immediate-abort"'`; the release scripts pass all three. The manifest itself says `panic = "abort"` and uses no nightly Cargo feature, so stable Cargo can read it when another project, such as Pahkat, depends on an outto crate.
 
 - **Windows**: `./scripts/build-release.ps1` (PowerShell) → `target/release/outto-setup.exe`.
 - **macOS**: `./scripts/build-release.sh` → `target/release/outto-setup.app`. Pass `--sign "codesign --sign 'Developer ID Application: XYZ (TEAMID)' --deep --options runtime #{file}"` to sign each layer, and `--notarize --keychain-profile <name>` to submit to Apple's notary service and staple.
