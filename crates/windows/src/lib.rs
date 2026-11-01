@@ -223,6 +223,7 @@ pub fn install(
         &resolver,
         &mut install_manifest,
         callbacks,
+        options.close_apps,
     );
 
     let pkg_dir = InstallManifest::<WindowsAction>::package_dir(&install_dir, &config.package.id);
@@ -951,6 +952,7 @@ overwrite = "always"
             install_dir: Some(install_dir.clone()),
             selected_components: None,
             uninstall_exe: Some(fake_uninstaller()),
+            close_apps: true,
         };
 
         let result = install(&config, &options, &callbacks);
@@ -1025,6 +1027,7 @@ component = "extras"
             install_dir: Some(install_dir.clone()),
             selected_components: Some(selected),
             uninstall_exe: Some(fake_uninstaller()),
+            close_apps: true,
         };
 
         let result = install(&config, &options, &callbacks);
@@ -1066,6 +1069,7 @@ dest = "#{app}"
                 install_dir: Some(install_dir.clone()),
                 selected_components: None,
                 uninstall_exe,
+                close_apps: true,
             };
             let result = install(&config, &options, &callbacks);
             assert!(
@@ -1134,6 +1138,7 @@ show = "hidden"
             install_dir: Some(install_dir.clone()),
             selected_components: None,
             uninstall_exe: Some(fake_uninstaller()),
+            close_apps: true,
         };
         install(&config, &options, &callbacks).unwrap();
         assert!(trace.join("installed").is_dir(), "{:?}", callbacks.logs);
@@ -1222,6 +1227,7 @@ values = [{{ name = "Version", type = "string", data = "#{{package.version}}" }}
                 install_dir: Some(install_dir.clone()),
                 selected_components: None,
                 uninstall_exe: Some(fake_uninstaller()),
+                close_apps: true,
             };
             install(&config, &options, &callbacks).unwrap();
             let baks: Vec<_> = walk(&test_dir)
@@ -1407,6 +1413,7 @@ values = [{{ name = "", type = "string", data = '#{{app}}\#{{package.version}}\a
                     install_dir: Some(install_dir.clone()),
                     selected_components: None,
                     uninstall_exe: Some(fake_uninstaller()),
+                    close_apps: true,
                 },
                 &callbacks,
             )
@@ -1491,6 +1498,97 @@ values = [{{ name = "", type = "string", data = '#{{app}}\#{{package.version}}\a
         let _ = fs::remove_dir_all(&test_dir);
     }
 
+    /// With `close_apps` off, a file a running program holds fails the
+    /// install: what it did is undone, the program keeps running, and no
+    /// backup is left beside the file.
+    #[test]
+    fn test_file_held_by_running_program_fails_without_closing_it() {
+        let test_dir = std::env::temp_dir().join("outto_test_keep_apps_open");
+        let install_dir = test_dir.join("installed");
+        let _ = fs::remove_dir_all(&test_dir);
+
+        let install_version = |version: &str, extra: &[&str]| {
+            let source_dir = test_dir.join(format!("source-{version}"));
+            fs::create_dir_all(&source_dir).unwrap();
+            for name in ["a.txt"].iter().chain(extra) {
+                fs::write(source_dir.join(name), version).unwrap();
+            }
+            let ping =
+                PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\PING.EXE");
+            fs::copy(ping, source_dir.join("holder.exe")).unwrap();
+            let toml = format!(
+                r##"
+[package]
+id = "com.test.keep_apps_open"
+name = "KeepAppsOpenTest"
+version = "{version}"
+
+[[files]]
+source = "*.txt"
+dest = "#{{app}}"
+overwrite = "always"
+
+[[files]]
+source = "holder.exe"
+dest = "#{{app}}"
+overwrite = "always"
+"##
+            );
+            install(
+                &Config::from_toml(&toml).unwrap(),
+                &InstallOptions {
+                    source_dir,
+                    install_dir: Some(install_dir.clone()),
+                    selected_components: None,
+                    uninstall_exe: Some(fake_uninstaller()),
+                    close_apps: false,
+                },
+                &TestCallbacks::default(),
+            )
+        };
+
+        install_version("1.0.0", &[]).unwrap();
+        let mut holder = std::process::Command::new(install_dir.join("holder.exe"))
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let err = install_version("2.0.0", &["b.txt"]).unwrap_err();
+        let still_running = holder.try_wait().unwrap().is_none();
+        let _ = holder.kill();
+        let _ = holder.wait();
+        match &err {
+            InstallerError::FileInUse { path, apps } => {
+                assert!(path.ends_with("holder.exe"), "{}", path.display());
+                assert!(!apps.is_empty());
+            }
+            _ => panic!("{err}"),
+        }
+        assert!(still_running);
+        assert_eq!(
+            fs::read_to_string(install_dir.join("a.txt")).unwrap(),
+            "1.0.0"
+        );
+        assert!(!install_dir.join("b.txt").exists());
+        assert!(!install_dir.join("a.txt.bak").exists());
+        assert!(!install_dir.join("holder.exe.bak").exists());
+        assert_eq!(
+            InstallManifest::<WindowsAction>::load(&install_dir, "com.test.keep_apps_open")
+                .unwrap()
+                .package_version,
+            "1.0.0"
+        );
+
+        uninstall_package(
+            &install_dir,
+            "com.test.keep_apps_open",
+            &TestCallbacks::default(),
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
     /// `legacy_inno_mode = "adopt"` takes over an Inno Setup install
     /// without running its uninstaller, which here is not even a program.
     #[test]
@@ -1558,6 +1656,7 @@ dest = "#{{app}}/#{{package.version}}"
                 install_dir: Some(install_dir.clone()),
                 selected_components: None,
                 uninstall_exe: Some(fake_uninstaller()),
+                close_apps: true,
             },
             &callbacks,
         )
@@ -1599,6 +1698,7 @@ dest = "#{{app}}/#{{package.version}}"
                 install_dir: Some(test_dir.join("installed")),
                 selected_components: None,
                 uninstall_exe: Some(fake_uninstaller()),
+                close_apps: true,
             },
             &TestCallbacks::default(),
         )

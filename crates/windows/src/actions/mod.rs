@@ -32,7 +32,9 @@ use crate::detect;
 /// When `[reboot] restart_manager` is enabled (the default), files that are
 /// locked by running processes are handled via the Windows Restart Manager:
 /// the holders are closed for the duration of the install and relaunched at the
-/// end. The session is always torn down, whether the install succeeds or fails.
+/// end. With `close_apps` off, a file the holders keep fails the install
+/// instead. The session is always torn down, whether the install succeeds or
+/// fails.
 pub fn execute_install(
     config: &Config,
     source_dir: &Path,
@@ -40,9 +42,10 @@ pub fn execute_install(
     resolver: &VariableResolver,
     manifest: &mut InstallManifest<Action>,
     callbacks: &dyn InstallerCallbacks,
+    close_apps: bool,
 ) -> InstallerResult<()> {
     let rm = if config.reboot.restart_manager {
-        Some(RestartManager::new())
+        Some(RestartManager::new(close_apps))
     } else {
         None
     };

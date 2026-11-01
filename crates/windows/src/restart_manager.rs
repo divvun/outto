@@ -1,7 +1,9 @@
 //! Restart Manager integration: when a file we need to replace is held open by
 //! a running process, ask the user to close those apps, shut them down via the
 //! Restart Manager, and relaunch them once the install finishes. Files that
-//! can't be freed fall back to a replace-on-restart.
+//! can't be freed fall back to a replace-on-restart. An install that may not
+//! close apps (`--no-close-apps`) fails instead of asking, so it can be rolled
+//! back with the apps still running.
 //!
 //! The session spans the whole install: [`RestartManager`] is the
 //! [`FileUnlocker`] passed into the file phase, and [`RestartManager::finish`]
@@ -14,6 +16,7 @@ use std::path::Path;
 
 use outto_core::actions::files::FileUnlocker;
 use outto_core::callbacks::{InstallerCallbacks, LogLevel, Prompt, PromptResponse};
+use outto_core::error::{InstallerError, InstallerResult};
 
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::System::RestartManager::{
@@ -22,15 +25,21 @@ use windows_sys::Win32::System::RestartManager::{
 };
 
 /// Owns a Restart Manager session for the duration of an install.
-#[derive(Default)]
 pub struct RestartManager {
     session: Cell<Option<u32>>,
     shutdown_done: Cell<bool>,
+    close_apps: bool,
 }
 
 impl RestartManager {
-    pub fn new() -> Self {
-        Self::default()
+    /// `close_apps` off makes a file that running apps hold fail the install
+    /// with [`InstallerError::FileInUse`].
+    pub fn new(close_apps: bool) -> Self {
+        Self {
+            session: Cell::new(None),
+            shutdown_done: Cell::new(false),
+            close_apps,
+        }
     }
 
     /// Start the RM session lazily on first use; returns the handle, or `None`
@@ -72,9 +81,9 @@ impl RestartManager {
 }
 
 impl FileUnlocker for RestartManager {
-    fn unlock(&self, dest: &Path, callbacks: &dyn InstallerCallbacks) -> bool {
+    fn unlock(&self, dest: &Path, callbacks: &dyn InstallerCallbacks) -> InstallerResult<bool> {
         let Some(session) = self.ensure_session() else {
-            return false;
+            return Ok(false);
         };
 
         // Register the locked file with the session.
@@ -95,13 +104,13 @@ impl FileUnlocker for RestartManager {
             )
         };
         if rc != ERROR_SUCCESS {
-            return false;
+            return Ok(false);
         }
 
         let holders = get_holders(session);
         if holders.is_empty() {
             // Nothing RM can see is holding it; let the caller defer to reboot.
-            return false;
+            return Ok(false);
         }
 
         callbacks.on_log(
@@ -113,11 +122,18 @@ impl FileUnlocker for RestartManager {
             ),
         );
 
+        if !self.close_apps {
+            return Err(InstallerError::FileInUse {
+                path: dest.to_path_buf(),
+                apps: holders,
+            });
+        }
+
         let response = callbacks.on_prompt(Prompt::CloseApplications {
             apps: holders.clone(),
         });
         if !matches!(response, PromptResponse::Yes | PromptResponse::YesToAll) {
-            return false;
+            return Ok(false);
         }
 
         let rc = unsafe { RmShutdown(session, RmForceShutdown as u32, None) };
@@ -126,10 +142,10 @@ impl FileUnlocker for RestartManager {
                 LogLevel::Warn,
                 &format!("Restart Manager: could not close applications (error {rc})"),
             );
-            return false;
+            return Ok(false);
         }
         self.shutdown_done.set(true);
-        true
+        Ok(true)
     }
 }
 

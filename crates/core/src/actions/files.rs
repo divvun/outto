@@ -13,9 +13,10 @@ use crate::manifest::{CoreAction, InstallManifest};
 /// platforms don't supply one.
 pub trait FileUnlocker {
     /// Attempt to free `dest` (e.g. close the processes holding it, after
-    /// confirming with the user via `callbacks`). Returns `true` if the caller
-    /// should retry the file operation.
-    fn unlock(&self, dest: &Path, callbacks: &dyn InstallerCallbacks) -> bool;
+    /// confirming with the user via `callbacks`). Returns `Ok(true)` if the
+    /// caller should retry the file operation, `Ok(false)` to replace the
+    /// file at the next restart instead, or an error to fail the install.
+    fn unlock(&self, dest: &Path, callbacks: &dyn InstallerCallbacks) -> InstallerResult<bool>;
 }
 
 /// Normalize path separators for the native OS. On Windows this rewrites `/` to `\`;
@@ -228,8 +229,17 @@ where
     // the holders via the platform unlocker), then fall back to a
     // replace-on-restart if it's still locked. A deferred file isn't present
     // yet, so its post-copy steps (attributes/hash/touch) are skipped.
-    if let CopyOutcome::DeferredToReboot(staged) = copy_or_defer(source, dest, unlocker, callbacks)?
-    {
+    let outcome = match copy_or_defer(source, dest, unlocker, callbacks) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            // Nothing recorded the backup, so rollback would leave it behind.
+            if let Some(backup) = &backup {
+                let _ = fs::remove_file(backup);
+            }
+            return Err(e);
+        }
+    };
+    if let CopyOutcome::DeferredToReboot(staged) = outcome {
         manifest.reboot_needed = true;
         manifest
             .replaced_at_restart
@@ -308,7 +318,8 @@ enum CopyOutcome {
 /// Copy `source` over `dest`. If the copy fails because `dest` is held open by
 /// a running process (Windows only), ask `unlocker` to free it and retry; if
 /// it's still locked, stage a replace-on-restart and report
-/// [`CopyOutcome::DeferredToReboot`].
+/// [`CopyOutcome::DeferredToReboot`]. An unlocker that may not free it fails
+/// the copy instead.
 fn copy_or_defer(
     source: &Path,
     dest: &Path,
@@ -323,7 +334,7 @@ fn copy_or_defer(
     #[cfg(windows)]
     if is_sharing_error(&err) {
         if let Some(unlocker) = unlocker {
-            if unlocker.unlock(dest, callbacks) && fs::copy(source, dest).is_ok() {
+            if unlocker.unlock(dest, callbacks)? && fs::copy(source, dest).is_ok() {
                 return Ok(CopyOutcome::Done);
             }
         }

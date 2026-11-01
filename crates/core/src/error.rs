@@ -73,6 +73,11 @@ pub enum InstallerError {
     #[error("upgrade conflict: {0}")]
     UpgradeConflict(String),
 
+    /// Running applications hold a file the install has to replace, and the
+    /// install may not close them (`--no-close-apps`).
+    #[error("{} is in use by {}, which --no-close-apps leaves running", path.display(), apps.join(", "))]
+    FileInUse { path: PathBuf, apps: Vec<String> },
+
     /// An `[[uninstall.refuse_while]]` condition holds; nothing was changed.
     #[error("uninstall refused: {0}")]
     UninstallRefused(String),

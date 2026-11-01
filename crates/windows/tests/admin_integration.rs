@@ -679,6 +679,7 @@ overwrite = "always"
                 install_dir: Some(installed.clone()),
                 selected_components: None,
                 uninstall_exe: Some(uninstaller),
+                close_apps: true,
             },
             &logs,
         );
@@ -829,6 +830,7 @@ overwrite = "always"
                 install_dir: Some(cleanup.install_dir.clone()),
                 selected_components: None,
                 uninstall_exe: Some(uninstaller),
+                close_apps: true,
             },
             logs,
         )

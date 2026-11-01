@@ -71,13 +71,23 @@ The installer and the uninstaller exit with the same codes, on Windows and macOS
 | Code | Meaning |
 |---|---|
 | 0 | Succeeded. |
-| 1 | Failed, and the machine is as it was before. |
+| 1 | Failed, and the machine is as it was before. This includes an install that `--no-close-apps` stopped because running apps hold its files (see below). |
 | 2 | Refused: an `[[uninstall.refuse_while]]` condition holds and nothing changed. Retrying once it passes can succeed. |
 | 3 | Failed, and outto could not undo everything it had done. |
 | 4 | The command line, configuration or payload is unusable, and nothing changed. |
 | 3010 | Succeeded, but the machine must restart, and outto did not restart it (with `/NORESTART`, or when the restart could not be started). This is Windows Installer's `ERROR_SUCCESS_REBOOT_REQUIRED`. |
 
 A silent install restarts the machine itself when a restart is needed, unless `/NORESTART` is passed. Callers that schedule restarts themselves pass `/NORESTART` and act on 3010.
+
+## Files held by running apps
+
+On Windows, when running apps hold a file the installer has to replace, Restart Manager can close them, and relaunch the ones that registered for it once the install is done. The installer asks first, unless it runs with `/VERYSILENT` or `/SUPPRESSMSGBOXES`, when it closes them without asking.
+
+With `--no-close-apps`, the installer never closes them. The install fails, what it had done is undone, the apps keep running, and it exits with 1. Callers that update software while someone may be using it, such as a background updater, pass `--no-close-apps` and try again later.
+
+Restart Manager can't always name what holds a file, and a package can turn it off with `[reboot] restart_manager = false`. Either way the file is replaced at the next restart instead, with or without the flag.
+
+The uninstaller accepts `--no-close-apps` too, but it never closes apps: on Windows it deletes a file in use at the next restart. On macOS, the installer and the uninstaller replace and delete files in use without closing anything, so the flag changes nothing there.
 
 ## Progress file
 
@@ -174,7 +184,7 @@ Uninstall removes each shortcut from where it was created. An upgrade removes th
 | `[[components]]` | Optional/required component groups; each entry may set `component = "foo"` |
 | `[upgrade]` | `policy = "overwrite" \| "side_by_side" \| "fail"`; `downgrade = "refuse"` with an optional `[upgrade.installed_version]` registry probe; `prune`, directories emptied of everything the install did not record |
 | `[uninstall]` | Display icon, whether to remove `#{app}` on uninstall, extra dirs; `[[uninstall.refuse_while]]` registry keys (with `*` segments) that make the uninstaller refuse, exiting 2 |
-| `[reboot]` | `never` / `if_needed` / `always`, Restart Manager integration |
+| `[reboot]` | `never` / `if_needed` / `always`, Restart Manager integration (see **Files held by running apps**) |
 | `[logging]` | Install log path |
 
 See `outto.toml` in the repo root for the manifest used to package outto itself.

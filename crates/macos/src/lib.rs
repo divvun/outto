@@ -570,6 +570,7 @@ overwrite = "always"
                 install_dir: Some(install_dir.clone()),
                 selected_components: None,
                 uninstall_exe: None,
+                close_apps: true,
             };
             install(&config, &options, &NoOpCallbacks)
         };
@@ -664,6 +665,7 @@ arguments = "-c \"test -f '#{{app}}/a.txt' || echo after >> '{trace}'\""
             install_dir: Some(install_dir.clone()),
             selected_components: None,
             uninstall_exe: None,
+            close_apps: true,
         };
         let result = install(&config, &options, &NoOpCallbacks);
         let hooks = InstallManifest::<MacosAction>::load_from_base(

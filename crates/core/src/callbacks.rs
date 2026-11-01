@@ -21,7 +21,8 @@ pub enum Prompt {
     },
     /// One or more running applications are holding files we need to replace.
     /// `Yes` closes them (and they're relaunched afterwards); `No` defers the
-    /// replacement to the next restart.
+    /// replacement to the next restart. Never asked when
+    /// [`InstallOptions::close_apps`] is off: the install fails instead.
     CloseApplications {
         apps: Vec<String>,
     },
@@ -73,4 +74,9 @@ pub struct InstallOptions {
     pub install_dir: Option<PathBuf>,
     pub selected_components: Option<HashSet<String>>,
     pub uninstall_exe: Option<PathBuf>,
+    /// Whether running applications that hold a file the install replaces
+    /// may be closed (Windows' Restart Manager). Off with `--no-close-apps`:
+    /// the install fails with [`InstallerError::FileInUse`] and is rolled
+    /// back. macOS replaces files in use without closing anything.
+    pub close_apps: bool,
 }

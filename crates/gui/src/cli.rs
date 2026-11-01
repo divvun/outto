@@ -19,6 +19,9 @@ pub struct CliFlags {
     pub log: Option<Option<String>>,
     /// /NORESTART — suppress reboot
     pub no_restart: bool,
+    /// --no-close-apps — fail, rather than close the running apps that hold
+    /// a file the install replaces
+    pub no_close_apps: bool,
     /// /NOCANCEL — disable cancel button
     pub no_cancel: bool,
     /// --progress-file <path> — with /VERYSILENT, append JSON-line progress
@@ -145,6 +148,8 @@ fn parse_flags(
             flags.sp_minus = true;
         } else if upper == "/NORESTART" || arg == "--no-restart" {
             flags.no_restart = true;
+        } else if arg == "--no-close-apps" {
+            flags.no_close_apps = true;
         } else if upper == "/NOCANCEL" || arg == "--no-cancel" {
             flags.no_cancel = true;
         } else if upper.starts_with("/DIR=") {
@@ -238,6 +243,14 @@ mod tests {
     }
 
     #[test]
+    fn test_no_close_apps_flag() {
+        assert!(!parse(&["--very-silent", "--no-restart"]).no_close_apps);
+        let flags = parse(&["--very-silent", "--no-restart", "--no-close-apps"]);
+        assert!(flags.no_close_apps);
+        assert!(flags.no_restart);
+    }
+
+    #[test]
     fn test_internal_elevation_flags() {
         let flags = parse(&[
             "--progress-file",
@@ -262,6 +275,9 @@ fn usage() -> String {
      Inno Setup-compatible flags:\n  \
      /SILENT /VERYSILENT /SUPPRESSMSGBOXES /SP- /DIR=\"...\" /COMPONENTS=\"a,b\"\n  \
      /LOG /LOG=\"path\" /NORESTART /NOCANCEL\n\n\
+     Other flags:\n  \
+     --no-close-apps  fail and roll back rather than close the running apps\n                   \
+     that hold a file the install replaces\n\n\
      With /VERYSILENT:\n  \
      --progress-file <path>  append JSON-line progress events to <path>"
         .to_string()

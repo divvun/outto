@@ -228,6 +228,7 @@ fn run_install_inner(
             install_dir,
             selected_components: selected,
             uninstall_exe,
+            close_apps: !flags.no_close_apps,
         };
 
         let result = run_headless(flags.progress_file.as_deref(), |cb| {

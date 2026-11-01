@@ -152,6 +152,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         } else if upper == "/NORESTART" || arg == "--no-restart" {
             // Accepted for parity with the installer and with Inno Setup's
             // uninstaller: this one never restarts the machine.
+        } else if arg == "--no-close-apps" {
+            // Accepted for parity with the installer: this one never closes
+            // apps. On Windows a file in use is deleted at the next restart;
+            // macOS can delete it while it is open.
         } else if upper == "/SP-" {
             // Accepted for parity with Inno Setup's switches: this
             // uninstaller asks no startup question to skip.
@@ -688,6 +692,7 @@ mod tests {
             "--very-silent",
             "--suppress-msgboxes",
             "--no-restart",
+            "--no-close-apps",
             "--no-cancel",
             "--progress-file",
             "progress.jsonl",

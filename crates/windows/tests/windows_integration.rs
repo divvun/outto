@@ -799,6 +799,7 @@ action = "set"
         install_dir: Some(install_dir.clone()),
         selected_components: None,
         uninstall_exe: Some(fake_uninstaller()),
+        close_apps: true,
     };
 
     // Install
@@ -1354,6 +1355,7 @@ overwrite = "always"
         install_dir: Some(install_dir.clone()),
         selected_components: None,
         uninstall_exe: Some(fake_uninstaller()),
+        close_apps: true,
     };
 
     install(&config, &options, &NoOpCallbacks).unwrap();
@@ -1394,6 +1396,7 @@ overwrite = "never"
         install_dir: Some(install_dir.clone()),
         selected_components: None,
         uninstall_exe: Some(fake_uninstaller()),
+        close_apps: true,
     };
 
     install(&config, &options, &NoOpCallbacks).unwrap();
@@ -1437,6 +1440,7 @@ overwrite = "if_newer"
         install_dir: Some(install_dir.clone()),
         selected_components: None,
         uninstall_exe: Some(fake_uninstaller()),
+        close_apps: true,
     };
 
     install(&config, &options, &NoOpCallbacks).unwrap();
@@ -1478,6 +1482,7 @@ overwrite = "always"
         install_dir: Some(install_dir.clone()),
         selected_components: None,
         uninstall_exe: Some(fake_uninstaller()),
+        close_apps: true,
     };
 
     install(&config, &options, &NoOpCallbacks).unwrap();
@@ -1524,6 +1529,7 @@ dest = "#{app}"
         install_dir: Some(dir.join("dst")),
         selected_components: None,
         uninstall_exe: Some(fake_uninstaller()),
+        close_apps: true,
     };
 
     // Should succeed (no matches is a warning, not an error)
@@ -1573,6 +1579,7 @@ show = "hidden"
         install_dir: Some(install_dir.clone()),
         selected_components: None,
         uninstall_exe: Some(fake_uninstaller()),
+        close_apps: true,
     };
 
     install(&config, &options, &NoOpCallbacks).unwrap();
@@ -1603,6 +1610,7 @@ version = "1.0.0"
         install_dir: None, // No install dir
         selected_components: None,
         uninstall_exe: Some(fake_uninstaller()),
+        close_apps: true,
     };
 
     let result = install(&config, &options, &NoOpCallbacks);
@@ -1642,6 +1650,7 @@ dest = "#{{app}}"
         install_dir: None, // Use default_dir from config
         selected_components: None,
         uninstall_exe: Some(fake_uninstaller()),
+        close_apps: true,
     };
 
     let result = install(&config, &options, &NoOpCallbacks);
@@ -1684,6 +1693,7 @@ required = true
         install_dir: Some(install_dir.clone()),
         selected_components: None,
         uninstall_exe: Some(fake_uninstaller()),
+        close_apps: true,
     };
 
     let result = install(&config, &options, &NoOpCallbacks);

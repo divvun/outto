@@ -421,6 +421,7 @@ impl AppState {
             self.flags.suppress_msgboxes,
             self.bridge_queue.clone(),
             self.uninstall_exe.clone(),
+            !self.flags.no_close_apps,
         );
     }
 

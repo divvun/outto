@@ -127,6 +127,11 @@ mod tests {
             name: "dotnet".into(),
         };
         assert_eq!(Failure::from(failed).exit, ExitCode::Failed);
+        let in_use = InstallerError::FileInUse {
+            path: "C:/Program Files/App/app.exe".into(),
+            apps: vec!["App".into()],
+        };
+        assert_eq!(Failure::from(in_use).exit, ExitCode::Failed);
     }
 
     #[test]

@@ -159,6 +159,7 @@ impl InstallerCallbacks for SilentCallbacks {
 }
 
 /// Spawn the install on a background thread.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_install(
     config: Config,
     source_dir: PathBuf,
@@ -167,6 +168,7 @@ pub fn spawn_install(
     suppress_prompts: bool,
     queue: BridgeQueue,
     uninstall_exe: Option<PathBuf>,
+    close_apps: bool,
 ) {
     std::thread::spawn(move || {
         let callbacks = GuiCallbacks {
@@ -178,6 +180,7 @@ pub fn spawn_install(
             install_dir,
             selected_components,
             uninstall_exe,
+            close_apps,
         };
 
         let result = platform::install(
@@ -295,6 +298,9 @@ pub fn spawn_elevated_install(
     }
     if flags.no_restart {
         argv.push("/NORESTART".into());
+    }
+    if flags.no_close_apps {
+        argv.push("--no-close-apps".into());
     }
     if let Some(log) = outto_core::logfile::path() {
         argv.push(format!("/LOG={}", log.display()).into());
