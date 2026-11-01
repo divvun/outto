@@ -87,11 +87,22 @@ pub enum Action {
         plist_path: PathBuf,
         /// "agent" | "daemon"
         scope: String,
+        /// The plist this one replaced, set aside for a failed install to
+        /// put back.
+        #[serde(default)]
+        backup: Option<PathBuf>,
     },
     LaunchdServiceLoaded {
         label: String,
         /// "agent" | "daemon"
         scope: String,
+    },
+    /// An install booted the job out, which was loaded, to replace its files.
+    LaunchdServiceUnloaded {
+        label: String,
+        /// "agent" | "daemon"
+        scope: String,
+        plist_path: PathBuf,
     },
     FontInstalled {
         path: PathBuf,
@@ -175,15 +186,26 @@ impl RollbackAction for Action {
                 Ok(())
             }
             Action::LaunchdPlistInstalled {
-                label,
-                plist_path,
-                scope,
+                plist_path, backup, ..
             } => crate::actions::launchd::rollback_plist_installed(
-                label, plist_path, scope, callbacks,
+                plist_path,
+                backup.as_deref(),
+                restore_backups,
             ),
             Action::LaunchdServiceLoaded { label, scope } => {
                 crate::actions::launchd::rollback_service_loaded(label, scope, callbacks)
             }
+            Action::LaunchdServiceUnloaded {
+                label,
+                scope,
+                plist_path,
+            } => crate::actions::launchd::rollback_service_unloaded(
+                label,
+                scope,
+                plist_path,
+                restore_backups,
+                callbacks,
+            ),
             Action::FontInstalled { path, .. } => {
                 if path.exists() {
                     std::fs::remove_file(path).map_err(|e| InstallerError::FileOp {

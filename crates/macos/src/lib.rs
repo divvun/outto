@@ -317,14 +317,16 @@ pub fn uninstall_package(
     uninstall::uninstall(package_id, callbacks)
 }
 
-/// Detach the backups of overwritten files from a committed install; see the
-/// Windows backend for why nothing needs them once the install has succeeded.
+/// Detach the backups of overwritten files and launchd plists from a
+/// committed install; see the Windows backend for why nothing needs them once
+/// the install has succeeded.
 fn take_backups(manifest: &mut InstallManifest<MacosAction>) -> Vec<PathBuf> {
     manifest
         .actions
         .iter_mut()
         .filter_map(|a| match a {
-            MacosAction::FileCopied { backup, .. } => backup.take(),
+            MacosAction::FileCopied { backup, .. }
+            | MacosAction::LaunchdPlistInstalled { backup, .. } => backup.take(),
             _ => None,
         })
         .collect()
@@ -617,6 +619,164 @@ overwrite = "always"
                 .and_then(|v| v.as_string()),
             Some("user")
         );
+    }
+
+    /// Installing over a loaded LaunchAgent boots it out, replaces its files
+    /// and bootstraps it again from them; a failed upgrade puts the old plist
+    /// and files back and bootstraps the old job. Uses the real `gui/<uid>`
+    /// domain under a label of its own, so it needs a login session and
+    /// returns early without one.
+    #[test]
+    fn upgrade_replaces_a_loaded_launch_agent() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
+
+        let domain = format!("gui/{}", unsafe { libc::getuid() });
+        let launchctl_print = |target: &str| {
+            Command::new("launchctl")
+                .args(["print", target])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        if !launchctl_print(&domain) {
+            eprintln!("no launchd domain {domain}; skipping");
+            return;
+        }
+
+        let _home_guard = crate::test_util::lock_home();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let install_dir = root.join("app");
+        let trace = root.join("trace.txt");
+        let label = format!("no.divvun.outto-test.agent-{}", std::process::id());
+        let job = format!("{domain}/{label}");
+        let agents = home.join("Library/LaunchAgents");
+        std::fs::create_dir_all(&home).unwrap();
+        let old_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", &home) };
+
+        struct Bootout(String);
+        impl Drop for Bootout {
+            fn drop(&mut self) {
+                let _ = Command::new("launchctl")
+                    .args(["bootout", &self.0])
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+        let _bootout = Bootout(job.clone());
+
+        let run = |version: &str, fail: bool| -> InstallerResult<()> {
+            let source = root.join(format!("source-{version}"));
+            std::fs::create_dir_all(&source).unwrap();
+            let script = source.join("job.sh");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\necho {version} >> '{}'\nexec /bin/sleep 600\n",
+                    trace.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let failing = if fail {
+                "[[run]]\nphase = \"after_install\"\ncommand = \"/usr/bin/false\"\nrequired = true\n"
+            } else {
+                ""
+            };
+            let toml = format!(
+                r##"
+[package]
+id = "no.divvun.outto-agent-test"
+name = "Agent Test"
+version = "{version}"
+
+[[files]]
+source = "job.sh"
+dest = "#{{app}}"
+
+[[launchd]]
+label = "{label}"
+program = "#{{app}}/job.sh"
+run_at_load = true
+
+{failing}"##
+            );
+            let config = Config::from_toml(&toml).unwrap();
+            let options = InstallOptions {
+                source_dir: source,
+                install_dir: Some(install_dir.clone()),
+                selected_components: None,
+                uninstall_exe: None,
+            };
+            install(&config, &options, &NoOpCallbacks)
+        };
+        // The versions the job has started as, once `done` accepts them.
+        let started = |done: &dyn Fn(&[String]) -> bool| -> Vec<String> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let lines: Vec<String> = std::fs::read_to_string(&trace)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_string)
+                    .collect();
+                if done(&lines) || std::time::Instant::now() >= deadline {
+                    return lines;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        };
+        let installed = || std::fs::read_to_string(install_dir.join("job.sh")).unwrap_or_default();
+        let baks = || -> Vec<PathBuf> {
+            walk(&root)
+                .into_iter()
+                .filter(|p| p.extension().is_some_and(|e| e == "bak"))
+                .collect()
+        };
+
+        let v1 = run("1.0.0", false);
+        let after_v1 = started(&|l| !l.is_empty());
+        let v2 = run("2.0.0", false);
+        let after_v2 = started(&|l| l.len() >= 2);
+        let (loaded_v2, script_v2, baks_v2) = (launchctl_print(&job), installed(), baks());
+        let v3 = run("3.0.0", true);
+        let after_v3 = started(&|l| l.len() >= 3 && l.last().is_some_and(|v| v == "2.0.0"));
+        let (loaded_v3, script_v3, baks_v3) = (launchctl_print(&job), installed(), baks());
+        let plist_v3 = agents.join(format!("{label}.plist")).exists();
+        let uninstalled =
+            uninstall_package(&install_dir, "no.divvun.outto-agent-test", &NoOpCallbacks);
+        let loaded_after_uninstall = launchctl_print(&job);
+
+        match old_home {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        v1.unwrap();
+        assert_eq!(after_v1, ["1.0.0"]);
+        v2.unwrap();
+        assert_eq!(after_v2, ["1.0.0", "2.0.0"]);
+        assert!(loaded_v2);
+        assert!(script_v2.contains("2.0.0"), "{script_v2}");
+        assert!(baks_v2.is_empty(), "{baks_v2:?}");
+
+        assert!(v3.is_err());
+        assert_eq!(
+            after_v3.last().map(String::as_str),
+            Some("2.0.0"),
+            "{after_v3:?}"
+        );
+        assert!(loaded_v3);
+        assert!(script_v3.contains("2.0.0"), "{script_v3}");
+        assert!(plist_v3);
+        assert!(baks_v3.is_empty(), "{baks_v3:?}");
+
+        uninstalled.unwrap();
+        assert!(!loaded_after_uninstall);
+        assert!(!agents.join(format!("{label}.plist")).exists());
+        assert!(!install_dir.join("job.sh").exists());
     }
 
     /// `before_uninstall` / `after_uninstall` commands are recorded at install

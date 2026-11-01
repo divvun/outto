@@ -18,8 +18,9 @@ use outto_core::manifest::InstallManifest;
 use crate::config::{Config, FileEntry, RunEntry, RunPhase};
 use crate::manifest::Action;
 
-/// Run the macOS install pipeline: cleanup → before_install → dirs → files
-/// → symlinks → plist → launchd → fonts → environment → associations → after_install.
+/// Run the macOS install pipeline: cleanup → before_install → booting out the
+/// package's loaded launchd jobs → dirs → files → symlinks → plist → launchd →
+/// fonts → environment → associations → after_install.
 pub fn execute_install(
     config: &Config,
     source_dir: &Path,
@@ -36,6 +37,12 @@ pub fn execute_install(
         manifest,
         callbacks,
     )?;
+
+    for l in &config.launchd {
+        if should_include(l.component.as_deref(), selected_components) {
+            launchd::unload_loaded_job(l, manifest, callbacks)?;
+        }
+    }
 
     for dir in &config.dirs {
         if !should_include(dir.component.as_deref(), selected_components) {

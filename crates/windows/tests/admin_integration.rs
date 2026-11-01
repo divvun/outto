@@ -19,6 +19,7 @@ use outto_core::actions::dirs;
 use outto_core::config::VariableResolver as PathResolver;
 use outto_core::config::types::*;
 use outto_core::manifest::InstallManifest;
+use outto_core::manifest::rollback::rollback_actions;
 use outto_windows::actions::{associations, com, fonts, services};
 use outto_windows::elevation;
 use outto_windows::manifest::Action as ActionRecord;
@@ -185,6 +186,60 @@ fn read_hklm_string(subkey: &str, value_name: &str) -> Option<String> {
     )
 }
 
+/// A value under HKLM: its registry type and bytes.
+fn read_hklm_value(subkey: &str, value_name: &str) -> Option<(u32, Vec<u8>)> {
+    let key_wide = to_wide(subkey);
+    let name_wide = to_wide(value_name);
+    let mut hkey: HKEY = std::ptr::null_mut();
+    let result = unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            key_wide.as_ptr(),
+            0,
+            KEY_READ,
+            &mut hkey,
+        )
+    };
+    if result != 0 {
+        return None;
+    }
+
+    let mut data_type: u32 = 0;
+    let mut data_size: u32 = 0;
+    let mut result = unsafe {
+        RegQueryValueExW(
+            hkey,
+            name_wide.as_ptr(),
+            std::ptr::null(),
+            &mut data_type,
+            std::ptr::null_mut(),
+            &mut data_size,
+        )
+    };
+    let mut buffer = vec![0u8; data_size as usize];
+    if result == 0 {
+        result = unsafe {
+            RegQueryValueExW(
+                hkey,
+                name_wide.as_ptr(),
+                std::ptr::null(),
+                &mut data_type,
+                buffer.as_mut_ptr(),
+                &mut data_size,
+            )
+        };
+    }
+    unsafe { RegCloseKey(hkey) };
+    (result == 0).then_some((data_type, buffer))
+}
+
+fn read_hklm_dword(subkey: &str, value_name: &str) -> Option<u32> {
+    match read_hklm_value(subkey, value_name)? {
+        (REG_DWORD, bytes) => Some(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?)),
+        _ => None,
+    }
+}
+
 /// RAII cleanup for admin test resources.
 struct AdminCleanup {
     hkcr_keys: Vec<String>,
@@ -343,6 +398,161 @@ fn test_admin_service_install_and_delete() {
 
     // Delete the service
     services::delete_service(svc_name).unwrap();
+}
+
+/// An install that finds its service registered updates it in place: the
+/// settings it declares change, the ones it doesn't, such as recovery
+/// actions, stay. A failed install puts the old configuration back, and
+/// uninstall deletes the service.
+#[test]
+#[ignore]
+fn test_admin_service_update_keeps_other_settings() {
+    assert_admin();
+    let mut cleanup = AdminCleanup::new();
+    let svc_name = "OuttoTestSvcUpdate";
+    cleanup.service_names.push(svc_name.to_string());
+    let key = format!("SYSTEM\\CurrentControlSet\\Services\\{svc_name}");
+
+    let _ = services::stop_service(svc_name);
+    let _ = services::delete_service(svc_name);
+
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let new_manifest = || {
+        InstallManifest::new(
+            "test",
+            "Test",
+            "1.0.0",
+            std::path::Path::new("C:\\test"),
+            vec![],
+        )
+    };
+    let callbacks = NoOpCallbacks;
+    let entry = |executable: &str, display_name: &str, start_type| ServiceEntry {
+        name: svc_name.to_string(),
+        display_name: Some(display_name.to_string()),
+        executable: executable.to_string(),
+        start_type,
+        account: None,
+        on_install: ServiceOnInstall::Nothing,
+        on_uninstall: ServiceOnUninstall::StopAndDelete,
+        component: None,
+    };
+    let old_exe = "C:\\Windows\\System32\\cmd.exe";
+    let new_exe = "C:\\Windows\\System32\\whoami.exe";
+    let quoted = |exe: &str| format!("\"{exe}\"");
+
+    let mut first = new_manifest();
+    services::install_service(
+        &entry(old_exe, "Outto Test Service", ServiceStartType::Manual),
+        &resolver,
+        &mut first,
+        &callbacks,
+    )
+    .unwrap();
+    let status = std::process::Command::new("sc.exe")
+        .args([
+            "failure",
+            svc_name,
+            "reset=",
+            "86400",
+            "actions=",
+            "restart/60000",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let failure_actions = read_hklm_value(&key, "FailureActions");
+    assert!(failure_actions.is_some());
+
+    let mut second = new_manifest();
+    services::install_service(
+        &entry(
+            new_exe,
+            "Outto Test Service 2",
+            ServiceStartType::DelayedAuto,
+        ),
+        &resolver,
+        &mut second,
+        &callbacks,
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            &second.actions[..],
+            [ActionRecord::ServiceUpdated { name, previous }]
+                if name == svc_name && previous.executable == quoted(old_exe)
+        ),
+        "{:?}",
+        second.actions
+    );
+    assert_eq!(read_hklm_string(&key, "ImagePath"), Some(quoted(new_exe)));
+    assert_eq!(
+        read_hklm_string(&key, "DisplayName").as_deref(),
+        Some("Outto Test Service 2")
+    );
+    assert_eq!(read_hklm_dword(&key, "Start"), Some(2));
+    assert_eq!(read_hklm_dword(&key, "DelayedAutostart"), Some(1));
+    assert_eq!(read_hklm_value(&key, "FailureActions"), failure_actions);
+
+    rollback_actions(&second.actions, &callbacks, true).unwrap();
+    assert_eq!(read_hklm_string(&key, "ImagePath"), Some(quoted(old_exe)));
+    assert_eq!(
+        read_hklm_string(&key, "DisplayName").as_deref(),
+        Some("Outto Test Service")
+    );
+    assert_eq!(read_hklm_dword(&key, "Start"), Some(3));
+    assert_eq!(read_hklm_dword(&key, "DelayedAutostart").unwrap_or(0), 0);
+    assert_eq!(read_hklm_value(&key, "FailureActions"), failure_actions);
+
+    rollback_actions(&second.actions, &callbacks, false).unwrap();
+    let query = std::process::Command::new("sc.exe")
+        .args(["query", svc_name])
+        .output()
+        .unwrap();
+    // ERROR_SERVICE_DOES_NOT_EXIST
+    assert_eq!(query.status.code(), Some(1060));
+}
+
+#[test]
+#[ignore]
+fn test_admin_service_path_with_space_is_quoted() {
+    assert_admin();
+    let mut cleanup = AdminCleanup::new();
+    let svc_name = "OuttoTestSvcSpace";
+    cleanup.service_names.push(svc_name.to_string());
+    let _ = services::stop_service(svc_name);
+    let _ = services::delete_service(svc_name);
+
+    let resolver = path_resolver_new(std::path::Path::new("C:\\test"), "Test", "1.0.0");
+    let mut manifest = InstallManifest::new(
+        "test",
+        "Test",
+        "1.0.0",
+        std::path::Path::new("C:\\test"),
+        vec![],
+    );
+    let executable = "C:\\Program Files\\Outto Test\\svc.exe";
+    services::install_service(
+        &ServiceEntry {
+            name: svc_name.to_string(),
+            display_name: None,
+            executable: executable.to_string(),
+            start_type: ServiceStartType::Manual,
+            account: None,
+            on_install: ServiceOnInstall::Nothing,
+            on_uninstall: ServiceOnUninstall::StopAndDelete,
+            component: None,
+        },
+        &resolver,
+        &mut manifest,
+        &NoOpCallbacks,
+    )
+    .unwrap();
+    let key = format!("SYSTEM\\CurrentControlSet\\Services\\{svc_name}");
+    assert_eq!(
+        read_hklm_string(&key, "ImagePath"),
+        Some(format!("\"{executable}\""))
+    );
 }
 
 // ---------------------------------------------------------------------------
