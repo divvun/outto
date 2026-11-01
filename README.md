@@ -165,6 +165,23 @@ As with Inno Setup, the folder is all users' when the package has `privileges = 
 
 Uninstall removes each shortcut from where it was created. An upgrade removes the ones the installed version created that the new version doesn't create again, such as one that moved to another scope, and the folders created for them once they are empty.
 
+### Services
+
+A `[[services]]` entry registers a Windows service, and with `on_install = "start"` starts it:
+
+```toml
+[[services]]
+name = "myapp-daemon"
+display_name = "MyApp Background Service"
+executable = "#{app}/myapp-svc.exe"
+start_type = "auto"
+on_install = "start"
+```
+
+When the service is already registered, as it is when a newer version installs over an older one, outto keeps the registration. A running service is stopped before any file is copied, and outto waits for its process to exit. The registration is then given the entry's executable, display name and start type, and its `account` when the entry sets one, and a service that was running is started again whatever `on_install` says. Everything else on the registration stays, such as the recovery actions or a description an administrator set. If the install fails, the rollback puts back the old files and the old registration and starts the old service again. A service that does not stop within 30 seconds fails the install. Uninstall deletes the service, whether the package created it or found it registered.
+
+On macOS, a `[[launchd]]` job that is already loaded is booted out before any file is copied, and bootstrapped again from the new plist once it is written; a failed install puts the old plist back and bootstraps the old job.
+
 ## Configuration sections
 
 | Section | Purpose |
@@ -175,7 +192,7 @@ Uninstall removes each shortcut from where it was created. An upgrade removes th
 | `[[registry]]` | HKLM/HKCU/HKCR keys and values |
 | `[[shortcuts]]` | Start Menu, desktop or Startup shortcuts, for all users or the current user (see above) |
 | `[[environment]]` | System or user environment variables (`set` / `append` / `prepend`) |
-| `[[services]]` | Windows service install/start |
+| `[[services]]` | Windows service install/start; a registered service is updated in place (see above) |
 | `[[associations]]` | File-type associations |
 | `[[com]]` | COM server registration with regsvr32; `host = "x86"` uses SysWOW64's, `arch` limits it to one architecture |
 | `[[fonts]]` | Font installation |

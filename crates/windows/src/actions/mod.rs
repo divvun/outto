@@ -24,10 +24,11 @@ use crate::detect;
 
 /// Orchestrates the Windows install pipeline for a single `InstallManifest`.
 ///
-/// Runs the phases in order: install cleanup → before_install → dirs → files →
-/// registry → shortcuts → environment → services → associations → com → fonts →
-/// after_install. Callers typically invoke [`crate::install`] rather than this
-/// directly; it exists as a seam for tests.
+/// Runs the phases in order: install cleanup → before_install → stopping the
+/// package's running services → dirs → files → registry → shortcuts →
+/// environment → services → associations → com → fonts → after_install.
+/// Callers typically invoke [`crate::install`] rather than this directly; it
+/// exists as a seam for tests.
 ///
 /// When `[reboot] restart_manager` is enabled (the default), files that are
 /// locked by running processes are handled via the Windows Restart Manager:
@@ -87,6 +88,12 @@ fn execute_install_inner(
         manifest,
         callbacks,
     )?;
+
+    for svc in &config.services {
+        if should_include(svc.component.as_deref(), selected_components) {
+            services::stop_running_service(svc, manifest, callbacks)?;
+        }
+    }
 
     let total_dirs = config.dirs.len();
     for (i, dir) in config.dirs.iter().enumerate() {

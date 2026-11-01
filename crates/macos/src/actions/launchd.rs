@@ -4,9 +4,15 @@
 //! `~/Library/LaunchAgents/<label>.plist` (agent) or `/Library/LaunchDaemons/<label>.plist`
 //! (daemon), and calls `launchctl bootstrap` to load it. On uninstall,
 //! `launchctl bootout` + `rm` reverses this.
+//!
+//! launchd refuses to bootstrap a label that is already loaded, so when an
+//! install finds the job loaded, [`unload_loaded_job`] boots it out before the
+//! files are copied, and the job is bootstrapped again from the new plist. A
+//! failed install puts the old plist back and bootstraps the old job.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use outto_core::callbacks::{InstallerCallbacks, LogLevel};
 use outto_core::config::VariableResolver;
@@ -15,6 +21,40 @@ use outto_core::manifest::InstallManifest;
 
 use crate::config::{LaunchdEntry, LaunchdOnInstall, LaunchdScope};
 use crate::manifest::Action;
+
+/// How long a booted-out job may take to exit. launchd kills it after its
+/// `ExitTimeOut`, 20 seconds unless its plist sets another.
+const EXIT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Boot out the job `entry` declares if it is loaded, so its files can be
+/// replaced, and record that, so the launchd phase and a failed install's
+/// rollback bootstrap it again.
+pub fn unload_loaded_job(
+    entry: &LaunchdEntry,
+    manifest: &mut InstallManifest<Action>,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()> {
+    let scope = scope_str(&entry.scope);
+    let target = domain_target(scope);
+    if !is_loaded(&target, &entry.label) {
+        return Ok(());
+    }
+    let plist_path = plist_dir_for(&entry.scope)?.join(format!("{}.plist", entry.label));
+
+    callbacks.on_log(
+        LogLevel::Info,
+        &format!(
+            "launchd: {target}/{} is loaded; booting it out so its files can be replaced",
+            entry.label
+        ),
+    );
+    manifest.record(Action::LaunchdServiceUnloaded {
+        label: entry.label.clone(),
+        scope: scope.to_string(),
+        plist_path,
+    });
+    bootout(&target, &entry.label, callbacks)
+}
 
 pub fn install_launchd_entry(
     entry: &LaunchdEntry,
@@ -28,6 +68,7 @@ pub fn install_launchd_entry(
         source: e,
     })?;
     let plist_path = plist_dir.join(format!("{}.plist", entry.label));
+    let scope = scope_str(&entry.scope);
 
     let program = resolver.resolve(&entry.program)?;
     let resolved_args: Vec<String> = entry
@@ -66,40 +107,67 @@ pub fn install_launchd_entry(
         stderr.as_deref(),
     );
 
+    let backup = if plist_path.exists() {
+        let backup = backup_path(&plist_path);
+        std::fs::copy(&plist_path, &backup).map_err(|e| InstallerError::FileOp {
+            path: plist_path.clone(),
+            source: e,
+        })?;
+        Some(backup)
+    } else {
+        None
+    };
+
     callbacks.on_log(
         LogLevel::Info,
         &format!("launchd: writing {}", plist_path.display()),
     );
 
+    manifest.record(Action::LaunchdPlistInstalled {
+        label: entry.label.clone(),
+        plist_path: plist_path.clone(),
+        scope: scope.to_string(),
+        backup,
+    });
+
     plist
         .to_file_xml(&plist_path)
         .map_err(|e| InstallerError::Other(format!("launchd: plist write failed: {e}")))?;
 
-    manifest.record(Action::LaunchdPlistInstalled {
-        label: entry.label.clone(),
-        plist_path: plist_path.clone(),
-        scope: scope_str(&entry.scope).to_string(),
-    });
-
-    if matches!(entry.on_install, LaunchdOnInstall::Load) {
-        bootstrap(&entry.label, &plist_path, &entry.scope, callbacks)?;
+    let unloaded_for_install = manifest.actions.iter().any(
+        |a| matches!(a, Action::LaunchdServiceUnloaded { label, .. } if *label == entry.label),
+    );
+    if matches!(entry.on_install, LaunchdOnInstall::Load) || unloaded_for_install {
         manifest.record(Action::LaunchdServiceLoaded {
             label: entry.label.clone(),
-            scope: scope_str(&entry.scope).to_string(),
+            scope: scope.to_string(),
         });
+        bootstrap(&entry.label, &plist_path, &domain_target(scope), callbacks)?;
     }
 
     Ok(())
 }
 
+/// Remove the plist an install wrote. A failed install puts back the one it
+/// replaced; uninstall removes that copy too.
 pub fn rollback_plist_installed(
-    _label: &str,
     plist_path: &Path,
-    _scope: &str,
-    _callbacks: &dyn InstallerCallbacks,
+    backup: Option<&Path>,
+    restore_backups: bool,
 ) -> InstallerResult<()> {
     if plist_path.exists() {
         std::fs::remove_file(plist_path).map_err(|e| InstallerError::FileOp {
+            path: plist_path.to_path_buf(),
+            source: e,
+        })?;
+    }
+    if let Some(backup) = backup.filter(|b| b.exists()) {
+        let result = if restore_backups {
+            std::fs::rename(backup, plist_path)
+        } else {
+            std::fs::remove_file(backup)
+        };
+        result.map_err(|e| InstallerError::FileOp {
             path: plist_path.to_path_buf(),
             source: e,
         })?;
@@ -112,30 +180,23 @@ pub fn rollback_service_loaded(
     scope: &str,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
-    let target = bootout_target(scope);
-    callbacks.on_log(
-        LogLevel::Info,
-        &format!("launchd: bootout {target}/{label}"),
-    );
-    let status = Command::new("launchctl")
-        .args(["bootout", &format!("{target}/{label}")])
-        .status();
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => {
-            // "No such process" / already-unloaded is idempotent — not a real failure.
-            if matches!(s.code(), Some(3) | Some(77) | Some(113)) {
-                Ok(())
-            } else {
-                Err(InstallerError::Other(format!(
-                    "launchctl bootout exited with {s}"
-                )))
-            }
-        }
-        Err(e) => Err(InstallerError::Other(format!(
-            "launchctl bootout failed to launch: {e}"
-        ))),
+    bootout(&domain_target(scope), label, callbacks)
+}
+
+/// Bootstrap again the job an install booted out. Reached after the old
+/// plist and files are back, so the old job runs.
+pub fn rollback_service_unloaded(
+    label: &str,
+    scope: &str,
+    plist_path: &Path,
+    restore_backups: bool,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()> {
+    let target = domain_target(scope);
+    if !restore_backups || is_loaded(&target, label) {
+        return Ok(());
     }
+    bootstrap(label, plist_path, &target, callbacks)
 }
 
 // --- Internal helpers ---
@@ -159,16 +220,18 @@ fn scope_str(scope: &LaunchdScope) -> &'static str {
     }
 }
 
+fn backup_path(plist_path: &Path) -> PathBuf {
+    let mut name = plist_path.as_os_str().to_owned();
+    name.push(".bak");
+    PathBuf::from(name)
+}
+
 fn bootstrap(
     label: &str,
     plist_path: &Path,
-    scope: &LaunchdScope,
+    target: &str,
     callbacks: &dyn InstallerCallbacks,
 ) -> InstallerResult<()> {
-    let target = match scope {
-        LaunchdScope::Agent => format!("gui/{}", unsafe { libc::getuid() }),
-        LaunchdScope::Daemon => "system".to_string(),
-    };
     callbacks.on_log(
         LogLevel::Info,
         &format!(
@@ -177,7 +240,7 @@ fn bootstrap(
         ),
     );
     let status = Command::new("launchctl")
-        .args(["bootstrap", &target])
+        .args(["bootstrap", target])
         .arg(plist_path)
         .status()
         .map_err(|e| InstallerError::Other(format!("launchctl bootstrap failed to launch: {e}")))?;
@@ -189,7 +252,56 @@ fn bootstrap(
     Ok(())
 }
 
-fn bootout_target(scope: &str) -> String {
+/// Boot the job out and wait for it to be gone. `launchctl bootout` returns
+/// while the job is still exiting, and until it has, launchd refuses to
+/// bootstrap the label again.
+fn bootout(target: &str, label: &str, callbacks: &dyn InstallerCallbacks) -> InstallerResult<()> {
+    callbacks.on_log(
+        LogLevel::Info,
+        &format!("launchd: bootout {target}/{label}"),
+    );
+    let status = Command::new("launchctl")
+        .args(["bootout", &format!("{target}/{label}")])
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        // "No such process" / already-unloaded is idempotent — not a real failure.
+        Ok(s) if matches!(s.code(), Some(3) | Some(77) | Some(113)) => {}
+        Ok(s) => {
+            return Err(InstallerError::Other(format!(
+                "launchctl bootout exited with {s}"
+            )));
+        }
+        Err(e) => {
+            return Err(InstallerError::Other(format!(
+                "launchctl bootout failed to launch: {e}"
+            )));
+        }
+    }
+
+    let deadline = Instant::now() + EXIT_TIMEOUT;
+    while is_loaded(target, label) {
+        if Instant::now() >= deadline {
+            return Err(InstallerError::Other(format!(
+                "launchd: {target}/{label} did not exit within {} seconds",
+                EXIT_TIMEOUT.as_secs()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+fn is_loaded(target: &str, label: &str) -> bool {
+    Command::new("launchctl")
+        .args(["print", &format!("{target}/{label}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn domain_target(scope: &str) -> String {
     match scope {
         "daemon" => "system".to_string(),
         _ => format!("gui/{}", unsafe { libc::getuid() }),

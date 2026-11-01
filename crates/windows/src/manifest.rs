@@ -69,6 +69,17 @@ pub enum Action {
     ServiceInstalled {
         name: String,
     },
+    /// An install found the service registered and changed its
+    /// configuration, which was `previous`.
+    ServiceUpdated {
+        name: String,
+        previous: services::ServiceConfig,
+    },
+    /// An install stopped the service, which was running, to replace its
+    /// files.
+    ServiceStopped {
+        name: String,
+    },
     ServiceStarted {
         name: String,
     },
@@ -247,6 +258,24 @@ impl RollbackAction for Action {
                 let _ = services::stop_service(name);
                 services::delete_service(name)?;
                 Ok(())
+            }
+            // Once the install has succeeded the package owns the service it
+            // updated, so uninstall deletes it.
+            Action::ServiceUpdated { name, previous } => {
+                if restore_backups {
+                    services::restore_config(name, previous)
+                } else {
+                    let _ = services::stop_service(name);
+                    services::delete_service(name)
+                }
+            }
+            // Reached after the old files are back, so the old service runs.
+            Action::ServiceStopped { name } => {
+                if restore_backups {
+                    services::start_service(name)
+                } else {
+                    Ok(())
+                }
             }
             Action::ServiceStarted { name } => {
                 let _ = services::stop_service(name);
