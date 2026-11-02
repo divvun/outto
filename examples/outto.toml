@@ -41,7 +41,8 @@ preserve = ["config/*.toml", "data/**"]
 #
 # After a successful install, remove everything in these directories that
 # the install did not record, such as earlier versions' side-by-side
-# directories. Files in use are moved aside and deleted at the next restart.
+# directories, and a directory left empty. Files in use are moved aside and
+# deleted at the next restart.
 # prune = ["#{app}"]
 #
 # The uninstaller refuses, changing nothing and exiting 2, while a matching
@@ -138,4 +139,4 @@ source = "assets/CustomFont.ttf"
 file = "#{app}/mylib.dll"
 action = "regserver"
 # host = "x86"   # register a 32-bit DLL with SysWOW64's regsvr32
-# arch = "x64"   # only on this architecture (x86, x64, arm64)
+# arch = "x64"   # only on this architecture (x86, x64, x64compatible, arm64)

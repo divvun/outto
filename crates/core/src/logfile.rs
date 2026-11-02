@@ -2,12 +2,17 @@
 //! or uninstall reports through [`InstallerCallbacks`], plus whatever the
 //! front-end writes directly (start-up, the final result, fatal errors).
 //!
-//! The log is process-global so every front-end and code path can reach it
-//! without threading a handle through; until [`init`] is called, [`write`] is
-//! a no-op.
+//! Besides that log, a front-end can open the package's own log with
+//! [`start_package_log`], which every run of the package appends to and
+//! which is kept to about [`PACKAGE_LOG_LIMIT`]. [`write`] writes each line
+//! to both.
+//!
+//! The logs are process-global so every front-end and code path can reach
+//! them without threading a handle through; until one is opened, [`write`]
+//! is a no-op.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +21,13 @@ use crate::callbacks::{InstallerCallbacks, LogLevel, Prompt, PromptResponse};
 use crate::error::{ErrorAction, InstallerError};
 
 static LOG: OnceLock<(PathBuf, Mutex<File>)> = OnceLock::new();
+static PACKAGE_LOG: OnceLock<(PathBuf, Mutex<File>)> = OnceLock::new();
+
+/// A package log larger than this when a run starts is cut back to its
+/// newest [`PACKAGE_LOG_KEEP`] bytes, from the start of a line.
+pub const PACKAGE_LOG_LIMIT: u64 = 1024 * 1024;
+/// How much of a package log a cut keeps.
+pub const PACKAGE_LOG_KEEP: u64 = PACKAGE_LOG_LIMIT / 2;
 
 /// Parse a log switch: `/LOG` (any case) or `--log` give `Some(None)`,
 /// `/LOG=path` or `--log=path` give `Some(Some(path))` with surrounding quotes
@@ -112,17 +124,96 @@ pub fn child_log_path(log: &Path, name: &str) -> PathBuf {
     log.with_file_name(file_name)
 }
 
-/// Append one timestamped line to the log, if logging is enabled. Each line
-/// is written straight through, so the log survives `process::exit` and
-/// crashes up to the last line.
+/// Append one timestamped line to the `/LOG` log and the package log,
+/// whichever are open. Each line is written straight through, so the logs
+/// survive `process::exit` and crashes up to the last line.
 pub fn write(level: LogLevel, message: &str) {
-    let Some((_, file)) = LOG.get() else {
+    if LOG.get().is_none() && PACKAGE_LOG.get().is_none() {
         return;
-    };
-    let line = format_line(SystemTime::now(), level, message);
-    if let Ok(mut f) = file.lock() {
-        let _ = f.write_all(line.as_bytes());
     }
+    let line = format_line(SystemTime::now(), level, message);
+    for (_, file) in [LOG.get(), PACKAGE_LOG.get()].into_iter().flatten() {
+        if let Ok(mut f) = file.lock() {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+}
+
+/// The file name of `package_id`'s log: the id, with `_` for each character
+/// a file name can't hold, and `.log`.
+pub fn package_log_file_name(package_id: &str) -> String {
+    let name: String = package_id
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let name = name.trim_matches(['.', ' ']);
+    if name.is_empty() {
+        "package.log".to_string()
+    } else {
+        format!("{name}.log")
+    }
+}
+
+/// The first line a run writes to the package log.
+pub fn run_header(operation: &str, command_line: &str) -> String {
+    format!("outto {} {operation}: {command_line}", crate::VERSION)
+}
+
+/// Start appending to `path`, the package's own log, beginning with a line
+/// of `header` (see [`run_header`]). A log past [`PACKAGE_LOG_LIMIT`] is cut
+/// back first. Only the first call in a process takes effect.
+pub fn start_package_log(path: &Path, header: &str) -> io::Result<()> {
+    if PACKAGE_LOG.get().is_some() {
+        return Ok(());
+    }
+    trim_log(path, PACKAGE_LOG_LIMIT, PACKAGE_LOG_KEEP)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    file.write_all(format_header(SystemTime::now(), header).as_bytes())?;
+    let _ = PACKAGE_LOG.set((path.to_path_buf(), Mutex::new(file)));
+    Ok(())
+}
+
+/// The package log, if [`start_package_log`] has opened it.
+pub fn package_log_path() -> Option<&'static Path> {
+    PACKAGE_LOG.get().map(|(path, _)| path.as_path())
+}
+
+/// If the file at `path` is larger than `limit`, keep only its last `keep`
+/// bytes, less the part of a line they start with. Returns whether it cut.
+fn trim_log(path: &Path, limit: u64, keep: u64) -> io::Result<bool> {
+    let len = match std::fs::metadata(path) {
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    if len <= limit {
+        return Ok(false);
+    }
+    let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+    file.seek(SeekFrom::Start(len - keep.min(len)))?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail)?;
+    let start = tail
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(tail.len(), |i| i + 1);
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&tail[start..])?;
+    file.set_len((tail.len() - start) as u64)?;
+    Ok(true)
+}
+
+fn format_header(now: SystemTime, text: &str) -> String {
+    let (y, mo, d, h, mi, s, ms) = civil_utc(now);
+    let eol = if cfg!(windows) { "\r\n" } else { "\n" };
+    let text = text.replace(['\r', '\n'], " ");
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}.{ms:03}Z ===== {text}{eol}")
 }
 
 /// Log the outcome of a whole operation (`"Installation"`, `"Uninstallation"`).
@@ -288,6 +379,59 @@ mod tests {
                  2026-10-07 20:24:32.250Z WARN      stderr{eol}"
             )
         );
+    }
+
+    #[test]
+    fn package_log_names() {
+        assert_eq!(
+            package_log_file_name("no.divvun.pahkat"),
+            "no.divvun.pahkat.log"
+        );
+        assert_eq!(package_log_file_name(r"a\b/c:d*e?"), "a_b_c_d_e_.log");
+        assert_eq!(package_log_file_name(".."), "package.log");
+        assert_eq!(package_log_file_name(""), "package.log");
+        assert_eq!(package_log_file_name("x\ty"), "x_y.log");
+    }
+
+    #[test]
+    fn header_line() {
+        let t = UNIX_EPOCH + Duration::from_millis(1_791_404_672_250);
+        let eol = if cfg!(windows) { "\r\n" } else { "\n" };
+        assert_eq!(
+            format_header(
+                t,
+                &run_header("install (very silent)", "setup.exe /VERYSILENT")
+            ),
+            format!(
+                "2026-10-07 20:24:32.250Z ===== outto {} install (very silent): \
+                 setup.exe /VERYSILENT{eol}",
+                crate::VERSION
+            )
+        );
+        assert!(!format_header(t, "a\nb").trim_end().contains('\n'));
+    }
+
+    #[test]
+    fn a_log_past_the_limit_keeps_its_newest_whole_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.log");
+        assert!(!trim_log(&path, 100, 50).unwrap());
+
+        let lines: Vec<String> = (0..20).map(|i| format!("line {i:02} ......\n")).collect();
+        std::fs::write(&path, lines.concat()).unwrap();
+        assert!(!trim_log(&path, 1000, 50).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), lines.concat());
+
+        // 15 bytes a line; the last 50 bytes start inside line 16.
+        assert!(trim_log(&path, 100, 50).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            lines[17..].concat()
+        );
+
+        std::fs::write(&path, "x".repeat(200)).unwrap();
+        assert!(trim_log(&path, 100, 50).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
     }
 
     #[test]

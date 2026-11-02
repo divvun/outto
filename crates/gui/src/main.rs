@@ -47,10 +47,7 @@ fn main() {
     }
     // Before parsing, which can itself fail with a fatal error.
     QUIET.store(
-        std::env::args().skip(1).any(|arg| {
-            let arg = arg.to_uppercase();
-            arg == "/VERYSILENT" || arg == "/SUPPRESSMSGBOXES"
-        }),
+        std::env::args().skip(1).any(|arg| is_quiet_switch(&arg)),
         std::sync::atomic::Ordering::Relaxed,
     );
     let args = match cli::parse_args() {
@@ -195,6 +192,16 @@ fn run_install_inner(
     license_text: Option<String>,
     uninstall_exe: Option<PathBuf>,
 ) {
+    #[cfg(windows)]
+    {
+        use outto_windows::package_log::{Scope, install_log, start};
+        let scope = Scope::for_privileges(&config.package.privileges);
+        start(
+            install_log(&config.package.id, scope),
+            &run_header("install", &config, &flags),
+        );
+    }
+
     // Use the platform's make_resolver so #{applications}/#{pf}/etc. resolve
     // while expanding default_dir.
     let resolver = platform::make_resolver(&config, None);
@@ -286,6 +293,12 @@ fn run_install_inner(
 fn run_uninstall(flags: cli::CliFlags, install_dir: PathBuf) {
     let config = load_config_for_uninstall(&install_dir);
 
+    #[cfg(windows)]
+    outto_windows::package_log::start(
+        outto_windows::package_log::uninstall_log(&config.package.id),
+        &run_header("uninstall", &config, &flags),
+    );
+
     if flags.very_silent {
         let result = run_headless(flags.progress_file.as_deref(), |cb| {
             platform::uninstall_package(&install_dir, &config.package.id, cb)
@@ -321,6 +334,26 @@ fn run_uninstall(flags: cli::CliFlags, install_dir: PathBuf) {
     }
 }
 
+/// The first line of this run in the package log: what it does, to which
+/// package, how, and the whole command line.
+#[cfg(windows)]
+fn run_header(verb: &str, config: &Config, flags: &cli::CliFlags) -> String {
+    let how = if flags.very_silent {
+        "very silent"
+    } else if flags.silent {
+        "silent"
+    } else {
+        "with its window"
+    };
+    outto_core::logfile::run_header(
+        &format!(
+            "{verb} of {} {} ({how})",
+            config.package.id, config.package.version
+        ),
+        &std::env::args().collect::<Vec<_>>().join(" "),
+    )
+}
+
 fn load_config_for_uninstall(install_dir: &std::path::Path) -> Config {
     let manifest_path = install_dir.join(".outto").join("manifest.json");
     if let Ok(data) = std::fs::read_to_string(&manifest_path) {
@@ -350,11 +383,21 @@ fn load_config_for_uninstall(install_dir: &std::path::Path) -> Config {
         .unwrap()
 }
 
-/// Set by `/VERYSILENT` and `/SUPPRESSMSGBOXES`: report fatal errors on
-/// stderr, in the log and in the exit code only. A silent installer usually
-/// runs from another installer that waits for it, which a message box would
-/// block for good.
+/// Set by `/VERYSILENT` and `/SUPPRESSMSGBOXES`, or `--very-silent` and
+/// `--suppress-msgboxes`: report fatal errors on stderr, in the log and in
+/// the exit code only. A silent installer usually runs from another
+/// installer that waits for it, which a message box would block for good;
+/// run as SYSTEM in session 0, no one can even see it.
 static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether `arg` is one of the switches that set [`QUIET`].
+fn is_quiet_switch(arg: &str) -> bool {
+    let upper = arg.to_uppercase();
+    upper == "/VERYSILENT"
+        || upper == "/SUPPRESSMSGBOXES"
+        || arg == "--very-silent"
+        || arg == "--suppress-msgboxes"
+}
 
 fn fatal_error(msg: &str, exit: ExitCode) -> ! {
     eprintln!("Error: {msg}");
@@ -405,4 +448,25 @@ fn find_uninstaller() -> Option<PathBuf> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_quiet_switch;
+
+    #[test]
+    fn test_quiet_switches() {
+        for arg in [
+            "/VERYSILENT",
+            "/verysilent",
+            "/SuppressMsgBoxes",
+            "--very-silent",
+            "--suppress-msgboxes",
+        ] {
+            assert!(is_quiet_switch(arg), "{arg}");
+        }
+        for arg in ["/SILENT", "--silent", "/SP-", "--VERY-SILENT", "/NORESTART"] {
+            assert!(!is_quiet_switch(arg), "{arg}");
+        }
+    }
 }

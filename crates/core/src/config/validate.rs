@@ -13,6 +13,7 @@ pub fn validate_config(config: &Config) -> InstallerResult<()> {
     validate_upgrade(config)?;
     validate_uninstall(config)?;
     validate_run(config)?;
+    validate_retire(config)?;
     Ok(())
 }
 
@@ -79,6 +80,124 @@ fn validate_uninstall(config: &Config) -> InstallerResult<()> {
         )?;
     }
     Ok(())
+}
+
+fn validate_retire(config: &Config) -> InstallerResult<()> {
+    let invalid =
+        |i: usize, what: String| Err(InstallerError::Validation(format!("retire[{i}]{what}")));
+    for (i, entry) in config.retire.iter().enumerate() {
+        if entry.name.trim().is_empty() {
+            return invalid(i, ".name must not be empty".into());
+        }
+        if entry.steps().is_empty() {
+            return invalid(
+                i,
+                format!(
+                    " ({}) has nothing to remove: give it an inno_app_id, processes, \
+                     services, shortcuts or registry_keys",
+                    entry.name
+                ),
+            );
+        }
+        if let Some(guid) = &entry.inno_app_id {
+            if !is_bare_guid(guid) {
+                return invalid(
+                    i,
+                    format!(
+                        ".inno_app_id '{guid}' must be a GUID without braces, \
+                         e.g. 8A3F2C1D-0B4E-4F6A-9C7D-1E2F3A4B5C6D"
+                    ),
+                );
+            }
+            if config
+                .package
+                .legacy_inno_app_id
+                .as_ref()
+                .is_some_and(|own| own.eq_ignore_ascii_case(guid))
+            {
+                return invalid(
+                    i,
+                    format!(
+                        ".inno_app_id '{guid}' is package.legacy_inno_app_id, the install \
+                         this package takes the place of before it installs"
+                    ),
+                );
+            }
+        }
+        for (j, image) in entry.processes.iter().enumerate() {
+            if !is_image_name(image) {
+                return invalid(
+                    i,
+                    format!(
+                        ".processes[{j}] '{image}' must be the file name of a program, \
+                         e.g. DivvunManager.exe"
+                    ),
+                );
+            }
+        }
+        for (j, service) in entry.services.iter().enumerate() {
+            if !is_service_name(service) {
+                return invalid(
+                    i,
+                    format!(
+                        ".services[{j}] '{service}' is not a service name: 1 to 256 \
+                         characters, without / or \\ or spaces at either end"
+                    ),
+                );
+            }
+        }
+        if !entry.services.is_empty() && config.package.privileges == Privileges::User {
+            return invalid(
+                i,
+                ".services needs administrator privileges, and the package has \
+                 privileges = \"user\""
+                    .into(),
+            );
+        }
+        for (j, shortcut) in entry.shortcuts.iter().enumerate() {
+            let lower = shortcut.to_ascii_lowercase();
+            if !(lower.ends_with(".lnk") || lower.ends_with(".url")) {
+                return invalid(
+                    i,
+                    format!(".shortcuts[{j}] '{shortcut}' must be a .lnk or .url file"),
+                );
+            }
+        }
+        for (j, key) in entry.registry_keys.iter().enumerate() {
+            let context = format!("retire[{i}].registry_keys[{j}]");
+            check_registry_key(key, &context)?;
+            let segments: Vec<&str> = split_registry_key(key)
+                .map(|(_, path)| path.split('\\').collect())
+                .unwrap_or_default();
+            if segments.iter().any(|s| s.is_empty() || s.contains('*')) {
+                return Err(InstallerError::Validation(format!(
+                    "{context} '{key}' must name one key, without empty or `*` parts"
+                )));
+            }
+            if segments.len() < 2 {
+                return Err(InstallerError::Validation(format!(
+                    "{context} '{key}' is at the top of its hive; name a key at least two \
+                     levels down, e.g. HKLM\\SOFTWARE\\Example"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A program's file name, as a process list shows it: `name.exe`, with no
+/// directory and no wildcard.
+fn is_image_name(s: &str) -> bool {
+    s.len() > 4
+        && s.to_ascii_lowercase().ends_with(".exe")
+        && s.trim() == s
+        && !s.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|'])
+}
+
+/// A name the Service Control Manager accepts for a service: at most 256
+/// characters, none of them `/` or `\`.
+fn is_service_name(s: &str) -> bool {
+    !s.is_empty() && s.chars().count() <= 256 && s.trim() == s && !s.contains(['/', '\\'])
 }
 
 fn validate_package(config: &Config) -> InstallerResult<()> {
@@ -366,6 +485,39 @@ working_dir = "#{log_arg:x}""##,
     }
 
     #[test]
+    fn test_architecture_selectors() {
+        use crate::config::types::Architecture;
+        let parse = |arch: &str| {
+            Config::from_toml(&format!(
+                "{}architecture = \"{arch}\"\n\n[[files]]\nsource = \"a\"\ndest = \"#{{app}}\"\n\
+                 arch = \"{arch}\"\n",
+                minimal_toml()
+            ))
+        };
+        for (name, arch) in [
+            ("x86", Architecture::X86),
+            ("x64", Architecture::X64),
+            ("x64compatible", Architecture::X64Compatible),
+            ("arm64", Architecture::Arm64),
+            ("any", Architecture::Any),
+        ] {
+            let config = parse(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(config.package.architecture, arch, "{name}");
+            assert_eq!(config.files[0].arch, Some(arch), "{name}");
+        }
+        for bad in ["x64_compatible", "X64Compatible", "amd64", "arm"] {
+            assert!(parse(bad).is_err(), "{bad} accepted");
+        }
+        assert_eq!(
+            Config::from_toml(minimal_toml())
+                .unwrap()
+                .package
+                .architecture,
+            Architecture::Any
+        );
+    }
+
+    #[test]
     fn test_split_registry_key() {
         assert_eq!(
             split_registry_key(r"HKLM\SOFTWARE\Classes"),
@@ -563,6 +715,176 @@ arch = "arm64"
                 .unwrap_or_else(|| panic!("{bad:?} accepted"));
             assert!(err.to_string().contains("shortcuts[0].subfolder"), "{err}");
         }
+    }
+
+    const RETIRE: &str = r##"
+[[retire]]
+name = "Pahkat Service"
+inno_app_id = "6B3A048B-BB81-4865-86CA-61A0DF038CFE"
+services = ["pahkat-server"]
+registry_keys = ['HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\Pahkat Service']
+
+[[retire]]
+name = "Divvun Manager"
+inno_app_id = "4CF2F367-82A8-5E60-8334-34619CBA8347"
+processes = ["DivvunManager.exe"]
+shortcuts = [
+    "#{commonstartmenu}/Divvun Manager.lnk",
+    "#{commonstartup}/Divvun Manager.lnk",
+]
+"##;
+
+    #[test]
+    fn test_retire_section() {
+        let config = with_privileges("admin", RETIRE).unwrap();
+        assert_eq!(config.retire.len(), 2);
+        let service = &config.retire[0];
+        assert_eq!(service.name, "Pahkat Service");
+        assert_eq!(
+            service.inno_app_id.as_deref(),
+            Some("6B3A048B-BB81-4865-86CA-61A0DF038CFE")
+        );
+        assert_eq!(service.services, ["pahkat-server"]);
+        assert!(service.processes.is_empty() && service.shortcuts.is_empty());
+        let manager = &config.retire[1];
+        assert_eq!(manager.processes, ["DivvunManager.exe"]);
+        assert_eq!(manager.shortcuts.len(), 2);
+        assert!(manager.services.is_empty() && manager.registry_keys.is_empty());
+
+        assert!(Config::from_toml(minimal_toml()).unwrap().retire.is_empty());
+    }
+
+    /// Entries go in the order listed; within one, programs end and
+    /// services stop before files go, and the Add/Remove Programs entry
+    /// goes last.
+    #[test]
+    fn test_retire_order() {
+        use crate::config::types::RetireStep::{self, *};
+        use crate::config::types::retire_steps;
+        let config = with_privileges(
+            "admin",
+            &format!(
+                "{RETIRE}registry_keys = ['HKLM\\SOFTWARE\\Divvun\\Manager']\n\
+                 services = [\"divvun-a\", \"divvun-b\"]\n"
+            ),
+        )
+        .unwrap();
+        let steps: Vec<(&str, RetireStep)> = retire_steps(&config.retire)
+            .into_iter()
+            .map(|(entry, step)| (entry.name.as_str(), step))
+            .collect();
+        let service = "6B3A048B-BB81-4865-86CA-61A0DF038CFE";
+        let manager = "4CF2F367-82A8-5E60-8334-34619CBA8347";
+        assert_eq!(
+            steps,
+            [
+                ("Pahkat Service", DeleteService("pahkat-server")),
+                ("Pahkat Service", RemoveInnoFiles(service)),
+                (
+                    "Pahkat Service",
+                    DeleteRegistryKey(
+                        r"HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\Pahkat Service"
+                    )
+                ),
+                ("Pahkat Service", RemoveInnoEntry(service)),
+                ("Divvun Manager", EndProcess("DivvunManager.exe")),
+                ("Divvun Manager", DeleteService("divvun-a")),
+                ("Divvun Manager", DeleteService("divvun-b")),
+                ("Divvun Manager", RemoveInnoFiles(manager)),
+                (
+                    "Divvun Manager",
+                    RemoveShortcut("#{commonstartmenu}/Divvun Manager.lnk")
+                ),
+                (
+                    "Divvun Manager",
+                    RemoveShortcut("#{commonstartup}/Divvun Manager.lnk")
+                ),
+                (
+                    "Divvun Manager",
+                    DeleteRegistryKey(r"HKLM\SOFTWARE\Divvun\Manager")
+                ),
+                ("Divvun Manager", RemoveInnoEntry(manager)),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_retire_validation() {
+        let entry = |body: &str| format!("[[retire]]\nname = \"Old\"\n{body}\n");
+        let check = |privileges: &str, body: &str| with_privileges(privileges, &entry(body));
+        for ok in [
+            r#"inno_app_id = "4cf2f367-82a8-5e60-8334-34619cba8347""#,
+            r#"processes = ["DivvunManager.exe", "helper.EXE"]"#,
+            r#"services = ["pahkat-server", "Pahkat Service"]"#,
+            r##"shortcuts = ["#{commonstartup}/Old.lnk", "#{commondesktop}/Old site.url"]"##,
+            r"registry_keys = ['HKCU\Software\Old', 'HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Old']",
+        ] {
+            check("admin", ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
+        }
+        for (privileges, bad, field) in [
+            ("admin", "", "nothing to remove"),
+            ("admin", "processes = []", "nothing to remove"),
+            (
+                "admin",
+                r#"inno_app_id = "{4CF2F367-82A8-5E60-8334-34619CBA8347}""#,
+                "inno_app_id",
+            ),
+            ("admin", r#"inno_app_id = "Divvun Manager""#, "inno_app_id"),
+            ("admin", r#"processes = ["DivvunManager"]"#, "processes[0]"),
+            (
+                "admin",
+                r#"processes = ["ok.exe", "C:\\x\\a.exe"]"#,
+                "processes[1]",
+            ),
+            ("admin", r#"processes = ["*.exe"]"#, "processes[0]"),
+            ("admin", r#"services = [""]"#, "services[0]"),
+            ("admin", r#"services = ["a\\b"]"#, "services[0]"),
+            ("admin", r#"services = [" pahkat-server"]"#, "services[0]"),
+            ("user", r#"services = ["pahkat-server"]"#, "administrator"),
+            (
+                "admin",
+                r##"shortcuts = ["#{commonstartup}/Old"]"##,
+                "shortcuts[0]",
+            ),
+            (
+                "admin",
+                r"registry_keys = ['SOFTWARE\Old']",
+                "registry_keys[0]",
+            ),
+            (
+                "admin",
+                r"registry_keys = ['HKLM\SOFTWARE']",
+                "registry_keys[0]",
+            ),
+            (
+                "admin",
+                r"registry_keys = ['HKLM\SOFTWARE\*']",
+                "registry_keys[0]",
+            ),
+            (
+                "admin",
+                r"registry_keys = ['HKLM\SOFTWARE\\Old']",
+                "registry_keys[0]",
+            ),
+        ] {
+            let err = check(privileges, bad)
+                .err()
+                .unwrap_or_else(|| panic!("{bad:?} accepted"));
+            assert!(err.to_string().contains("retire[0]"), "{err}");
+            assert!(err.to_string().contains(field), "{bad}: {err}");
+        }
+        let err =
+            with_privileges("admin", "[[retire]]\nname = \"\"\nservices = [\"a\"]\n").unwrap_err();
+        assert!(err.to_string().contains("retire[0].name"), "{err}");
+
+        let guid = "8A3F2C1D-0B4E-4F6A-9C7D-1E2F3A4B5C6D";
+        let own = Config::from_toml(&format!(
+            "{}legacy_inno_app_id = \"{guid}\"\n{}",
+            minimal_toml(),
+            entry(&format!("inno_app_id = \"{}\"", guid.to_lowercase()))
+        ))
+        .unwrap_err();
+        assert!(own.to_string().contains("legacy_inno_app_id"), "{own}");
     }
 
     #[test]

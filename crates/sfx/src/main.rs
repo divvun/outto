@@ -235,8 +235,25 @@ mod imp {
         Ok(u32::from_le_bytes(buf))
     }
 
+    /// Whether the installer was asked to show no message boxes, with the
+    /// switches the installer itself takes. Run as SYSTEM in session 0, as
+    /// a service's updater runs it, a message box is never seen and the
+    /// process waits on it for good.
+    fn quiet() -> bool {
+        std::env::args().skip(1).any(|arg| {
+            let upper = arg.to_uppercase();
+            upper == "/VERYSILENT"
+                || upper == "/SUPPRESSMSGBOXES"
+                || arg == "--very-silent"
+                || arg == "--suppress-msgboxes"
+        })
+    }
+
     fn fatal_error(msg: &str) -> ! {
         eprintln!("Error: {msg}");
+        if quiet() {
+            std::process::exit(1);
+        }
 
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;

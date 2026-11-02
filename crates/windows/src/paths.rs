@@ -20,7 +20,7 @@ use outto_core::config::VariableResolver;
 /// The current user's are those of the account the installer runs as: for
 /// an install elevated with another administrator's credentials, that
 /// administrator's, as with Inno Setup's `{user...}` folders.
-const SHELL_FOLDERS: [(&str, GUID); 6] = [
+pub(crate) const SHELL_FOLDERS: [(&str, GUID); 6] = [
     ("startmenu", FOLDERID_Programs),
     ("desktop", FOLDERID_Desktop),
     ("startup", FOLDERID_Startup),

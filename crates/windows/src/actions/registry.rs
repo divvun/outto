@@ -300,6 +300,21 @@ pub fn delete_key(root: &str, key: &str) -> InstallerResult<()> {
     Ok(())
 }
 
+/// Delete `key` with all its values and subkeys. Returns whether it was
+/// there.
+pub fn delete_tree(root: &str, key: &str) -> InstallerResult<bool> {
+    let hroot = root_from_str(root)?;
+    let key_wide = to_wide(key);
+    match unsafe { RegDeleteTreeW(hroot, key_wide.as_ptr()) } {
+        0 => Ok(true),
+        NOT_FOUND => Ok(false),
+        result => Err(InstallerError::Registry {
+            key: format!("{root}\\{key}"),
+            message: format!("RegDeleteTreeW failed with error code {result}"),
+        }),
+    }
+}
+
 /// Delete `key` if it has neither values nor subkeys; leave it otherwise.
 /// Returns whether it is gone.
 pub fn delete_key_if_empty(root: &str, key: &str) -> InstallerResult<bool> {
@@ -574,16 +589,6 @@ mod tests {
         };
         assert_eq!(result, 0);
         unsafe { RegCloseKey(hkey) };
-    }
-
-    fn delete_tree(root: &str, key: &str) -> InstallerResult<()> {
-        let key_wide = to_wide(key);
-        let result = unsafe { RegDeleteTreeW(root_from_str(root)?, key_wide.as_ptr()) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(InstallerError::Other(format!("{result}")))
-        }
     }
 
     #[test]

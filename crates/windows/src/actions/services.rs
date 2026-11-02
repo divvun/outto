@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::{
-    ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_NOT_ACTIVE,
+    ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_MARKED_FOR_DELETE,
+    ERROR_SERVICE_NOT_ACTIVE,
 };
 use windows_sys::Win32::System::Services::*;
 
@@ -236,18 +237,24 @@ pub fn stop_service(name: &str) -> InstallerResult<()> {
     Ok(())
 }
 
+/// Delete the service `name`. One already marked for deletion, which the
+/// SCM removes once nothing holds it open, counts as deleted.
 pub fn delete_service(name: &str) -> InstallerResult<()> {
     const DELETE_ACCESS: u32 = 0x00010000;
 
     let service = open(name, DELETE_ACCESS)?.ok_or_else(|| not_registered(name))?;
     if unsafe { DeleteService(service.handle.0) } == 0 {
-        return Err(os_error(
-            name,
-            "DeleteService failed",
-            std::io::Error::last_os_error(),
-        ));
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(ERROR_SERVICE_MARKED_FOR_DELETE as i32) {
+            return Err(os_error(name, "DeleteService failed", err));
+        }
     }
     Ok(())
+}
+
+/// Whether a service named `name` is registered.
+pub fn is_registered(name: &str) -> InstallerResult<bool> {
+    Ok(open(name, SERVICE_QUERY_STATUS)?.is_some())
 }
 
 fn to_wide(s: &str) -> Vec<u16> {

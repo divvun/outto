@@ -52,8 +52,15 @@ pub fn detect_existing_install(package_id: &str) -> InstallerResult<Option<Exist
 /// names its entry `<AppId>_is1`, and AppIds are conventionally written with
 /// braces, so both `<GUID>_is1` and `{<GUID>}_is1` are checked.
 pub fn detect_legacy_inno_install(guid: &str) -> Option<LegacyInnoInstall> {
+    legacy_inno_installs(guid).into_iter().next()
+}
+
+/// Every Add/Remove Programs entry of the Inno Setup AppId `guid`, in the
+/// order [`detect_legacy_inno_install`] looks for one: HKLM's native view,
+/// its 32-bit view, then HKCU, each under both of Inno's names.
+pub fn legacy_inno_installs(guid: &str) -> Vec<LegacyInnoInstall> {
     let subkeys = [format!("{{{guid}}}_is1"), format!("{guid}_is1")];
-    find_uninstall_entry(&subkeys, |hkey| {
+    find_uninstall_entries(&subkeys, |hkey| {
         let install_dir = read_string_value(hkey, "InstallLocation")
             .or_else(|| read_string_value(hkey, "Inno Setup: App Path"))
             .map(PathBuf::from)
@@ -68,11 +75,13 @@ pub fn detect_legacy_inno_install(guid: &str) -> Option<LegacyInnoInstall> {
                 .and_then(|s| parse_uninstall_exe(&s)),
         }
     })
+    .into_iter()
     .map(|(root, key, install)| LegacyInnoInstall {
         root,
         key,
         ..install
     })
+    .collect()
 }
 
 /// Whether the registry entry a [`LegacyInnoInstall`] was found at still exists.
@@ -109,28 +118,46 @@ fn find_uninstall_entry<T>(
     subkeys: &[String],
     read: impl Fn(HKEY) -> T,
 ) -> Option<(&'static str, String, T)> {
+    find_uninstall_entries(subkeys, read).into_iter().next()
+}
+
+/// [`find_uninstall_entry`], for every one of `subkeys` that exists under
+/// each of the Uninstall keys.
+fn find_uninstall_entries<T>(
+    subkeys: &[String],
+    read: impl Fn(HKEY) -> T,
+) -> Vec<(&'static str, String, T)> {
+    let mut found = Vec::new();
+    for (root, root_name, key) in uninstall_entry_keys(subkeys) {
+        let key_wide = to_wide(&key);
+        let mut hkey: HKEY = std::ptr::null_mut();
+
+        let result = unsafe { RegOpenKeyExW(root, key_wide.as_ptr(), 0, KEY_READ, &mut hkey) };
+        if result == 0 {
+            let value = read(hkey);
+            unsafe { RegCloseKey(hkey) };
+            found.push((root_name, key, value));
+        }
+    }
+    found
+}
+
+/// Where an Add/Remove Programs entry named one of `subkeys` can be: under
+/// HKLM's native Uninstall key, its WOW6432Node one, then HKCU's.
+fn uninstall_entry_keys(subkeys: &[String]) -> Vec<(HKEY, &'static str, String)> {
     let roots: [(HKEY, &str, &str); 3] = [
         (HKEY_LOCAL_MACHINE, "HKLM", UNINSTALL_KEY),
         (HKEY_LOCAL_MACHINE, "HKLM", UNINSTALL_KEY_WOW64),
         (HKEY_CURRENT_USER, "HKCU", UNINSTALL_KEY),
     ];
-
-    for (root, root_name, base) in roots {
-        for subkey in subkeys {
-            let key = format!("{base}\\{subkey}");
-            let key_wide = to_wide(&key);
-            let mut hkey: HKEY = std::ptr::null_mut();
-
-            let result = unsafe { RegOpenKeyExW(root, key_wide.as_ptr(), 0, KEY_READ, &mut hkey) };
-            if result == 0 {
-                let value = read(hkey);
-                unsafe { RegCloseKey(hkey) };
-                return Some((root_name, key, value));
-            }
-        }
-    }
-
-    None
+    roots
+        .into_iter()
+        .flat_map(|(root, root_name, base)| {
+            subkeys
+                .iter()
+                .map(move |subkey| (root, root_name, format!("{base}\\{subkey}")))
+        })
+        .collect()
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
@@ -200,6 +227,7 @@ pub fn arch_matches_system(required: &Architecture, system: &str) -> bool {
     match required {
         Architecture::Any => true,
         Architecture::X64 => system == "x64",
+        Architecture::X64Compatible => system == "x64" || system == "arm64",
         Architecture::X86 => system == "x86" || system == "x64",
         Architecture::Arm64 => system == "arm64",
     }
@@ -536,6 +564,7 @@ mod tests {
         assert_eq!(matching(Architecture::Any), ["x86", "x64", "arm64"]);
         assert_eq!(matching(Architecture::X86), ["x86", "x64"]);
         assert_eq!(matching(Architecture::X64), ["x64"]);
+        assert_eq!(matching(Architecture::X64Compatible), ["x64", "arm64"]);
         assert_eq!(matching(Architecture::Arm64), ["arm64"]);
     }
 }

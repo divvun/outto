@@ -29,4 +29,5 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Shutdown",
     "Win32_System_RestartManager",
     "Win32_System_IO",
+    "Win32_System_Diagnostics_ToolHelp",
 ] }

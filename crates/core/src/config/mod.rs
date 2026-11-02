@@ -46,6 +46,8 @@ pub struct Config {
     pub com: Vec<ComEntry>,
     #[serde(default)]
     pub install_cleanup: InstallCleanup,
+    #[serde(default)]
+    pub retire: Vec<RetireEntry>,
 }
 
 impl Config {
