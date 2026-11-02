@@ -47,7 +47,7 @@ pub fn make_resolver(config: &Config, install_dir: Option<&std::path::Path>) -> 
 ///
 /// Pipeline: arch + macOS-version check → elevation decision → existing-install
 /// detection / upgrade handling → prerequisites → create install dir → execute
-/// actions → save receipt + manifest → on failure, rollback.
+/// actions → save receipt + manifest → `[[retire]]` → on failure, rollback.
 pub fn install(
     config: &Config,
     options: &InstallOptions,
@@ -278,6 +278,10 @@ pub fn install(
                     remove_backup(&backup, callbacks);
                 }
             }
+
+            // Last of all: retiring a launchd job can end the process that
+            // started this install.
+            actions::retire::retire(&config.retire, &resolver, &install_dir, callbacks);
 
             callbacks.on_log(LogLevel::Info, "Installation complete");
             callbacks.on_progress("complete", 1, 1);
@@ -779,6 +783,83 @@ run_at_load = true
         assert!(!loaded_after_uninstall);
         assert!(!agents.join(format!("{label}.plist")).exists());
         assert!(!install_dir.join("job.sh").exists());
+    }
+
+    /// `[[retire]]` paths go only when the install succeeds, and an uninstall
+    /// does not bring them back.
+    #[test]
+    fn retire_runs_only_after_a_successful_install() {
+        let _home_guard = crate::test_util::lock_home();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let source = root.join("source");
+        let install_dir = root.join("app");
+        let old_app = root.join("old/Old.app");
+        let old_log = root.join("old/old.log");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(old_app.join("Contents")).unwrap();
+        std::fs::write(old_app.join("Contents/Info.plist"), "<plist/>").unwrap();
+        std::fs::write(&old_log, "log").unwrap();
+        std::fs::write(source.join("a.txt"), "a").unwrap();
+        let old_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", &home) };
+
+        let run = |fail: bool| {
+            let failing = if fail {
+                "[[run]]\nphase = \"after_install\"\ncommand = \"/usr/bin/false\"\nrequired = true\n"
+            } else {
+                ""
+            };
+            let toml = format!(
+                r##"
+[package]
+id = "no.divvun.outto-retire-test"
+name = "Retire Test"
+version = "1.0.0"
+
+[[files]]
+source = "a.txt"
+dest = "#{{app}}"
+
+[[retire]]
+name = "Old"
+paths = ["{old_app}", "{old_log}"]
+
+{failing}"##,
+                old_app = old_app.display(),
+                old_log = old_log.display(),
+            );
+            let config = Config::from_toml(&toml).unwrap();
+            let options = InstallOptions {
+                source_dir: source.clone(),
+                install_dir: Some(install_dir.clone()),
+                selected_components: None,
+                uninstall_exe: None,
+                close_apps: true,
+            };
+            install(&config, &options, &NoOpCallbacks)
+        };
+
+        let failed = run(true);
+        let kept_after_failure = old_app.exists() && old_log.exists();
+        let succeeded = run(false);
+        let gone_after_success = !old_app.exists() && !old_log.exists();
+        let uninstalled =
+            uninstall_package(&install_dir, "no.divvun.outto-retire-test", &NoOpCallbacks);
+
+        match old_home {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert!(failed.is_err());
+        assert!(kept_after_failure);
+        succeeded.unwrap();
+        assert!(gone_after_success);
+        uninstalled.unwrap();
+        assert!(!old_app.exists() && !old_log.exists());
+        assert!(!install_dir.join("a.txt").exists());
     }
 
     /// `before_uninstall` / `after_uninstall` commands are recorded at install

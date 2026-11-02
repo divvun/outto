@@ -182,6 +182,27 @@ When the service is already registered, as it is when a newer version installs o
 
 On macOS, a `[[launchd]]` job that is already loaded is booted out before any file is copied, and bootstrapped again from the new plist once it is written; a failed install puts the old plist back and bootstraps the old job.
 
+### Retiring what other installers left (macOS)
+
+Each `[[retire]]` entry in `outto.macos.toml` names one product from some other installer that the package replaces, and lists its paths, installer package receipts and launchd jobs. They are removed only after the install has succeeded. Entries run in file order; within one, paths go first, then receipts with `pkgutil --forget`, then each job: its plist is deleted, then the job is booted out by label and waited for. Every step is logged as `Retire <name>: ...`; one that fails is logged and the rest still run, and the install still succeeds. Nothing is recorded, so a rollback or an uninstall brings none of it back. `name` is required, and an entry with nothing to retire is rejected. A path that resolves to `/`, a top-level directory, anything through `..`, or the install directory, inside or around it, is skipped with a warning.
+
+```toml
+[[retire]]
+name = "Divvun Manager"
+# scope "daemon": the system domain; "agent": the GUI domain of the user outto runs as
+launchd = [{ label = "no.divvun.pahkatd", scope = "daemon", plist = "#{launch_daemons}/no.divvun.pahkatd.plist" }]
+paths = ["#{applications}/Divvun Manager.app", "/tmp/pahkat.sock", "/Library/Caches/Pahkat", "/Library/Logs/Pahkat"]
+pkg_receipts = ["no.divvun.Manager"]
+```
+
+Booting out a job ends every process in it, which can include whatever started this install, so an entry's jobs come last.
+
+### Bootstrap `.pkg` (macOS)
+
+`outto build --pkg` also writes a `.pkg` beside the `.app`, for installs by `installer -pkg`, MDM or another updater. Its identifier and version are the manifest's unless `--pkg-identifier` / `--pkg-version` say otherwise; `--pkg-sign` signs it with a Developer ID Installer identity. The installer `.app` travels in the package's scripts, which installd extracts into a private directory of its own, and the `postinstall` runs it as root with `--very-silent --suppress-msgboxes --no-restart`. Exit 0, or 3010 (which reaches the script as 194), passes; anything else fails the package, so installd writes no receipt. The payload is empty, there only so that installd records a receipt under the package's identifier and version, and holds no bundle installd could relocate.
+
+A `.pkg` is for one architecture, that of the `outto-gui` the CLI finds beside it, and its distribution's `hostArchitectures` names only that one. Build one per architecture with `scripts/build-release.sh --target aarch64-apple-darwin --pkg` and `--target x86_64-apple-darwin --pkg`. The inner `.app` states the oldest macOS its binary loads on as `LSMinimumSystemVersion`: Rust's defaults give 11.0 for arm64 and 10.12 for x86_64, and `MACOSX_DEPLOYMENT_TARGET` raises them.
+
 ## Configuration sections
 
 | Section | Purpose |

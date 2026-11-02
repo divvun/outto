@@ -386,6 +386,42 @@ pub struct RunEntry {
     pub required: bool,
 }
 
+/// A `[[retire]]` entry: one product another installer left that this
+/// package replaces. Entries run in file order, only after the install has
+/// succeeded; within one, paths go first, then `pkg_receipts`, then
+/// `launchd`. Each step is logged, a failed one does not stop the rest or
+/// fail the install, and nothing is recorded, rolled back or undone by
+/// uninstall.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetireEntry {
+    /// The product, as every log line about it names it.
+    pub name: String,
+    /// Files, directories, symlinks or sockets to delete; directories with
+    /// all they contain.
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Installer package ids whose receipts `pkgutil --forget` drops.
+    #[serde(default)]
+    pub pkg_receipts: Vec<String>,
+    /// Jobs to retire: each one's plist is deleted, then the job is booted
+    /// out and waited for.
+    #[serde(default)]
+    pub launchd: Vec<RetireLaunchdEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetireLaunchdEntry {
+    pub label: String,
+    /// `daemon` boots the job out of the system domain, `agent` out of the
+    /// GUI domain of the user outto runs as.
+    pub scope: LaunchdScope,
+    /// The job's plist, deleted before the job is booted out. Not
+    /// necessarily `<label>.plist`.
+    pub plist: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Default, Serialize)]
 pub struct InstallCleanup {
     #[serde(default)]

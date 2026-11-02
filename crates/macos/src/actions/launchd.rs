@@ -256,14 +256,16 @@ fn bootstrap(
 /// Boot the job out and wait for it to be gone. `launchctl bootout` returns
 /// while the job is still exiting, and until it has, launchd refuses to
 /// bootstrap the label again.
-fn bootout(target: &str, label: &str, callbacks: &dyn InstallerCallbacks) -> InstallerResult<()> {
+pub(crate) fn bootout(
+    target: &str,
+    label: &str,
+    callbacks: &dyn InstallerCallbacks,
+) -> InstallerResult<()> {
     callbacks.on_log(
         LogLevel::Info,
         &format!("launchd: bootout {target}/{label}"),
     );
-    let status = Command::new("launchctl")
-        .args(["bootout", &format!("{target}/{label}")])
-        .status();
+    let status = bootout_command(target, label).status();
     match status {
         Ok(s) if s.success() => {}
         // "No such process" / already-unloaded is idempotent — not a real failure.
@@ -293,6 +295,12 @@ fn bootout(target: &str, label: &str, callbacks: &dyn InstallerCallbacks) -> Ins
     Ok(())
 }
 
+fn bootout_command(target: &str, label: &str) -> Command {
+    let mut command = Command::new("launchctl");
+    command.args(["bootout", &format!("{target}/{label}")]);
+    command
+}
+
 fn is_loaded(target: &str, label: &str) -> bool {
     Command::new("launchctl")
         .args(["print", &format!("{target}/{label}")])
@@ -300,6 +308,12 @@ fn is_loaded(target: &str, label: &str) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
+}
+
+/// The launchd domain a job of `scope` lives in: `system` for daemons, the
+/// current user's `gui/<uid>` for agents.
+pub(crate) fn domain_for(scope: &LaunchdScope) -> String {
+    domain_target(scope_str(scope))
 }
 
 fn domain_target(scope: &str) -> String {
@@ -437,6 +451,21 @@ mod tests {
         assert_eq!(args.len(), 3);
         assert_eq!(args[0].as_string(), Some("/usr/local/bin/myd"));
         assert_eq!(args[1].as_string(), Some("--foreground"));
+    }
+
+    #[test]
+    fn bootout_runs_launchctl_on_the_job() {
+        let command = bootout_command("system", "no.divvun.pahkatd");
+        assert_eq!(command.get_program(), "launchctl");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["bootout", "system/no.divvun.pahkatd"]
+        );
+        assert_eq!(domain_for(&LaunchdScope::Daemon), "system");
+        assert_eq!(
+            domain_for(&LaunchdScope::Agent),
+            format!("gui/{}", unsafe { libc::getuid() })
+        );
     }
 
     #[test]

@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
+mod pkg;
+
+#[cfg(target_os = "macos")]
 use outto_macos::Config;
 #[cfg(windows)]
 use outto_windows::Config;
@@ -35,6 +38,7 @@ fn main() {
         eprintln!(
             "Usage: outto build --config <file> --source <dir> --output <exe> [--compress] [--compression-level <0-22>] [-S|--sign <command>]\n\
              macOS .pkg: [--pkg] [--pkg-identifier <id>] [--pkg-version <v>] [--pkg-sign <Developer ID Installer identity>]\n\
+             A .pkg is for one architecture, that of the outto-gui beside outto: build outto with --target <triple> for each.\n\
              outto --version"
         );
         std::process::exit(2);
@@ -312,6 +316,12 @@ fn build_installer(
     let sfx_bin = find_binary(&[&libexec, cli_dir], "outto-sfx-macos");
 
     eprintln!("GUI template: {}", gui_bin.display());
+    let pkg_slice = if pkg.enabled {
+        Some(pkg::pkg_slice(&gui_bin, &uninstall_bin)?)
+    } else {
+        None
+    };
+    let version = &config.package.version;
 
     // 1. Build uninstall.app.
     let scratch = tempfile::tempdir()?;
@@ -322,8 +332,8 @@ fn build_installer(
         &uninstall_bin,
         &config.package.name,
         &format!("{}.uninstall", config.package.id),
-        &format!("Uninstall {}", config.package.name),
         "Uninstall",
+        version,
     )?;
     if let Some(cmd) = sign_command {
         eprintln!("Signing uninstall.app...");
@@ -349,8 +359,8 @@ fn build_installer(
         &gui_bin,
         &config.package.name,
         &format!("{}.installer", config.package.id),
-        &format!("{} Installer", config.package.name),
         "installer",
+        version,
     )?;
 
     // Copy the payload into Contents/Resources/ instead of a Mach-O segment —
@@ -398,8 +408,8 @@ fn build_installer(
             &sfx_bin,
             &config.package.name,
             &format!("{}.sfx", config.package.id),
-            &format!("Install {}", config.package.name),
             "sfx",
+            version,
         )?;
 
         // Stash the compressed tarball in the SFX's Resources/ — see the
@@ -427,21 +437,18 @@ fn build_installer(
 
     // 5. Additionally wrap the embedded inner installer.app in a bootstrap
     // .pkg, written alongside the .app (same stem, .pkg extension).
-    if pkg.enabled {
-        let pkg_output = output.with_extension("pkg");
-        let identifier = pkg
-            .identifier
-            .clone()
-            .unwrap_or_else(|| config.package.id.clone());
-        let version = pkg
-            .version
-            .clone()
-            .unwrap_or_else(|| config.package.version.clone());
-        build_pkg(
+    if let Some(slice) = pkg_slice {
+        let spec = pkg::PkgSpec {
+            identifier: pkg.identifier.as_deref().unwrap_or(&config.package.id),
+            version: pkg.version.as_deref().unwrap_or(version),
+            title: &config.package.name,
+            cpu: slice.cpu,
+        };
+        pkg::build_pkg(
             &inner_app,
-            &pkg_output,
-            &identifier,
-            &version,
+            &output.with_extension("pkg"),
+            &spec,
+            slice.min_macos,
             pkg.sign.as_deref(),
         )?;
     }
@@ -461,15 +468,17 @@ fn find_binary(dirs: &[&Path], name: &str) -> Option<PathBuf> {
 }
 
 /// Build a minimal `.app` bundle at `app_path`. Copies `mach_o` into
-/// `Contents/MacOS/<exe_name>` and writes an Info.plist.
+/// `Contents/MacOS/<exe_name>` and writes an Info.plist that gives the
+/// package's `version` and, as `LSMinimumSystemVersion`, the oldest macOS
+/// every architecture in `mach_o` loads on.
 #[cfg(target_os = "macos")]
 fn build_app_bundle(
     app_path: &Path,
     mach_o: &Path,
     display_name: &str,
     bundle_id: &str,
-    _description: &str,
     exe_name: &str,
+    version: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let macos_dir = app_path.join("Contents/MacOS");
     let resources_dir = app_path.join("Contents/Resources");
@@ -486,8 +495,31 @@ fn build_app_bundle(
     perms.set_mode(perms.mode() | 0o111);
     std::fs::set_permissions(&dest_exe, perms)?;
 
-    // Write Info.plist.
-    let info_plist = format!(
+    let min_macos = outto_macos::macho::slices(mach_o)
+        .map_err(|e| format!("{}: {e}", mach_o.display()))?
+        .iter()
+        .filter_map(|s| s.min_macos)
+        .max();
+    std::fs::write(
+        app_path.join("Contents/Info.plist"),
+        info_plist(display_name, bundle_id, exe_name, version, min_macos),
+    )?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn info_plist(
+    display_name: &str,
+    bundle_id: &str,
+    exe_name: &str,
+    version: &str,
+    min_macos: Option<outto_macos::macho::MacosVersion>,
+) -> String {
+    use pkg::xml_escape;
+    let min_macos = min_macos.map_or_else(String::new, |v| {
+        format!("    <key>LSMinimumSystemVersion</key>\n    <string>{v}</string>\n")
+    });
+    format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -507,115 +539,19 @@ fn build_app_bundle(
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>{version}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>11.0</string>
-    <key>NSHighResolutionCapable</key>
+    <string>{version}</string>
+{min_macos}    <key>NSHighResolutionCapable</key>
     <true/>
 </dict>
 </plist>
-"#
-    );
-    std::fs::write(app_path.join("Contents/Info.plist"), info_plist)?;
-    Ok(())
-}
-
-/// Wrap a self-contained installer `.app` in a bootstrap `.pkg`.
-///
-/// The pkg stages the `.app` under `/private/tmp/outto-bootstrap-<id>` on the
-/// target volume and runs a `postinstall` script that executes the installer
-/// headlessly (`--very-silent --suppress-msgboxes`). A pkg postinstall runs as
-/// root, so the installer skips elevation and writes a system-scope receipt —
-/// this is for system-scope installs (MDM / `installer -pkg`).
-#[cfg(target_os = "macos")]
-fn build_pkg(
-    inner_app: &Path,
-    output: &Path,
-    identifier: &str,
-    version: &str,
-    sign_identity: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let scratch = tempfile::tempdir()?;
-    let pkgroot = scratch.path().join("root");
-    let scripts = scratch.path().join("scripts");
-    std::fs::create_dir_all(&pkgroot)?;
-    std::fs::create_dir_all(&scripts)?;
-
-    // Stage the inner installer.app into the payload root (preserve signature).
-    let staged_app = pkgroot.join("installer.app");
-    eprintln!("Staging installer.app into pkg payload...");
-    ditto(inner_app, &staged_app)?;
-
-    // Where the payload is laid down on the target volume.
-    let stage_path = format!("/private/tmp/outto-bootstrap-{identifier}");
-
-    // postinstall runs the installer headlessly as root, then cleans up. No
-    // `set -e`: capture the installer's status, remove the staging dir, then
-    // propagate the status so a failed install surfaces to installer/MDM.
-    let postinstall = format!(
-        "#!/bin/sh\n\
-         TARGET=\"${{3%/}}\"\n\
-         STAGE=\"$TARGET{stage_path}\"\n\
-         \"$STAGE/installer.app/Contents/MacOS/installer\" --very-silent --suppress-msgboxes\n\
-         status=$?\n\
-         rm -rf \"$STAGE\"\n\
-         exit $status\n"
-    );
-    let postinstall_path = scripts.join("postinstall");
-    std::fs::write(&postinstall_path, postinstall)?;
-    std::fs::set_permissions(&postinstall_path, std::fs::Permissions::from_mode(0o755))?;
-
-    // Build the component pkg.
-    let component = scratch.path().join("component.pkg");
-    eprintln!("Running pkgbuild...");
-    let status = std::process::Command::new("pkgbuild")
-        .arg("--root")
-        .arg(&pkgroot)
-        .arg("--install-location")
-        .arg(&stage_path)
-        .arg("--scripts")
-        .arg(&scripts)
-        .arg("--identifier")
-        .arg(identifier)
-        .arg("--version")
-        .arg(version)
-        .arg(&component)
-        .status()?;
-    if !status.success() {
-        return Err(format!("pkgbuild failed ({status})").into());
-    }
-
-    // Wrap into a distribution pkg, signing with the Developer ID Installer
-    // identity if one was given. productbuild refuses to overwrite, so clear
-    // any stale output first (file or a leftover .app directory).
-    if output.is_dir() {
-        std::fs::remove_dir_all(output).ok();
-    } else if output.exists() {
-        std::fs::remove_file(output).ok();
-    }
-    eprintln!("Running productbuild...");
-    let mut cmd = std::process::Command::new("productbuild");
-    cmd.arg("--package").arg(&component);
-    if let Some(identity) = sign_identity {
-        cmd.arg("--sign").arg(identity);
-    }
-    cmd.arg(output);
-    let status = cmd.status()?;
-    if !status.success() {
-        return Err(format!("productbuild failed ({status})").into());
-    }
-
-    let final_size = std::fs::metadata(output)?.len();
-    eprintln!(
-        "Done! {} ({:.1} MB)",
-        output.display(),
-        final_size as f64 / 1_048_576.0
-    );
-    Ok(())
+"#,
+        display_name = xml_escape(display_name),
+        exe_name = xml_escape(exe_name),
+        bundle_id = xml_escape(bundle_id),
+        version = xml_escape(version),
+    )
 }
 
 /// Copy a directory tree with `ditto` to preserve xattrs/symlinks/signatures.
@@ -688,4 +624,52 @@ fn find_binary(dirs: &[&Path], name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    use outto_macos::macho::MacosVersion;
+
+    #[test]
+    fn info_plist_carries_the_version_and_minimum_macos() {
+        let xml = info_plist(
+            "Pahkat <&>",
+            "no.divvun.pahkat.installer",
+            "installer",
+            "3.0.0",
+            Some(MacosVersion::new(10, 12, 0)),
+        );
+        for expected in [
+            "<key>CFBundleShortVersionString</key>\n    <string>3.0.0</string>",
+            "<key>CFBundleVersion</key>\n    <string>3.0.0</string>",
+            "<key>LSMinimumSystemVersion</key>\n    <string>10.12</string>",
+            "<string>Pahkat &lt;&amp;&gt;</string>",
+        ] {
+            assert!(xml.contains(expected), "{expected} not in {xml}");
+        }
+        let without = info_plist("P", "p.p", "p", "1.0.0", None);
+        assert!(!without.contains("LSMinimumSystemVersion"), "{without}");
+    }
+
+    /// The bundle states the minimum macOS of the binary it holds, here this
+    /// test binary, built like outto's own.
+    #[test]
+    fn app_bundle_takes_its_minimum_from_the_binary() {
+        let exe = std::env::current_exe().unwrap();
+        let min = outto_macos::macho::slices(&exe).unwrap()[0]
+            .min_macos
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("x.app");
+        build_app_bundle(&app, &exe, "X", "no.divvun.x", "x", "3.0.0").unwrap();
+        let xml = std::fs::read_to_string(app.join("Contents/Info.plist")).unwrap();
+        assert!(
+            xml.contains(&format!(
+                "<key>LSMinimumSystemVersion</key>\n    <string>{min}</string>"
+            )),
+            "{xml}"
+        );
+        assert!(app.join("Contents/MacOS/x").is_file());
+    }
 }
