@@ -17,18 +17,18 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use objc2::ClassType;
 use objc2::encode::{Encode, Encoding, RefEncode};
-use objc2::msg_send;
-use objc2::rc::Id;
-use objc2::runtime::AnyObject;
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, NSObjectProtocol};
+use objc2::{ClassType, MainThreadMarker, Message, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameVibrantDark, NSAutoresizingMaskOptions, NSBezierPath, NSColor,
     NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
     NSVisualEffectView, NSWindow, NSWindowButton, NSWindowOrderingMode, NSWindowStyleMask,
     NSWindowTitleVisibility,
 };
-use objc2_foundation::{CGFloat, MainThreadMarker, NSObjectProtocol, NSPoint, NSRect, NSSize};
+use objc2_core_foundation::CGFloat;
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{RawWindowHandle, WindowHandle};
 
 use crate::layout;
@@ -36,7 +36,7 @@ use crate::layout;
 /// Wrap NSWindow so we can park it in a `Mutex` behind a `OnceLock`. AppKit
 /// objects are main-thread-only; we uphold that by only reading this cell
 /// from `tick_nudge`, which checks `MainThreadMarker::new()` first.
-struct WindowCell(Id<NSWindow>);
+struct WindowCell(Retained<NSWindow>);
 unsafe impl Send for WindowCell {}
 unsafe impl Sync for WindowCell {}
 
@@ -112,7 +112,7 @@ pub fn install(handle: &WindowHandle<'_>) -> bool {
         let Some(content_view) = ns_view_ptr.as_ref() else {
             return false;
         };
-        let content: Id<NSView> = content_view.retain();
+        let content: Retained<NSView> = content_view.retain();
 
         let Some(window) = content.window() else {
             return false;
@@ -127,7 +127,7 @@ pub fn install(handle: &WindowHandle<'_>) -> bool {
         let siblings = frame_view.subviews();
         for i in 0..siblings.count() {
             let view = siblings.objectAtIndex(i);
-            if view.is_kind_of::<NSVisualEffectView>() {
+            if view.isKindOfClass(NSVisualEffectView::class()) {
                 return true;
             }
         }
@@ -159,13 +159,13 @@ pub fn install(handle: &WindowHandle<'_>) -> bool {
         outer.setState(NSVisualEffectState::Active);
         outer.setFrame(content_frame);
         outer.setAutoresizingMask(
-            NSAutoresizingMaskOptions::NSViewWidthSizable
-                | NSAutoresizingMaskOptions::NSViewHeightSizable,
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
         );
         let outer_view: &NSView = &outer;
         frame_view.addSubview_positioned_relativeTo(
             outer_view,
-            NSWindowOrderingMode::NSWindowBelow,
+            NSWindowOrderingMode::Below,
             Some(&content),
         );
 
@@ -179,8 +179,8 @@ pub fn install(handle: &WindowHandle<'_>) -> bool {
                 NSPoint::new((origin.0 + sx) as CGFloat, (origin.1 + sy) as CGFloat),
                 NSSize::new(sw as CGFloat, sh as CGFloat),
             ),
-            NSAutoresizingMaskOptions::NSViewMaxXMargin
-                | NSAutoresizingMaskOptions::NSViewHeightSizable,
+            NSAutoresizingMaskOptions::ViewMaxXMargin
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
             // `.Sidebar` — the same material macOS System Settings uses
             // for its sidebar split-view item. Translucent, lets the
             // desktop bleed through the blur.
@@ -280,8 +280,7 @@ unsafe fn install_inset_panel(
     }
     effect.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), panel_frame.size));
     effect.setAutoresizingMask(
-        NSAutoresizingMaskOptions::NSViewWidthSizable
-            | NSAutoresizingMaskOptions::NSViewHeightSizable,
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
     );
     apply_rounded_corners(&effect, layout::PANEL_RADIUS as CGFloat);
     let effect_view: &NSView = &effect;
@@ -290,7 +289,7 @@ unsafe fn install_inset_panel(
     let wrapper_view: &NSView = &wrapper;
     frame_view.addSubview_positioned_relativeTo(
         wrapper_view,
-        NSWindowOrderingMode::NSWindowBelow,
+        NSWindowOrderingMode::Below,
         Some(content_anchor),
     );
 }
@@ -301,7 +300,7 @@ unsafe fn configure_window(window: &NSWindow) {
     window.setBackgroundColor(Some(&clear));
 
     window.setTitlebarAppearsTransparent(true);
-    window.setTitleVisibility(NSWindowTitleVisibility::NSWindowTitleHidden);
+    window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
     let mask = window.styleMask() | NSWindowStyleMask::FullSizeContentView;
     window.setStyleMask(mask);
 
@@ -329,9 +328,9 @@ unsafe fn nudge_traffic_lights(window: &NSWindow, dx: CGFloat, dy: CGFloat) {
         Err(_) => return,
     };
     for (i, button) in [
-        NSWindowButton::NSWindowCloseButton,
-        NSWindowButton::NSWindowMiniaturizeButton,
-        NSWindowButton::NSWindowZoomButton,
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
     ]
     .iter()
     .copied()
@@ -341,8 +340,8 @@ unsafe fn nudge_traffic_lights(window: &NSWindow, dx: CGFloat, dy: CGFloat) {
             let view: &NSView = btn.as_ref();
             let _: () = msg_send![view, setTranslatesAutoresizingMaskIntoConstraints: true];
             view.setAutoresizingMask(
-                NSAutoresizingMaskOptions::NSViewMaxXMargin
-                    | NSAutoresizingMaskOptions::NSViewMinYMargin,
+                NSAutoresizingMaskOptions::ViewMaxXMargin
+                    | NSAutoresizingMaskOptions::ViewMinYMargin,
             );
 
             let current = view.frame();

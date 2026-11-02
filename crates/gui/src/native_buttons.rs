@@ -13,15 +13,14 @@
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 
-use objc2::declare_class;
-use objc2::mutability::MainThreadOnly;
-use objc2::rc::{Allocated, Id};
-use objc2::runtime::{NSObject, Sel};
-use objc2::{ClassType, DeclaredClass, msg_send, msg_send_id, sel};
+use objc2::rc::{Allocated, Retained};
+use objc2::runtime::NSObject;
+use objc2::{MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBezelStyle, NSButton, NSColor, NSControl, NSControlSize, NSView,
+    NSAutoresizingMaskOptions, NSBezelStyle, NSButton, NSColor, NSControlSize, NSView,
 };
-use objc2_foundation::{CGFloat, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_core_foundation::CGFloat;
+use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use raw_window_handle::{RawWindowHandle, WindowHandle};
 
 /// Semantic identifiers for each button slot. The iced side maps these back
@@ -52,13 +51,13 @@ pub struct Layout {
 
 struct State {
     // Concrete NSButton instances, kept alive via `Retained`.
-    buttons: Vec<Id<NSButton>>,
+    buttons: Vec<Retained<NSButton>>,
     // Semantic action per live button, index-matched to `buttons`.
     actions: Vec<ButtonAction>,
     // ObjC target object receiving button clicks.
-    _target: Id<ButtonTarget>,
+    _target: Retained<ButtonTarget>,
     // Parent view the buttons are installed on (the window's frame view).
-    parent: Id<NSView>,
+    parent: Retained<NSView>,
 }
 
 /// AppKit objects are main-thread-only. We promise to only read/write this
@@ -98,27 +97,22 @@ pub fn drain_clicks() -> Vec<ButtonAction> {
 
 // ---- ObjC target class ------------------------------------------------
 
-declare_class!(
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "OuttoNativeButtonTarget"]
     struct ButtonTarget;
 
-    unsafe impl ClassType for ButtonTarget {
-        type Super = NSObject;
-        type Mutability = MainThreadOnly;
-        const NAME: &'static str = "OuttoNativeButtonTarget";
-    }
-
-    impl DeclaredClass for ButtonTarget {}
-
-    unsafe impl ButtonTarget {
-        #[method_id(init)]
-        fn init(this: Allocated<Self>) -> Option<Id<Self>> {
+    impl ButtonTarget {
+        #[unsafe(method_id(init))]
+        fn init(this: Allocated<Self>) -> Option<Retained<Self>> {
             let this = this.set_ivars(());
-            unsafe { msg_send_id![super(this), init] }
+            unsafe { msg_send![super(this), init] }
         }
 
-        #[method(onClicked:)]
+        #[unsafe(method(onClicked:))]
         fn on_clicked(&self, sender: &NSButton) {
-            let tag = unsafe { sender.tag() };
+            let tag = sender.tag();
             if let Ok(guard) = state_cell().lock() {
                 if let Some(s) = guard.as_ref() {
                     if let Some(action) = s.0.actions.get(tag as usize).copied() {
@@ -131,9 +125,9 @@ declare_class!(
 );
 
 impl ButtonTarget {
-    fn new(mtm: MainThreadMarker) -> Id<Self> {
-        let alloc = mtm.alloc();
-        unsafe { msg_send_id![alloc, init] }
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let alloc = Self::alloc(mtm);
+        unsafe { msg_send![alloc, init] }
     }
 }
 
@@ -158,7 +152,7 @@ pub fn install(handle: &WindowHandle<'_>) -> bool {
         // NSThemeFrame (private superview) fall back to legacy push style,
         // whereas subviews of the content view render with the proper
         // glass material.
-        let parent: Id<NSView> = content_view.retain();
+        let parent: Retained<NSView> = content_view.retain();
         let Some(mtm) = MainThreadMarker::new() else {
             return false;
         };
@@ -215,9 +209,9 @@ pub fn apply(layout: Layout) {
             // new macOS 26 Liquid Glass pill. Initializing a bare NSButton
             // and only calling setBezelStyle doesn't propagate correctly.
             let placeholder = NSString::from_str("");
-            let button: Id<NSButton> = NSButton::buttonWithTitle_target_action(
+            let button: Retained<NSButton> = NSButton::buttonWithTitle_target_action(
                 &placeholder,
-                Some(state._target.as_ref().as_ref()),
+                Some(&state._target),
                 Some(sel!(onClicked:)),
                 mtm,
             );
@@ -263,8 +257,8 @@ pub fn apply(layout: Layout) {
             );
             button.setFrame(frame);
             button.setAutoresizingMask(
-                NSAutoresizingMaskOptions::NSViewMinXMargin
-                    | NSAutoresizingMaskOptions::NSViewMaxYMargin,
+                NSAutoresizingMaskOptions::ViewMinXMargin
+                    | NSAutoresizingMaskOptions::ViewMaxYMargin,
             );
 
             let title = NSString::from_str(&spec.label);
@@ -297,10 +291,8 @@ pub fn clear() {
     let Some(state) = guard.as_mut().map(|s| &mut s.0) else {
         return;
     };
-    unsafe {
-        while let Some(btn) = state.buttons.pop() {
-            btn.removeFromSuperview();
-        }
+    while let Some(btn) = state.buttons.pop() {
+        btn.removeFromSuperview();
     }
     state.actions.clear();
 }
