@@ -19,6 +19,17 @@
 #   (a notarizable .pkg needs BOTH: --sign signs the inner app's Mach-O with the
 #    Developer ID Application cert + hardened runtime, --pkg-sign signs the .pkg
 #    with the Developer ID Installer cert.)
+#
+# A .pkg is for one architecture, never universal: that of the binaries it is
+# built from. For one per architecture, build once per target:
+#   scripts/build-release.sh --target aarch64-apple-darwin --pkg ...
+#   scripts/build-release.sh --target x86_64-apple-darwin --pkg ...
+# giving target/<triple>/release/outto-setup.{app,pkg} for each. Without
+# --target it builds for this Mac's architecture into target/release/.
+# The installer then starts on Rust's default minimum macOS for the target
+# (11.0 for arm64, 10.12 for x86_64), which outto writes into its Info.plist
+# as LSMinimumSystemVersion; a MACOSX_DEPLOYMENT_TARGET in the environment
+# raises it, so leave it unset for packages meant for older Macs.
 
 set -euo pipefail
 
@@ -31,6 +42,7 @@ KEYCHAIN_PROFILE=""
 COMPRESSION_LEVEL=19
 PKG=false
 PKG_SIGN=""
+TARGET=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -40,6 +52,7 @@ while [[ $# -gt 0 ]]; do
         --compression-level) COMPRESSION_LEVEL="$2"; shift 2 ;;
         --pkg) PKG=true; shift ;;
         --pkg-sign) PKG_SIGN="$2"; shift 2 ;;
+        --target) TARGET="$2"; shift 2 ;;
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -52,15 +65,28 @@ fi
 
 cd "$ROOT"
 
-echo "==> cargo build --release (nightly + build-std)"
-cargo +nightly build --release --workspace -Zbuild-std=std \
+RELEASE="$ROOT/target/release"
+if [[ -n "$TARGET" ]]; then
+    RELEASE="$ROOT/target/$TARGET/release"
+fi
+
+echo "==> cargo build --release ${TARGET:+--target $TARGET }(nightly + build-std)"
+cargo +nightly build --release --workspace ${TARGET:+--target "$TARGET"} -Zbuild-std=std \
     -Zpanic-immediate-abort --config 'profile.release.panic="immediate-abort"'
+
+# The packaging runs on this Mac, so it needs an outto built for it, which
+# then packs the target's binaries from the libexec beside it.
+OUTTO="$RELEASE/outto"
+if [[ -n "$TARGET" ]]; then
+    echo "==> cargo build --release -p outto-cli (for this Mac, to package with)"
+    cargo +nightly build --release -p outto-cli
+    OUTTO="$ROOT/target/release/outto"
+fi
 
 STAGE="$ROOT/target/installer-stage"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/bin" "$STAGE/libexec"
 
-RELEASE="$ROOT/target/release"
 cp "$RELEASE/outto" "$STAGE/bin/outto"
 cp "$RELEASE/outto-gui" "$STAGE/libexec/outto-gui"
 cp "$RELEASE/outto-uninstall" "$STAGE/libexec/outto-uninstall"
@@ -94,8 +120,14 @@ if [[ -n "$SIGN_CMD" ]]; then
     BUILD_ARGS+=(--sign "$SIGN_CMD")
 fi
 
+TOOLS="$ROOT/target/installer-tools"
+rm -rf "$TOOLS"
+mkdir -p "$TOOLS/bin"
+cp "$OUTTO" "$TOOLS/bin/outto"
+ln -s "$STAGE/libexec" "$TOOLS/libexec"
+
 echo "==> Packaging installer..."
-"$STAGE/bin/outto" "${BUILD_ARGS[@]}"
+"$TOOLS/bin/outto" "${BUILD_ARGS[@]}"
 
 if $NOTARIZE; then
     echo "==> Submitting .app to Apple notarytool..."

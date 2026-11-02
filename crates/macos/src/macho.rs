@@ -165,6 +165,136 @@ pub fn embed_segment(mach_o: &Path, name: &str, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+const LC_VERSION_MIN_MACOSX: u32 = 0x24;
+const LC_BUILD_VERSION: u32 = 0x32;
+const PLATFORM_MACOS: u32 = 1;
+
+const CPU_TYPE_X86_64: i32 = 0x0100_0007;
+const CPU_TYPE_ARM64: i32 = 0x0100_000c;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cpu {
+    Arm64,
+    X86_64,
+    Other(i32),
+}
+
+impl Cpu {
+    fn from_cputype(cputype: i32) -> Self {
+        match cputype {
+            CPU_TYPE_ARM64 => Self::Arm64,
+            CPU_TYPE_X86_64 => Self::X86_64,
+            other => Self::Other(other),
+        }
+    }
+}
+
+impl std::fmt::Display for Cpu {
+    /// The name `lipo` and Installer's `hostArchitectures` use.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Arm64 => f.write_str("arm64"),
+            Self::X86_64 => f.write_str("x86_64"),
+            Self::Other(cputype) => write!(f, "cputype 0x{cputype:08x}"),
+        }
+    }
+}
+
+/// A macOS version as Mach-O load commands encode it: `xxxx.yy.zz` in the
+/// nibbles of a `u32`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MacosVersion(u32);
+
+impl MacosVersion {
+    pub const fn new(major: u16, minor: u8, patch: u8) -> Self {
+        Self(((major as u32) << 16) | ((minor as u32) << 8) | patch as u32)
+    }
+}
+
+impl std::fmt::Display for MacosVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (major, minor, patch) = (self.0 >> 16, (self.0 >> 8) & 0xff, self.0 & 0xff);
+        if patch == 0 {
+            write!(f, "{major}.{minor}")
+        } else {
+            write!(f, "{major}.{minor}.{patch}")
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Slice {
+    pub cpu: Cpu,
+    /// The oldest macOS the slice loads on: `LC_BUILD_VERSION`'s `minos`, or
+    /// `LC_VERSION_MIN_MACOSX` in binaries for older deployment targets.
+    pub min_macos: Option<MacosVersion>,
+}
+
+/// The slices of a thin or fat (universal) 64-bit Mach-O binary.
+pub fn slices(mach_o: &Path) -> io::Result<Vec<Slice>> {
+    let mut f = File::open(mach_o)?;
+    let magic = read_u32(&mut f)?;
+    if magic == FAT_CIGAM || magic == FAT_CIGAM_64 {
+        let wide = magic == FAT_CIGAM_64;
+        let count = read_u32(&mut f)?.swap_bytes();
+        let mut offsets = Vec::with_capacity(count as usize);
+        for i in 0..count as u64 {
+            let entry = 8 + i * if wide { 32 } else { 20 };
+            f.seek(SeekFrom::Start(entry + 8))?;
+            let offset = if wide {
+                read_u64_sw(&mut f, true)?
+            } else {
+                read_u32_sw(&mut f, true)? as u64
+            };
+            offsets.push(offset);
+        }
+        return offsets
+            .into_iter()
+            .map(|offset| read_slice(&mut f, offset))
+            .collect();
+    }
+    if magic == FAT_MAGIC || magic == FAT_MAGIC_64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "little-endian fat header",
+        ));
+    }
+    Ok(vec![read_slice(&mut f, 0)?])
+}
+
+fn read_slice<R: Read + Seek>(f: &mut R, base: u64) -> io::Result<Slice> {
+    f.seek(SeekFrom::Start(base))?;
+    let (swap, _) = parse_magic(read_u32(f)?)?;
+    let cputype = read_i32_sw(f, swap)?;
+    f.seek(SeekFrom::Start(base + 16))?;
+    let ncmds = read_u32_sw(f, swap)?;
+
+    let mut min_macos = None;
+    let mut cursor = base + HEADER_SIZE_64;
+    for _ in 0..ncmds {
+        f.seek(SeekFrom::Start(cursor))?;
+        let cmd = read_u32_sw(f, swap)?;
+        let cmd_size = read_u32_sw(f, swap)?;
+        match cmd {
+            LC_BUILD_VERSION => {
+                if read_u32_sw(f, swap)? == PLATFORM_MACOS {
+                    min_macos = Some(MacosVersion(read_u32_sw(f, swap)?));
+                }
+            }
+            LC_VERSION_MIN_MACOSX => min_macos = Some(MacosVersion(read_u32_sw(f, swap)?)),
+            _ => {}
+        }
+        if cmd_size == 0 {
+            break;
+        }
+        cursor += cmd_size as u64;
+    }
+    Ok(Slice {
+        cpu: Cpu::from_cputype(cputype),
+        min_macos,
+    })
+}
+
 // --- Internal helpers ---
 
 struct MachHeader64 {
@@ -351,6 +481,86 @@ mod tests {
         // Thin magics are fine.
         assert!(reject_fat(MH_MAGIC_64).is_ok());
         assert!(reject_fat(MH_CIGAM_64).is_ok());
+    }
+
+    #[test]
+    fn macos_versions_print_as_apple_writes_them() {
+        assert_eq!(MacosVersion::new(10, 12, 0).to_string(), "10.12");
+        assert_eq!(MacosVersion::new(11, 0, 0).to_string(), "11.0");
+        assert_eq!(MacosVersion::new(10, 15, 4).to_string(), "10.15.4");
+        assert!(MacosVersion::new(10, 15, 4) < MacosVersion::new(11, 0, 0));
+    }
+
+    #[test]
+    fn slices_of_this_test_binary() {
+        let exe = std::env::current_exe().unwrap();
+        let found = slices(&exe).unwrap();
+        let expected = if cfg!(target_arch = "aarch64") {
+            Cpu::Arm64
+        } else {
+            Cpu::X86_64
+        };
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].cpu, expected);
+        let min = found[0].min_macos.expect("cargo writes a minimum macOS");
+        assert!(min >= MacosVersion::new(10, 12, 0), "{min}");
+    }
+
+    /// A universal binary: a fat header in front of two thin slices, one
+    /// with `LC_BUILD_VERSION`, one with `LC_VERSION_MIN_MACOSX`.
+    #[test]
+    fn slices_of_a_fat_binary() {
+        fn thin(cputype: i32, cmd: u32, payload: &[u32]) -> Vec<u8> {
+            let size = 8 + 4 * payload.len() as u32;
+            let mut out = Vec::new();
+            for v in [MH_MAGIC_64, cputype as u32, 0, 2, 1, size, 0, 0] {
+                out.extend(v.to_le_bytes());
+            }
+            for v in [cmd, size].iter().chain(payload) {
+                out.extend(v.to_le_bytes());
+            }
+            out
+        }
+        let arm = thin(
+            CPU_TYPE_ARM64,
+            LC_BUILD_VERSION,
+            &[PLATFORM_MACOS, 0x000b_0000, 0x001a_0000, 0],
+        );
+        let intel = thin(CPU_TYPE_X86_64, LC_VERSION_MIN_MACOSX, &[0x000a_0c00, 0]);
+        let (arm_at, intel_at) = (0x1000u32, 0x2000u32);
+        let mut fat = Vec::new();
+        for v in [0xCAFEBABEu32, 2] {
+            fat.extend(v.to_be_bytes());
+        }
+        for (cputype, at, len) in [
+            (CPU_TYPE_ARM64, arm_at, arm.len()),
+            (CPU_TYPE_X86_64, intel_at, intel.len()),
+        ] {
+            for v in [cputype as u32, 0, at, len as u32, 12] {
+                fat.extend(v.to_be_bytes());
+            }
+        }
+        fat.resize(arm_at as usize, 0);
+        fat.extend(&arm);
+        fat.resize(intel_at as usize, 0);
+        fat.extend(&intel);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fat");
+        std::fs::write(&path, fat).unwrap();
+        assert_eq!(
+            slices(&path).unwrap(),
+            [
+                Slice {
+                    cpu: Cpu::Arm64,
+                    min_macos: Some(MacosVersion::new(11, 0, 0)),
+                },
+                Slice {
+                    cpu: Cpu::X86_64,
+                    min_macos: Some(MacosVersion::new(10, 12, 0)),
+                },
+            ]
+        );
     }
 
     #[test]

@@ -26,6 +26,8 @@ pub struct Config {
     pub privileges: PrivilegesConfig,
     #[serde(default)]
     pub install_cleanup: InstallCleanup,
+    #[serde(default)]
+    pub retire: Vec<RetireEntry>,
 
     #[serde(default)]
     pub components: Vec<ComponentEntry>,
@@ -174,6 +176,60 @@ fn validate(config: &Config) -> InstallerResult<()> {
         }
     }
 
+    validate_retire(config)
+}
+
+fn validate_retire(config: &Config) -> InstallerResult<()> {
+    let invalid = |msg: String| Err(InstallerError::Validation(msg));
+    // Relative paths would resolve against whatever directory the installer
+    // happens to run in.
+    let absolute = |p: &str| p.starts_with('/') || p.starts_with("#{");
+
+    for (i, entry) in config.retire.iter().enumerate() {
+        if entry.name.trim().is_empty() {
+            return invalid(format!("retire[{i}].name must not be empty"));
+        }
+        if entry.paths.is_empty() && entry.pkg_receipts.is_empty() && entry.launchd.is_empty() {
+            return invalid(format!(
+                "retire[{i}] ('{}') lists nothing to retire: give it paths, pkg_receipts or launchd",
+                entry.name
+            ));
+        }
+        for (j, p) in entry.paths.iter().enumerate() {
+            if !absolute(p) {
+                return invalid(format!(
+                    "retire[{i}].paths[{j}] '{p}' must be an absolute path or start with a #{{...}} variable"
+                ));
+            }
+        }
+        for (j, id) in entry.pkg_receipts.iter().enumerate() {
+            if !id.contains('.') || id.chars().any(char::is_whitespace) {
+                return invalid(format!(
+                    "retire[{i}].pkg_receipts[{j}] '{id}' must be a package identifier (e.g. \"com.example.app\")"
+                ));
+            }
+        }
+        for (j, l) in entry.launchd.iter().enumerate() {
+            if !l.label.contains('.') {
+                return invalid(format!(
+                    "retire[{i}].launchd[{j}].label '{}' must be a reverse-DNS identifier",
+                    l.label
+                ));
+            }
+            if config.launchd.iter().any(|own| own.label == l.label) {
+                return invalid(format!(
+                    "retire[{i}].launchd[{j}].label '{}' is one of this package's own [[launchd]] jobs",
+                    l.label
+                ));
+            }
+            if !absolute(&l.plist) {
+                return invalid(format!(
+                    "retire[{i}].launchd[{j}].plist '{}' must be an absolute path or start with a #{{...}} variable",
+                    l.plist
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -322,6 +378,120 @@ exit_timeout = 60
         assert_eq!(c.launchd[0].user_name.as_deref(), Some("_myapp"));
         assert!(c.launchd[0].keep_alive);
         assert_eq!(c.launchd[0].exit_timeout, Some(60));
+    }
+
+    #[test]
+    fn retire_defaults_to_nothing() {
+        let c = Config::from_toml(minimal()).unwrap();
+        assert!(c.retire.is_empty());
+    }
+
+    #[test]
+    fn test_parse_retire() {
+        let toml = r##"
+[package]
+id = "no.divvun.pahkat"
+name = "Pahkat"
+version = "3.0.0"
+
+[[retire]]
+name = "Divvun Manager"
+launchd = [{ label = "no.divvun.pahkatd", scope = "daemon", plist = "#{launch_daemons}/no.divvun.pahkatd.plist" }]
+paths = ["#{applications}/Divvun Manager.app", "/tmp/pahkat.sock", "/Library/Caches/Pahkat", "/Library/Logs/Pahkat"]
+pkg_receipts = ["no.divvun.Manager"]
+
+[[retire]]
+name = "Divvun Installer"
+paths = ["#{applications}/Divvun Installer.app"]
+"##;
+        let c = Config::from_toml(toml).unwrap();
+        assert_eq!(c.retire.len(), 2);
+        let manager = &c.retire[0];
+        assert_eq!(manager.name, "Divvun Manager");
+        assert_eq!(manager.paths.len(), 4);
+        assert_eq!(manager.paths[1], "/tmp/pahkat.sock");
+        assert_eq!(manager.pkg_receipts, ["no.divvun.Manager"]);
+        assert_eq!(manager.launchd.len(), 1);
+        assert_eq!(manager.launchd[0].label, "no.divvun.pahkatd");
+        assert_eq!(manager.launchd[0].scope, LaunchdScope::Daemon);
+        assert_eq!(
+            manager.launchd[0].plist,
+            "#{launch_daemons}/no.divvun.pahkatd.plist"
+        );
+        assert_eq!(c.retire[1].name, "Divvun Installer");
+        assert!(c.retire[1].pkg_receipts.is_empty() && c.retire[1].launchd.is_empty());
+    }
+
+    #[test]
+    fn test_retire_rejects() {
+        let with = |entry: &str| {
+            Config::from_toml(&format!(
+                "[package]\nid = \"no.divvun.test\"\nname = \"Test\"\nversion = \"1.0.0\"\n\n\
+                 [[launchd]]\nlabel = \"no.divvun.test.daemon\"\nprogram = \"/bin/true\"\n\n\
+                 [[retire]]\nname = \"Old\"\npaths = [\"/Library/Caches/Old\"]\n\n\
+                 [[retire]]\n{entry}"
+            ))
+            .err()
+            .map(|e| e.to_string())
+        };
+        let cases = [
+            ("paths = [\"/Library/Logs/Old\"]", "name"),
+            (
+                "name = \" \"\npaths = [\"/Library/Logs/Old\"]",
+                "retire[1].name",
+            ),
+            ("name = \"Old\"", "retire[1] ('Old') lists nothing"),
+            (
+                "name = \"Old\"\npaths = []\npkg_receipts = []\nlaunchd = []",
+                "retire[1] ('Old') lists nothing",
+            ),
+            (
+                "name = \"Old\"\npaths = [\"Library/Caches/Old\"]",
+                "retire[1].paths[0]",
+            ),
+            (
+                "name = \"Old\"\npaths = [\"/x/y\", \"\"]",
+                "retire[1].paths[1]",
+            ),
+            (
+                "name = \"Old\"\npkg_receipts = [\"manager\"]",
+                "retire[1].pkg_receipts[0]",
+            ),
+            (
+                "name = \"Old\"\npkg_receipts = [\"no.divvun. Manager\"]",
+                "retire[1].pkg_receipts[0]",
+            ),
+            (
+                "name = \"Old\"\nlaunchd = [{ label = \"pahkatd\", scope = \"daemon\", plist = \"/Library/LaunchDaemons/pahkatd.plist\" }]",
+                "retire[1].launchd[0].label",
+            ),
+            (
+                "name = \"Old\"\nlaunchd = [{ label = \"no.divvun.test.daemon\", scope = \"daemon\", plist = \"/Library/LaunchDaemons/x.plist\" }]",
+                "own [[launchd]]",
+            ),
+            (
+                "name = \"Old\"\nlaunchd = [{ label = \"no.divvun.old\", scope = \"daemon\", plist = \"old.plist\" }]",
+                "retire[1].launchd[0].plist",
+            ),
+            // `plist` and `scope` are required, and a misspelt key is an error,
+            // not a silently empty list.
+            (
+                "name = \"Old\"\nlaunchd = [{ label = \"no.divvun.old\", scope = \"daemon\" }]",
+                "plist",
+            ),
+            (
+                "name = \"Old\"\nlaunchd = [{ label = \"no.divvun.old\", plist = \"/Library/LaunchDaemons/x.plist\" }]",
+                "scope",
+            ),
+            (
+                "name = \"Old\"\npkg_reciepts = [\"no.divvun.Manager\"]",
+                "pkg_reciepts",
+            ),
+        ];
+        for (entry, expected) in cases {
+            let err = with(entry).unwrap_or_else(|| panic!("accepted:\n{entry}"));
+            assert!(err.contains(expected), "{entry}\n→ {err}");
+        }
     }
 
     #[test]

@@ -72,7 +72,7 @@ Where we stash per-install metadata (the "Add/Remove Programs" analog):
 The two platforms have **separate** schemas, in separate files:
 
 - **`outto.toml`**: Windows schema. Has `[[registry]]`, `[[shortcuts]]`, `[[services]]`, `[[com]]`, `[[associations]]`, `[[fonts]]`, `[[environment]]`, `[reboot]`, etc. Defined in `outto_core::config`.
-- **`outto.macos.toml`**: macOS schema. Has `[[launchd]]`, `[[plist]]`, `[[symlinks]]`, `[[fonts]]` (simpler), `[[environment]]` (shell rc blocks), `[[associations]]` (lsregister wrapper), `[privileges]`. Defined in `outto_macos::config`.
+- **`outto.macos.toml`**: macOS schema. Has `[[launchd]]`, `[[plist]]`, `[[symlinks]]`, `[[fonts]]` (simpler), `[[environment]]` (shell rc blocks), `[[associations]]` (lsregister wrapper), `[privileges]`, `[[retire]]` (one entry per product another installer left: its paths, pkg receipts and launchd jobs, removed after a successful install, never rolled back; `actions/retire.rs`). Defined in `outto_macos::config`.
 
 Common sections on both: `[package]`, `[[files]]`, `[[dirs]]`, `[[run]]`, `[[prerequisites]]`, `[[components]]`, `[upgrade]`, `[uninstall]`, `[logging]`.
 

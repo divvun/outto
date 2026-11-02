@@ -3,6 +3,7 @@ pub mod files_ext;
 pub mod fonts;
 pub mod launchd;
 pub mod plist;
+pub mod retire;
 pub mod symlinks;
 
 use std::collections::HashSet;
