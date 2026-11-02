@@ -1160,3 +1160,447 @@ overwrite = "always"
         assert!(common.is_dir() && user.is_dir());
     }
 }
+
+// ---------------------------------------------------------------------------
+// [[retire]]: removing an old product's Inno install, service and event log
+// source after a successful install (HKLM, SCM, Program Files — needs admin)
+// ---------------------------------------------------------------------------
+
+mod retire {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    use outto_core::callbacks::{
+        InstallOptions, InstallerCallbacks, LogLevel, Prompt, PromptResponse,
+    };
+    use outto_core::error::{ErrorAction, InstallerError};
+    use outto_windows::actions::{registry, services};
+
+    const ID: &str = "no.divvun.outto-test.retire";
+    const GUID: &str = "3F6C1E9B-8A27-4D05-B3E1-5C9A7D2F4B68";
+    const SERVICE: &str = "outto-test-retire-old";
+    const EVENT_SOURCE: &str =
+        r"SYSTEM\CurrentControlSet\Services\EventLog\Application\Outto Test Retire Old";
+
+    fn entry() -> String {
+        format!(r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{{{GUID}}}_is1")
+    }
+
+    #[derive(Default)]
+    struct Logs(Mutex<Vec<String>>);
+
+    impl InstallerCallbacks for Logs {
+        fn on_progress(&self, _phase: &str, _current: u64, _total: u64) {}
+        fn on_prompt(&self, _prompt: Prompt) -> PromptResponse {
+            PromptResponse::Yes
+        }
+        fn on_log(&self, _level: LogLevel, message: &str) {
+            self.0.lock().unwrap().push(message.to_string());
+        }
+        fn on_error(&self, _error: &InstallerError) -> ErrorAction {
+            ErrorAction::Abort
+        }
+    }
+
+    impl Logs {
+        fn text(&self) -> String {
+            self.0.lock().unwrap().join("\n")
+        }
+    }
+
+    /// Removes whatever a failed run left: the install, the fake old
+    /// product and its service.
+    struct Cleanup {
+        test_dir: PathBuf,
+        install_dir: PathBuf,
+        paths: Vec<PathBuf>,
+    }
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            if let Ok(Some(_)) = outto_windows::detect::detect_existing_install(ID) {
+                let _ = outto_windows::uninstall_package(&self.install_dir, ID, &Logs::default());
+                let _ = outto_windows::detect::remove_uninstall_registry(ID);
+            }
+            let _ = services::stop_service(SERVICE);
+            let _ = services::delete_service(SERVICE);
+            let _ = registry::delete_tree("HKLM", &entry());
+            let _ = registry::delete_tree("HKLM", EVENT_SOURCE);
+            for path in &self.paths {
+                if path.is_dir() {
+                    let _ = std::fs::remove_dir_all(path);
+                } else {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.test_dir);
+        }
+    }
+
+    fn create_hklm_key(key: &str) {
+        use windows_sys::Win32::System::Registry::*;
+        let wide = super::to_wide(key);
+        let mut hkey: HKEY = std::ptr::null_mut();
+        let result = unsafe {
+            RegCreateKeyExW(
+                HKEY_LOCAL_MACHINE,
+                wide.as_ptr(),
+                0,
+                std::ptr::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_ALL_ACCESS,
+                std::ptr::null(),
+                &mut hkey,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(result, 0, "{key}");
+        unsafe { RegCloseKey(hkey) };
+    }
+
+    fn hklm_key_exists(key: &str) -> bool {
+        registry::key_pattern_exists(&format!(r"HKLM\{key}")).unwrap()
+    }
+
+    fn sc(args: &[&str]) -> i32 {
+        std::process::Command::new("sc.exe")
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .code()
+            .unwrap_or(-1)
+    }
+
+    fn config(fail: bool, shortcuts: &[&Path]) -> outto_core::Config {
+        let run = if fail {
+            "[[run]]\nphase = \"after_install\"\ncommand = \"#{sys}/cmd.exe\"\n\
+             arguments = \"/c exit 1\"\nwait = true\nshow = \"hidden\"\nrequired = true\n"
+        } else {
+            ""
+        };
+        let shortcuts = shortcuts
+            .iter()
+            .map(|s| format!("'{}'", s.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        outto_core::Config::from_toml(&format!(
+            r##"
+[package]
+id = "{ID}"
+name = "OuttoRetireTest"
+version = "3.0.0"
+privileges = "admin"
+
+[[files]]
+source = "new.txt"
+dest = "#{{app}}"
+
+[[retire]]
+name = "Outto Test Retire Old"
+inno_app_id = "{GUID}"
+services = ["{SERVICE}"]
+shortcuts = [{shortcuts}]
+registry_keys = ['HKLM\{EVENT_SOURCE}']
+{run}"##
+        ))
+        .unwrap()
+    }
+
+    fn install(config: &outto_core::Config, cleanup: &Cleanup, logs: &Logs) -> Result<(), String> {
+        let uninstaller = cleanup.test_dir.join("uninstall.exe");
+        std::fs::write(&uninstaller, b"MZ").unwrap();
+        outto_windows::install(
+            config,
+            &InstallOptions {
+                source_dir: cleanup.test_dir.join("source"),
+                install_dir: Some(cleanup.install_dir.clone()),
+                selected_components: None,
+                uninstall_exe: Some(uninstaller),
+                close_apps: true,
+            },
+            logs,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// An old product installed the way the old Pahkat Service was: an Inno
+    /// Setup entry in the 32-bit view, a directory in Program Files (x86),
+    /// a running service whose program is in it, an event log source and
+    /// all users' shortcuts. An install that fails leaves all of it as it
+    /// was and the stopped service stopped; one that succeeds removes it.
+    #[test]
+    #[ignore]
+    fn test_admin_retire_inno_install_service_and_event_source() {
+        super::assert_admin();
+        let pid = std::process::id();
+        let test_dir = std::env::temp_dir().join("outto_test_admin_retire");
+        let pf32 = PathBuf::from(std::env::var_os("ProgramFiles(x86)").unwrap());
+        let old_dir = pf32.join(format!("Outto Test Retire Old {pid}"));
+        let probe = config(false, &[]);
+        let resolver = outto_windows::make_resolver(&probe, None);
+        let menu = PathBuf::from(resolver.get_variable("commonstartmenu").unwrap());
+        let startup = PathBuf::from(resolver.get_variable("commonstartup").unwrap());
+        let group = menu.join(format!("Outto Test Retire Old {pid}"));
+        let menu_lnk = group.join("Old.lnk");
+        let startup_lnk = startup.join(format!("Outto Test Retire Old {pid}.lnk"));
+        let cleanup = Cleanup {
+            install_dir: test_dir.join("installed"),
+            paths: vec![old_dir.clone(), group.clone(), startup_lnk.clone()],
+            test_dir: test_dir.clone(),
+        };
+        let _ = std::fs::remove_dir_all(&test_dir);
+        std::fs::create_dir_all(test_dir.join("source")).unwrap();
+        std::fs::write(test_dir.join(r"source\new.txt"), "new").unwrap();
+
+        std::fs::create_dir_all(old_dir.join("data")).unwrap();
+        let sys = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+        let service_exe = old_dir.join("old-service.exe");
+        std::fs::copy(sys.join("snmptrap.exe"), &service_exe).unwrap();
+        for name in ["unins000.exe", "unins000.dat", r"data\x.txt"] {
+            std::fs::write(old_dir.join(name), "old").unwrap();
+        }
+        std::fs::create_dir_all(&group).unwrap();
+        std::fs::write(&menu_lnk, "old").unwrap();
+        std::fs::write(&startup_lnk, "old").unwrap();
+        create_hklm_key(&entry());
+        registry::set_string_value(
+            "HKLM",
+            &entry(),
+            "InstallLocation",
+            &format!("{}\\", old_dir.display()),
+        )
+        .unwrap();
+        create_hklm_key(EVENT_SOURCE);
+        registry::set_string_value(
+            "HKLM",
+            EVENT_SOURCE,
+            "EventMessageFile",
+            &service_exe.display().to_string(),
+        )
+        .unwrap();
+        let bin_path = format!("\"{}\"", service_exe.display());
+        assert_eq!(
+            sc(&["create", SERVICE, "binPath=", &bin_path, "start=", "demand"]),
+            0
+        );
+        let started = sc(&["start", SERVICE]) == 0;
+
+        let old_is_there = |logs: &Logs| {
+            for path in [
+                &service_exe,
+                &old_dir.join(r"data\x.txt"),
+                &menu_lnk,
+                &startup_lnk,
+            ] {
+                assert!(path.exists(), "{} missing\n{}", path.display(), logs.text());
+            }
+            assert!(hklm_key_exists(&entry()));
+            assert!(hklm_key_exists(EVENT_SOURCE));
+            assert!(services::is_registered(SERVICE).unwrap());
+        };
+
+        // The old service's updater stops it before it runs the installer.
+        services::stop_service(SERVICE).unwrap();
+        let logs = Logs::default();
+        let shortcuts = [menu_lnk.as_path(), startup_lnk.as_path()];
+        let err = install(&config(true, &shortcuts), &cleanup, &logs).unwrap_err();
+        assert!(err.contains("exited with 1"), "{err}");
+        old_is_there(&logs);
+        assert_eq!(
+            sc(&["query", SERVICE]),
+            0,
+            "the failed install left the service registered"
+        );
+        let query = std::process::Command::new("sc.exe")
+            .args(["query", SERVICE])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&query.stdout).contains("STOPPED"),
+            "the failed install started the old service again"
+        );
+        assert!(!logs.text().contains("Retire "), "{}", logs.text());
+
+        if started {
+            assert_eq!(sc(&["start", SERVICE]), 0);
+        }
+        let logs = Logs::default();
+        install(&config(false, &shortcuts), &cleanup, &logs)
+            .unwrap_or_else(|e| panic!("{e}\n{}", logs.text()));
+        assert!(cleanup.install_dir.join("new.txt").is_file());
+        assert!(!old_dir.exists(), "{}", logs.text());
+        assert!(!group.exists() && !startup_lnk.exists(), "{}", logs.text());
+        assert!(menu.is_dir() && startup.is_dir());
+        assert!(!hklm_key_exists(&entry()));
+        assert!(!hklm_key_exists(EVENT_SOURCE));
+        // ERROR_SERVICE_DOES_NOT_EXIST
+        assert_eq!(sc(&["query", SERVICE]), 1060, "{}", logs.text());
+        assert!(!logs.text().contains("failed"), "{}", logs.text());
+
+        outto_windows::uninstall_package(&cleanup.install_dir, ID, &logs)
+            .unwrap_or_else(|e| panic!("{e}\n{}", logs.text()));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The all-users package log directory (ACLs, ownership — needs admin)
+// ---------------------------------------------------------------------------
+
+mod package_log {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    use outto_windows::package_log::{Scope, prepare_in};
+
+    const ID: &str = "no.divvun.outto-test.log";
+
+    /// A scratch directory under `%ProgramData%`, where anyone may create
+    /// a directory, removed when dropped.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = PathBuf::from(std::env::var_os("ProgramData").unwrap())
+                .join(format!("outto-test-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn icacls(path: &Path) -> String {
+        let out = Command::new("icacls").arg(path).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    fn owned_by_administrators(path: &Path) -> bool {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{
+            IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+            WinBuiltinAdministratorsSid,
+        };
+        let wide = super::to_wide(&path.to_string_lossy());
+        let mut owner: PSID = std::ptr::null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let result = unsafe {
+            GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        assert_eq!(result, 0, "{}", path.display());
+        let administrators = unsafe { IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != 0 };
+        unsafe { LocalFree(descriptor) };
+        administrators
+    }
+
+    /// Only Administrators and SYSTEM may write: their full control and
+    /// Users' read and execute, none of it inherited.
+    fn assert_secured(dir: &Path) {
+        let acl = icacls(dir);
+        for ace in [
+            r"NT AUTHORITY\SYSTEM:(OI)(CI)(F)",
+            r"BUILTIN\Administrators:(OI)(CI)(F)",
+            r"BUILTIN\Users:(OI)(CI)(RX)",
+        ] {
+            assert!(acl.contains(ace), "{ace} missing:\n{acl}");
+        }
+        assert_eq!(acl.matches(":(").count(), 3, "{acl}");
+        assert!(!acl.contains("(I)"), "inherited entries:\n{acl}");
+        assert!(
+            owned_by_administrators(dir),
+            "{} has another owner",
+            dir.display()
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn test_admin_package_log_dir_is_created_secured() {
+        super::assert_admin();
+        let scratch = Scratch::new("log-new");
+        let dir = scratch.0.join("outto");
+        let path = prepare_in(&dir, ID, Scope::Machine).unwrap();
+        assert_eq!(path, dir.join(format!("{ID}.log")));
+        assert_secured(&dir);
+        std::fs::write(&path, "a line\r\n").unwrap();
+        let file_acl = icacls(&path);
+        assert!(
+            file_acl.contains(r"BUILTIN\Users:(I)(RX)"),
+            "the log does not inherit the directory's ACL:\n{file_acl}"
+        );
+        // Prepared again, an existing log of outto's own is kept.
+        prepare_in(&dir, ID, Scope::Machine).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a line\r\n");
+    }
+
+    /// A directory someone else made first, which inherits `%ProgramData%`'s
+    /// ACL letting Users create files, is taken over; a log file in it that
+    /// is not outto's is deleted.
+    #[test]
+    #[ignore]
+    fn test_admin_package_log_takes_over_a_squatted_dir() {
+        super::assert_admin();
+        let scratch = Scratch::new("log-squat");
+        let dir = scratch.0.join("outto");
+        std::fs::create_dir(&dir).unwrap();
+        assert!(icacls(&dir).contains("(I)"));
+        let planted = dir.join(format!("{ID}.log"));
+        std::fs::write(&planted, "planted").unwrap();
+        let status = Command::new("icacls")
+            .arg(&planted)
+            .args(["/setowner", "*S-1-5-32-545"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let path = prepare_in(&dir, ID, Scope::Machine).unwrap();
+        assert_secured(&dir);
+        assert!(!path.exists(), "the planted log is still there");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_admin_package_log_refuses_a_junction_and_drops_a_hard_link() {
+        super::assert_admin();
+        let scratch = Scratch::new("log-links");
+        let elsewhere = scratch.0.join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let before = icacls(&elsewhere);
+        let junction = scratch.0.join("outto");
+        let status = Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&elsewhere)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let err = prepare_in(&junction, ID, Scope::Machine).unwrap_err();
+        assert!(err.to_string().contains("not a plain directory"), "{err}");
+        assert_eq!(icacls(&elsewhere), before);
+        std::fs::remove_dir(&junction).unwrap();
+
+        let dir = scratch.0.join("outto");
+        prepare_in(&dir, ID, Scope::Machine).unwrap();
+        let target = scratch.0.join("target.txt");
+        std::fs::write(&target, "not a log").unwrap();
+        std::fs::hard_link(&target, dir.join(format!("{ID}.log"))).unwrap();
+        let path = prepare_in(&dir, ID, Scope::Machine).unwrap();
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "not a log");
+    }
+}

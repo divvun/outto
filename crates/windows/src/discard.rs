@@ -97,24 +97,38 @@ pub fn discard_tree(dir: &Path, callbacks: &dyn InstallerCallbacks) -> usize {
             }
         }
     }
-    if std::fs::remove_dir(dir).is_err() && dir.exists() {
-        if move_file(dir, None, MOVEFILE_DELAY_UNTIL_REBOOT).is_ok() {
-            callbacks.on_log(
-                LogLevel::Warn,
-                &format!(
-                    "{} is not empty yet; it is deleted at the next restart",
-                    dir.display()
-                ),
-            );
-        } else {
-            callbacks.on_log(
-                LogLevel::Warn,
-                &format!("Could not remove {}", dir.display()),
-            );
-            failures += 1;
-        }
+    if !remove_dir_or_schedule(dir, callbacks) {
+        failures += 1;
     }
     failures
+}
+
+/// Remove the directory `dir`, which should be empty but for files that
+/// could only be scheduled for deletion at the next restart; if it is not
+/// empty yet, delete it at the next restart too, after them. A directory
+/// that still holds something then stays: Windows deletes only empty ones.
+/// Returns false, having logged it, if it could be neither removed nor
+/// scheduled.
+pub fn remove_dir_or_schedule(dir: &Path, callbacks: &dyn InstallerCallbacks) -> bool {
+    if std::fs::remove_dir(dir).is_ok() || !dir.exists() {
+        return true;
+    }
+    if move_file(dir, None, MOVEFILE_DELAY_UNTIL_REBOOT).is_ok() {
+        callbacks.on_log(
+            LogLevel::Warn,
+            &format!(
+                "{} is not empty yet; it is deleted at the next restart",
+                dir.display()
+            ),
+        );
+        true
+    } else {
+        callbacks.on_log(
+            LogLevel::Warn,
+            &format!("Could not remove {}", dir.display()),
+        );
+        false
+    }
 }
 
 /// Where files in use are moved: the Windows temporary directory, then the

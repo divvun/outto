@@ -14,10 +14,12 @@ pub mod detect;
 pub mod discard;
 pub mod elevation;
 pub mod manifest;
+pub mod package_log;
 pub mod paths;
 pub mod pe;
 pub mod pending_renames;
 pub mod restart_manager;
+pub mod retire;
 pub mod self_delete;
 pub mod uninstall;
 
@@ -50,7 +52,8 @@ pub fn make_resolver(config: &Config, install_dir: Option<&std::path::Path>) -> 
 
 /// Windows install entry point. Mirrors the pipeline the root crate used to own:
 /// arch + elevation check → ARP detect → prerequisites → create install dir →
-/// [`actions::execute_install`] → manifest save → ARP write → upgrade cleanup.
+/// [`actions::execute_install`] → manifest save → upgrade cleanup → ARP write
+/// → `[[retire]]` ([`retire::retire`]).
 /// On failure, rolls back every recorded action in reverse.
 pub fn install(
     config: &Config,
@@ -370,6 +373,9 @@ pub fn install(
                 ),
             );
 
+            // Only now that this install stands, and never undone.
+            retire::retire(config, &resolver, &install_dir, callbacks);
+
             callbacks.on_log(LogLevel::Info, "Installation complete");
             callbacks.on_progress("complete", 1, 1);
 
@@ -545,8 +551,10 @@ fn inherit_kept(new: &mut InstallManifest<WindowsAction>, old: &InstallManifest<
 /// `declared_dirs` (`[[dirs]]`) nor holds one of those or a copied file.
 /// Directories an earlier install created are not this install's, so an
 /// earlier version's directory goes. Receipt (`.outto`) directories and
-/// files staged to replace others at the next restart stay. A protected
-/// directory such as `%ProgramFiles%` is never pruned.
+/// files staged to replace others at the next restart stay. When nothing
+/// in `dir` stays, `dir` itself goes too, at the next restart if a file in
+/// it is only deleted then. A protected directory such as `%ProgramFiles%`
+/// is never pruned.
 fn prune(
     dir: &std::path::Path,
     manifest: &InstallManifest<WindowsAction>,
@@ -578,23 +586,27 @@ fn prune(
                 .any(|k| k.starts_with(&prefix))
     };
 
+    /// Returns whether anything in `dir` stays.
     fn walk(
         dir: &std::path::Path,
         keep_file: &dyn Fn(&std::path::Path) -> bool,
         keep_dir: &dyn Fn(&std::path::Path) -> bool,
         callbacks: &dyn InstallerCallbacks,
-    ) {
+    ) -> bool {
         let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
+            return true;
         };
+        let mut kept = false;
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_lowercase();
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 if name == ".outto" {
+                    kept = true;
                     continue;
                 }
                 if keep_dir(&path) {
+                    kept = true;
                     walk(&path, keep_file, keep_dir, callbacks);
                 } else {
                     callbacks.on_log(
@@ -614,16 +626,29 @@ fn prune(
                         &format!("Upgrade: could not remove {}: {e}", path.display()),
                     );
                 }
+            } else {
+                kept = true;
             }
         }
+        kept
     }
 
-    walk(
+    if !dir.is_dir() {
+        return;
+    }
+    let kept = walk(
         dir,
         &|f| files.contains(&key(f)),
         &holds_recorded,
         callbacks,
     );
+    if !kept && !holds_recorded(dir) {
+        callbacks.on_log(
+            LogLevel::Info,
+            &format!("Upgrade: removing {}, which is empty", dir.display()),
+        );
+        discard::remove_dir_or_schedule(dir, callbacks);
+    }
 }
 
 /// Remove the shortcuts the previous install created that this one did not
@@ -1707,6 +1732,214 @@ dest = "#{{app}}/#{{package.version}}"
         assert!(hkcu_key_exists(&entry));
         assert!(!test_dir.join("installed").exists());
         actions::registry::delete_key("HKCU", &entry).unwrap();
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    /// `[[retire]]` runs only once an install has succeeded: a failed
+    /// install leaves the old product as it was, and a successful one ends
+    /// its program, removes its files (moving aside one that is loaded),
+    /// shortcut, folder, registry key and Add/Remove Programs entry, going
+    /// on past a step that fails.
+    #[test]
+    fn test_retire_runs_only_after_a_successful_install() {
+        let test_dir = std::env::temp_dir().join("outto_test_retire");
+        let install_dir = test_dir.join("installed");
+        let source_dir = test_dir.join("source");
+        let old_dir = test_dir.join("Old Product");
+        let group = test_dir.join(r"menu\Old Product");
+        let shortcut = group.join("Old Product.lnk");
+        let guid = "5E0B7A31-9C2D-4F8E-B6A4-3D1C0E9F8A27";
+        let entry = format!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{{{guid}}}_is1");
+        let old_key = r"Software\OuttoTest_retire\EventLog\Old Product";
+        let _ = fs::remove_dir_all(&test_dir);
+        let _ = delete_hkcu_tree(&entry);
+        let _ = delete_hkcu_tree(r"Software\OuttoTest_retire");
+
+        fs::create_dir_all(old_dir.join("sub")).unwrap();
+        fs::create_dir_all(&group).unwrap();
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("new.txt"), "new").unwrap();
+        let sys = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+        fs::copy(sys.join("cmd.exe"), old_dir.join("outto-retire-old.exe")).unwrap();
+        fs::copy(system_dll(), old_dir.join("old.dll")).unwrap();
+        for name in ["unins000.exe", "unins000.dat", r"sub\data.txt"] {
+            fs::write(old_dir.join(name), "old").unwrap();
+        }
+        fs::write(&shortcut, "not really a shortcut").unwrap();
+        create_hkcu_key(&entry);
+        actions::registry::set_string_value(
+            "HKCU",
+            &entry,
+            "InstallLocation",
+            &format!("{}\\", old_dir.display()),
+        )
+        .unwrap();
+        create_hkcu_key(&format!(r"{old_key}\Sub"));
+        actions::registry::set_string_value("HKCU", old_key, "EventMessageFile", "x").unwrap();
+
+        let mut old_program = std::process::Command::new(old_dir.join("outto-retire-old.exe"))
+            .args(["/q", "/k"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let module = load_library(&old_dir.join("old.dll"));
+
+        let config = |fail: bool| {
+            let run = if fail {
+                "[[run]]\nphase = \"after_install\"\ncommand = \"#{sys}/cmd.exe\"\n\
+                 arguments = \"/c exit 1\"\nwait = true\nshow = \"hidden\"\nrequired = true\n"
+            } else {
+                ""
+            };
+            Config::from_toml(&format!(
+                r##"
+[package]
+id = "com.test.retire"
+name = "RetireTest"
+version = "1.0.0"
+
+[[files]]
+source = "*"
+dest = "#{{app}}"
+
+[[retire]]
+name = "Old Product"
+inno_app_id = "{guid}"
+processes = ["outto-retire-old.exe"]
+services = ["OuttoTestRetireNotRegistered"]
+shortcuts = ['#{{no_such_folder}}\Old Product.lnk', '{shortcut}']
+registry_keys = ['HKCU\{old_key}']
+{run}"##,
+                shortcut = shortcut.display(),
+            ))
+            .unwrap()
+        };
+        let options = InstallOptions {
+            source_dir,
+            install_dir: Some(install_dir.clone()),
+            selected_components: None,
+            uninstall_exe: Some(fake_uninstaller()),
+            close_apps: true,
+        };
+        let callbacks = TestCallbacks::default();
+        let old_is_there = |there: bool| {
+            for path in [
+                old_dir.join("outto-retire-old.exe"),
+                old_dir.join("unins000.exe"),
+                old_dir.join(r"sub\data.txt"),
+                shortcut.clone(),
+            ] {
+                assert_eq!(path.exists(), there, "{}", path.display());
+            }
+            assert_eq!(hkcu_key_exists(&entry), there);
+            assert_eq!(hkcu_key_exists(&format!(r"{old_key}\Sub")), there);
+        };
+
+        let err = install(&config(true), &options, &callbacks).unwrap_err();
+        assert!(matches!(err, InstallerError::CommandExec { .. }), "{err}");
+        old_is_there(true);
+        assert!(old_program.try_wait().unwrap().is_none());
+        assert!(!install_dir.join("new.txt").exists());
+
+        install(&config(false), &options, &callbacks).unwrap();
+        assert!(install_dir.join("new.txt").is_file());
+        old_is_there(false);
+        assert!(!old_dir.exists(), "{:?}", callbacks.logs);
+        assert!(!group.exists() && !group.parent().unwrap().exists());
+        assert!(hkcu_key_exists(r"Software\OuttoTest_retire\EventLog"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while old_program.try_wait().unwrap().is_none() {
+            assert!(std::time::Instant::now() < deadline, "the old program runs");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        let logs = callbacks.logs.lock().unwrap().clone();
+        let retire: Vec<&(LogLevel, String)> = logs
+            .iter()
+            .filter(|(_, m)| m.starts_with("Retire"))
+            .collect();
+        assert!(
+            retire
+                .iter()
+                .any(|(level, m)| *level == LogLevel::Warn && m.contains("no_such_folder")),
+            "{retire:#?}"
+        );
+        assert!(
+            retire
+                .iter()
+                .any(|(_, m)| m.contains("OuttoTestRetireNotRegistered is not registered")),
+            "{retire:#?}"
+        );
+        assert!(
+            retire
+                .last()
+                .is_some_and(|(_, m)| m.contains("1 step(s) failed")),
+            "{retire:#?}"
+        );
+        let moved = logs.iter().find_map(|(_, m)| {
+            m.strip_suffix(", which is deleted at the next restart")?
+                .split_once("old.dll is in use; moved it to ")
+                .map(|(_, to)| PathBuf::from(to))
+        });
+
+        unsafe { windows_sys::Win32::Foundation::FreeLibrary(module) };
+        if let Some(moved) = moved {
+            let _ = fs::remove_file(moved);
+        }
+        uninstall_package(&install_dir, "com.test.retire", &callbacks).unwrap();
+        let _ = delete_hkcu_tree(r"Software\OuttoTest_retire");
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    /// `[upgrade] prune` takes away a directory the package no longer uses
+    /// once nothing in it is left, and keeps one that holds the install.
+    #[test]
+    fn test_prune_removes_its_emptied_root() {
+        let test_dir = std::env::temp_dir().join("outto_test_prune_root");
+        let install_dir = test_dir.join("installed");
+        let source_dir = test_dir.join("source");
+        let old_root = test_dir.join("old-data");
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir_all(old_root.join(r"1.0.0\sub")).unwrap();
+        fs::write(old_root.join(r"1.0.0\sub\a.txt"), "old").unwrap();
+        fs::write(old_root.join("b.txt"), "old").unwrap();
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("new.txt"), "new").unwrap();
+        let config = Config::from_toml(&format!(
+            r##"
+[package]
+id = "com.test.prune-root"
+name = "PruneRoot"
+version = "2.0.0"
+
+[upgrade]
+prune = ["#{{app}}", '{}']
+
+[[files]]
+source = "*"
+dest = "#{{app}}"
+"##,
+            old_root.display()
+        ))
+        .unwrap();
+        let callbacks = TestCallbacks::default();
+        install(
+            &config,
+            &InstallOptions {
+                source_dir,
+                install_dir: Some(install_dir.clone()),
+                selected_components: None,
+                uninstall_exe: Some(fake_uninstaller()),
+                close_apps: true,
+            },
+            &callbacks,
+        )
+        .unwrap();
+        assert!(!old_root.exists(), "{:?}", callbacks.logs);
+        assert!(install_dir.join("new.txt").is_file());
+        assert!(install_dir.join(".outto").is_dir());
+        uninstall_package(&install_dir, "com.test.prune-root", &callbacks).unwrap();
         let _ = fs::remove_dir_all(&test_dir);
     }
 

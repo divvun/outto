@@ -79,6 +79,14 @@ The installer and the uninstaller exit with the same codes, on Windows and macOS
 
 A silent install restarts the machine itself when a restart is needed, unless `/NORESTART` is passed. Callers that schedule restarts themselves pass `/NORESTART` and act on 3010.
 
+## Logs
+
+On Windows, every install and uninstall of a package appends to that package's own log, whatever its switches: `%ProgramData%\outto\<package id>.log`, or `%LOCALAPPDATA%\outto\<package id>.log` for a package with `privileges = "user"`. Each run begins with a line giving the time, outto's version, what it does and how, and its command line; every warning and error follows. A log larger than 1 MiB when a run starts is cut back to its newest 512 KiB, from the start of a line.
+
+`%ProgramData%\outto` belongs to Administrators, and inherits nothing from `%ProgramData%`: SYSTEM and Administrators have full control, Users can read. outto gives an existing directory of that name the same owner and ACL, writes nothing through one that is a link elsewhere, and deletes a log file that is a link or that Administrators or SYSTEM do not own.
+
+`/LOG` and `/LOG="path"` (or `--log`) write a log of the run as well, as with Inno Setup.
+
 ## Files held by running apps
 
 On Windows, when running apps hold a file the installer has to replace, Restart Manager can close them, and relaunch the ones that registered for it once the install is done. The installer asks first, unless it runs with `/VERYSILENT` or `/SUPPRESSMSGBOXES`, when it closes them without asking.
@@ -182,11 +190,33 @@ When the service is already registered, as it is when a newer version installs o
 
 On macOS, a `[[launchd]]` job that is already loaded is booted out before any file is copied, and bootstrapped again from the new plist once it is written; a failed install puts the old plist back and bootstraps the old job.
 
+### Retiring other installs
+
+A `[[retire]]` entry names an install that outto did not make, such as the older product a package takes the place of, for outto to remove once the package has installed:
+
+```toml
+[[retire]]
+name = "Old Service"                                # for the log
+inno_app_id = "8A3F2C1D-0B4E-4F6A-9C7D-1E2F3A4B5C6D" # its Inno Setup AppId, without braces
+services = ["old-service"]
+registry_keys = ['HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\Old Service']
+
+[[retire]]
+name = "Old Manager"
+inno_app_id = "1C2D3E4F-5A6B-4C7D-8E9F-A0B1C2D3E4F5"
+processes = ["OldManager.exe"]
+shortcuts = ["#{commonstartmenu}/Old Manager.lnk", "#{commonstartup}/Old Manager.lnk"]
+```
+
+Nothing here runs unless the install succeeds, and nothing here is undone. Once the install is in place and registered, outto retires the entries in the order they are listed. For each, it ends every running program of each `processes` image name, except the installer itself and the programs that started it; stops each service in `services`, waits for it to stop, and deletes it; removes the directory the Inno Setup install's Add/Remove Programs entry names, with everything in it; deletes the `shortcuts`, and their folder once empty; deletes the `registry_keys` with everything under them; and last deletes the Inno Setup install's Add/Remove Programs entries, under HKLM's native and 32-bit views and HKCU. A file still in use, such as the program that started the installer, is moved aside and deleted at the next restart. Each step is logged, and a step that fails is logged and the next one runs; the install still succeeds.
+
+This is separate from `legacy_inno_app_id`, which names the Inno Setup install a package installs over, and which is uninstalled or adopted before the install starts.
+
 ## Configuration sections
 
 | Section | Purpose |
 |---|---|
-| `[package]` | id, name, version, publisher, default_dir, privileges, architecture (`x86`, `x64`, `arm64`, `any`), `legacy_inno_app_id` and `legacy_inno_mode` (`uninstall` or `adopt`) |
+| `[package]` | id, name, version, publisher, default_dir, privileges, architecture (`x86`: x86 and x64 Windows; `x64`; `x64compatible`: x64 and Arm64 Windows, as Inno Setup 6.3; `arm64`; `any`), `legacy_inno_app_id` and `legacy_inno_mode` (`uninstall` or `adopt`) |
 | `[[files]]` | Copy files/globs into `dest`, per-file `overwrite` policy |
 | `[[dirs]]` | Create directories (optionally preserved on uninstall) |
 | `[[registry]]` | HKLM/HKCU/HKCR keys and values |
@@ -199,7 +229,8 @@ On macOS, a `[[launchd]]` job that is already loaded is booted out before any fi
 | `[[prerequisites]]` | Detect and require prior installs |
 | `[[run]]` | Run commands in `before_install` / `after_install` / `before_uninstall` / `after_uninstall` phases; `#{log_arg:NAME}` passes `/LOG` on; `required = true` makes a failure fail the operation (see above) |
 | `[[components]]` | Optional/required component groups; each entry may set `component = "foo"` |
-| `[upgrade]` | `policy = "overwrite" \| "side_by_side" \| "fail"`; `downgrade = "refuse"` with an optional `[upgrade.installed_version]` registry probe; `prune`, directories emptied of everything the install did not record |
+| `[upgrade]` | `policy = "overwrite" \| "side_by_side" \| "fail"`; `downgrade = "refuse"` with an optional `[upgrade.installed_version]` registry probe; `prune`, directories emptied of everything the install did not record, and removed once nothing in them is |
+| `[[retire]]` | Other installs to remove once the install has succeeded: an Inno Setup install by AppId, services, programs, shortcuts and registry keys (see above) |
 | `[uninstall]` | Display icon, whether to remove `#{app}` on uninstall, extra dirs; `[[uninstall.refuse_while]]` registry keys (with `*` segments) that make the uninstaller refuse, exiting 2 |
 | `[reboot]` | `never` / `if_needed` / `always`, Restart Manager integration (see **Files held by running apps**) |
 | `[logging]` | Install log path |

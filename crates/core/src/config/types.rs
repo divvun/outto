@@ -2,11 +2,15 @@ use serde::{Deserialize, Serialize};
 
 /// A Windows architecture selector. `x86` matches x86 and x64 Windows, `x64`
 /// only x64 Windows and `arm64` only Arm64 Windows, also when the installer
-/// itself runs there under x64 emulation.
+/// itself runs there under x64 emulation. `x64compatible`, Inno Setup 6.3's
+/// name for it, matches the Windows that run x64 programs: x64 Windows, and
+/// Arm64 Windows, which runs them under emulation.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Architecture {
     X64,
+    #[serde(rename = "x64compatible")]
+    X64Compatible,
     X86,
     Arm64,
     #[default]
@@ -602,6 +606,90 @@ pub struct ComEntry {
     pub arch: Option<Architecture>,
     #[serde(default)]
     pub host: ComHost,
+}
+
+// --- Retiring other installs (after a successful install) ---
+
+/// `[[retire]]`: an install that this package's installer did not make,
+/// such as an older product's, to remove once this package has installed.
+///
+/// Nothing here runs before the install, and nothing here is rolled back:
+/// it runs only after the install has succeeded and been registered, each
+/// step is logged, and a step that fails is logged and the next one runs.
+/// The install does not fail because of it. Entries are retired in the
+/// order they are listed, each in the order of [`RetireEntry::steps`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct RetireEntry {
+    /// For the log, such as `"Pahkat Service"`.
+    pub name: String,
+    /// The AppId of the Inno Setup installer that made it, as a bare GUID
+    /// (no braces), as for `package.legacy_inno_app_id`. Its Add/Remove
+    /// Programs entries (`<GUID>_is1` and `{<GUID>}_is1`, under HKLM's
+    /// native and 32-bit views and under HKCU) are deleted, and the
+    /// directory they name is removed with everything in it.
+    pub inno_app_id: Option<String>,
+    /// Image names of programs to end before files are removed, such as
+    /// `"DivvunManager.exe"`. Every running process of that name is ended,
+    /// except this installer and the processes that started it.
+    #[serde(default)]
+    pub processes: Vec<String>,
+    /// Windows services to stop, waiting until they have, and delete.
+    #[serde(default)]
+    pub services: Vec<String>,
+    /// Shortcut files (`.lnk` or `.url`) to delete, such as
+    /// `"#{commonstartup}/Divvun Manager.lnk"`. The folder one is in goes
+    /// too once empty, unless it is a Start Menu, Startup or desktop folder
+    /// itself.
+    #[serde(default)]
+    pub shortcuts: Vec<String>,
+    /// Registry keys to delete with everything under them, as
+    /// `HKLM\...`, `HKCU\...` or `HKCR\...`, such as an event log source.
+    #[serde(default)]
+    pub registry_keys: Vec<String>,
+}
+
+/// One step of retiring a [`RetireEntry`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetireStep<'a> {
+    EndProcess(&'a str),
+    /// Stops the service first.
+    DeleteService(&'a str),
+    /// The directory the Inno Setup install of this AppId names.
+    RemoveInnoFiles(&'a str),
+    RemoveShortcut(&'a str),
+    DeleteRegistryKey(&'a str),
+    /// The Inno Setup install's Add/Remove Programs entries.
+    RemoveInnoEntry(&'a str),
+}
+
+impl RetireEntry {
+    /// The steps that retire this entry, in the order they run: its
+    /// programs end first and its services stop, so that their files can
+    /// go; then its files, shortcuts and registry keys; and its Add/Remove
+    /// Programs entry last, so that an install whose removal was cut short
+    /// still shows there.
+    pub fn steps(&self) -> Vec<RetireStep<'_>> {
+        let mut steps: Vec<RetireStep<'_>> = Vec::new();
+        steps.extend(self.processes.iter().map(|p| RetireStep::EndProcess(p)));
+        steps.extend(self.services.iter().map(|s| RetireStep::DeleteService(s)));
+        steps.extend(self.inno_app_id.as_deref().map(RetireStep::RemoveInnoFiles));
+        steps.extend(self.shortcuts.iter().map(|s| RetireStep::RemoveShortcut(s)));
+        steps.extend(
+            self.registry_keys
+                .iter()
+                .map(|k| RetireStep::DeleteRegistryKey(k)),
+        );
+        steps.extend(self.inno_app_id.as_deref().map(RetireStep::RemoveInnoEntry));
+        steps
+    }
+}
+
+/// The steps that retire `entries`, entry by entry in the order listed.
+pub fn retire_steps(entries: &[RetireEntry]) -> Vec<(&RetireEntry, RetireStep<'_>)> {
+    entries
+        .iter()
+        .flat_map(|entry| entry.steps().into_iter().map(move |step| (entry, step)))
+        .collect()
 }
 
 // --- Install cleanup (pre-install phase) ---

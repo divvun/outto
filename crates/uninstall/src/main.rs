@@ -68,6 +68,24 @@ fn main() {
 
     let (app_name, app_version) = load_manifest_info(&install_dir, &package_id);
 
+    #[cfg(windows)]
+    outto_windows::package_log::start(
+        outto_windows::package_log::uninstall_log(&package_id),
+        &outto_core::logfile::run_header(
+            &format!(
+                "uninstall of {package_id} {app_version} ({})",
+                if very_silent {
+                    "very silent"
+                } else if silent {
+                    "silent"
+                } else {
+                    "with its window"
+                }
+            ),
+            &args.join(" "),
+        ),
+    );
+
     // Before anything changes, the uninstaller's own place included: a
     // refused uninstall must leave it where Add/Remove Programs points.
     #[cfg(windows)]
