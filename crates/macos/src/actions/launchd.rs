@@ -100,6 +100,7 @@ pub fn install_launchd_entry(
         entry.run_at_load,
         entry.keep_alive,
         entry.start_interval,
+        entry.exit_timeout,
         entry.user_name.as_deref(),
         entry.group_name.as_deref(),
         working_dir.as_deref(),
@@ -316,6 +317,7 @@ fn build_plist(
     run_at_load: bool,
     keep_alive: bool,
     start_interval: Option<u64>,
+    exit_timeout: Option<u64>,
     user_name: Option<&str>,
     group_name: Option<&str>,
     working_directory: Option<&str>,
@@ -343,6 +345,12 @@ fn build_plist(
         dict.insert(
             "StartInterval".to_string(),
             plist::Value::Integer((i as i64).into()),
+        );
+    }
+    if let Some(t) = exit_timeout {
+        dict.insert(
+            "ExitTimeOut".to_string(),
+            plist::Value::Integer((t as i64).into()),
         );
     }
     if let Some(u) = user_name {
@@ -391,9 +399,11 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let d = p.as_dictionary().unwrap();
         assert_eq!(d.get("Label").unwrap().as_string(), Some("no.divvun.test"));
+        assert!(d.get("ExitTimeOut").is_none());
         assert_eq!(d.get("RunAtLoad").unwrap().as_boolean(), Some(true));
         let args = d.get("ProgramArguments").unwrap().as_array().unwrap();
         assert_eq!(args.len(), 1);
@@ -408,6 +418,7 @@ mod tests {
             true,
             true,
             Some(3600),
+            Some(60),
             Some("_myapp"),
             Some("_myapp"),
             Some("/var/lib/myapp"),
@@ -420,6 +431,7 @@ mod tests {
             d.get("StartInterval").unwrap().as_signed_integer(),
             Some(3600)
         );
+        assert_eq!(d.get("ExitTimeOut").unwrap().as_signed_integer(), Some(60));
         assert_eq!(d.get("UserName").unwrap().as_string(), Some("_myapp"));
         let args = d.get("ProgramArguments").unwrap().as_array().unwrap();
         assert_eq!(args.len(), 3);
@@ -440,6 +452,7 @@ mod tests {
             &["hi".to_string()],
             true,
             false,
+            None,
             None,
             None,
             None,
