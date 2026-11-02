@@ -297,6 +297,7 @@ on_uninstall = "unload_and_remove"
         assert_eq!(c.launchd.len(), 1);
         assert_eq!(c.launchd[0].scope, LaunchdScope::Agent);
         assert_eq!(c.launchd[0].program_arguments, vec!["--daemon".to_string()]);
+        assert_eq!(c.launchd[0].exit_timeout, None);
     }
 
     #[test]
@@ -314,11 +315,13 @@ program = "/usr/local/bin/myappd"
 user_name = "_myapp"
 group_name = "_myapp"
 keep_alive = true
+exit_timeout = 60
 "##;
         let c = Config::from_toml(toml).unwrap();
         assert_eq!(c.launchd[0].scope, LaunchdScope::Daemon);
         assert_eq!(c.launchd[0].user_name.as_deref(), Some("_myapp"));
         assert!(c.launchd[0].keep_alive);
+        assert_eq!(c.launchd[0].exit_timeout, Some(60));
     }
 
     #[test]

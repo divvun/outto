@@ -299,6 +299,10 @@ pub struct LaunchdEntry {
     #[serde(default)]
     pub keep_alive: bool,
     pub start_interval: Option<u64>,
+    /// Seconds launchd waits after SIGTERM before it sends SIGKILL. launchd
+    /// caps this at 60, and unset it waits 5, not the 20 launchd.plist(5)
+    /// gives (macOS 26).
+    pub exit_timeout: Option<u64>,
 
     pub user_name: Option<String>,
     pub group_name: Option<String>,
